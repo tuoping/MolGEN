@@ -82,6 +82,12 @@ def parse_train_args():
     group.add_argument('--dynOT', action='store_true')
     # group.add_argument("--loss-weight", type=none_or_str, default=None, choices=[None, "velocity", "likelihood"])
     group.add_argument('--weight_loss_var_x0', type=float, default=1)
+
+
+    # ## Diffusion settings
+    group = parser.add_argument_group("Diffusion settings")
+    group.add_argument("--diffusion-form", type=str, default="constant", choices=["constant"])
+    group.add_argument("--diffusion-norm", type=float, default=1.0)
     
 
     ## video settings

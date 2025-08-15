@@ -220,7 +220,10 @@ class Transport:
                         assert torch.all(t == t_2)
                         xt_samples.append(xt_2)
             else:
-                t, xt, ut, st = self.path_sampler.plan_schrodinger_bridge(t, x0, x1, 3)
+                assert self.args.diffusion_form == "constant"
+                t, xt, ut, eps = self.path_sampler.plan_schrodinger_bridge(t, x0, x1, self.args.diffusion_norm)
+                lambda_t = self.path_sampler.compute_lambda_schrodinger_bridge(t, self.args.diffusion_norm)
+
 
             '''
             ## add latent noise using antithetic sampling
@@ -284,7 +287,7 @@ class Transport:
 
                 terms['loss_flow'] = mean_flat((0.5*(model_output)**2 - (ut)*model_output), mask)
                 if self.score_model is not None:
-                    terms['loss_score'] = mean_flat((0.5*(score_model_output)**2 - (st)*score_model_output), mask)
+                    terms['loss_score'] = mean_flat((lambda_t[:,None,None,None] * score_model_output + eps)**2, mask)
                     terms['loss'] = terms['loss_flow']+terms['loss_score']
                 else:
                     if self.args.weight_loss_var_x0 > 0:
