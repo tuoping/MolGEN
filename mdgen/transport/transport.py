@@ -221,8 +221,9 @@ class Transport:
                         xt_samples.append(xt_2)
             else:
                 assert self.args.diffusion_form == "constant"
-                t, xt, ut, eps = self.path_sampler.plan_schrodinger_bridge(t, x0, x1, self.args.diffusion_norm)
-                lambda_t = self.path_sampler.compute_lambda_schrodinger_bridge(t, self.args.diffusion_norm)
+                assert self.args.weight_loss_var_x0 == 0
+                t, xt, ut, eps = self.path_sampler.plan_schrodinger_bridge(t, x0[0], x1, torch.tensor(self.args.diffusion_norm))
+                lambda_t = self.path_sampler.compute_lambda_schrodinger_bridge(t, torch.tensor(self.args.diffusion_norm))
 
 
             '''

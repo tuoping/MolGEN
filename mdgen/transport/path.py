@@ -163,7 +163,7 @@ class ICPlan:
         ----------
         [1] Improving and Generalizing Flow-Based Generative Models with minibatch optimal transport, Preprint, Tong et al.
         """
-        mu_t = self.compute_mu_t(x0, x1, t)
+        mu_t = self.compute_mu_t(t, x0, x1)
         std_t = self.compute_marginal_std(t, diffusion)
         std_t = expand_t_like_x(std_t, x0)
         return mu_t + std_t * epsilon
