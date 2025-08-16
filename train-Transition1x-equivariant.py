@@ -65,22 +65,18 @@ if args.weight_loss_var_x0 > 0:
             save_top_k=1,
             monitor="val_loss_gen",
             every_n_epochs=args.ckpt_freq,
+            save_last=True,
         ),
         ModelCheckpoint(
             dirpath=os.environ["MODEL_DIR"], 
             save_top_k=1,
-            monitor="val_meanRMSD",
+            monitor="val_meanRMSD_Kabsch",
             every_n_epochs=args.ckpt_freq,
         ),
         ModelCheckpoint(
             dirpath=os.environ["MODEL_DIR"], 
             save_top_k=1,
             monitor="val_loss_var",
-            every_n_epochs=args.ckpt_freq,
-        ),
-        ModelCheckpoint(
-            dirpath=os.environ["MODEL_DIR"], 
-            save_top_k=1,
             every_n_epochs=args.ckpt_freq,
         ),
         ModelSummary(max_depth=2),
@@ -94,11 +90,12 @@ else:
             save_top_k=1,
             monitor="val_loss_gen",
             every_n_epochs=args.ckpt_freq,
+            save_last=True,
         ),
         ModelCheckpoint(
             dirpath=os.environ["MODEL_DIR"], 
             save_top_k=1,
-            monitor="val_meanRMSD",
+            monitor="val_meanRMSD_Kabsch",
             every_n_epochs=args.ckpt_freq,
         ),
         ModelCheckpoint(
