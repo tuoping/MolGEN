@@ -183,7 +183,7 @@ class Wrapper(pl.LightningModule):
                 # cosine from base -> min_lr over next T epochs
                 t = min(max(epoch - W, 0), T)
                 cos = 0.5 * (1 + math.cos(math.pi * t / T))
-                return (min_lr + (max_lr - min_lr) * cos) / max_lr
+                return (min_lr + (max_lr - min_lr) * cos) / base
         
             sched = torch.optim.lr_scheduler.LambdaLR(opt, lr_lambda)
             return {"optimizer": opt, "lr_scheduler": {"scheduler": sched, "interval": "epoch"}}
