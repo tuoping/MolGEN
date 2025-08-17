@@ -171,17 +171,19 @@ class Wrapper(pl.LightningModule):
             return opt
         else:
             # linear warmup to 1e-4 over W epochs, then cosine back to 3e-5
-            W = 0  # warmup epochs
+            W = 5  # warmup epochs
             T = 600  # cosine length (adjust)
+            max_lr = 3.33e-4
             base, min_lr = 1e-4, 1e-6
+            if W < 1: max_lr = base
         
             def lr_lambda(epoch):
-                # if epoch < W:
-                #     return (min_lr + (base - min_lr) * (epoch + 1) / W) / min_lr
+                if epoch < W:
+                    return (max_lr/base)*(epoch+1)/W
                 # cosine from base -> min_lr over next T epochs
                 t = min(max(epoch - W, 0), T)
                 cos = 0.5 * (1 + math.cos(math.pi * t / T))
-                return (min_lr + (base - min_lr) * cos) / base
+                return (min_lr + (max_lr - min_lr) * cos) / max_lr
         
             sched = torch.optim.lr_scheduler.LambdaLR(opt, lr_lambda)
             return {"optimizer": opt, "lr_scheduler": {"scheduler": sched, "interval": "epoch"}}
