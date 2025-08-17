@@ -249,11 +249,8 @@ def get_subgraph_mask(edge_index: Tensor, n_frag_switch: Tensor) -> Tensor:
     Returns:
         Tensor: [n_edge], 1 for inner- and 0 for inter-fragment edge
     """
-    subgraph_mask = torch.zeros(edge_index.size(1)).long()
-    assert max(edge_index.ravel()) < len(n_frag_switch)
     in_same_frag = n_frag_switch[edge_index[0]] == n_frag_switch[edge_index[1]]
-    subgraph_mask[torch.where(in_same_frag)] = 1
-    return subgraph_mask.to(edge_index.device)
+    return in_same_frag.to(torch.int64)
 
 class EquivariantTransformer_dpm(EquivariantTransformer):
     def __init__(self, encoder, processor, decoder, cutoff, latent_dim, embed_dim, otf_graph = True, design=False, potential_model=False, tps_condition=False, abs_time_emb=False, num_frames=None, num_species=5, pbc=True, object_aware=False):
@@ -312,9 +309,9 @@ class EquivariantTransformer_dpm(EquivariantTransformer):
 
         e2 = torch.cross(x[row], (x[col]+ offsets), dim=-1)
         e2 = e2/e2.norm(dim=-1, keepdim=True)
-        e3 = torch.cross(e1, e2)
+        e3 = torch.linalg.cross(e1, e2)
 
-        Fij  = torch.stack([e1, e2, e3], dim=1)                  # [E,3,3]
+        # Fij  = torch.stack([e1, e2, e3], dim=1)                  # [E,3,3]
         Sij = torch.hstack([(x[row]*e1).sum(-1, keepdim=True), (x[row]*e2).sum(-1, keepdim=True), (x[row]*e3).sum(-1, keepdim=True), ])  # dim=edge_index.shape[1]
         
         return Sij
@@ -503,10 +500,11 @@ class EquivariantTransformer_dpm(EquivariantTransformer):
                     if self.object_aware:
                         out_cond['cond_f']['sub_graph_mask'] = sub_graph_mask_f
                     else:
-                        out_cond['cond_f']['cross_fragment'] = None
+                        out_cond['cond_f']['sub_graph_mask'] = None
                     out_cond['cond_f']['x'] = conditions["cond_f"]["x"].view(-1, 3)
                     out_cond['cond_f']['cell'] = cell.view(-1,3,3)
                     out_cond['cond_f']['to_jimages'] = to_jimages_cond_f
+                    out_cond['cond_f']['num_bonds'] = num_bonds_cond_f
 
                     out_cond['cond_r'] = get_pbc_distances(
                         conditions["cond_r"]["x"].view(-1, 3),
@@ -520,12 +518,13 @@ class EquivariantTransformer_dpm(EquivariantTransformer):
                         return_distance_vec=True,
                     )
                     if self.object_aware:
-                        out_cond['cond_r']['sub_graph_mask'] = sub_graph_mask_f
+                        out_cond['cond_r']['sub_graph_mask'] = sub_graph_mask_r
                     else:
-                        out_cond['cond_r']['cross_fragment'] = None
+                        out_cond['cond_r']['sub_graph_mask'] = None
                     out_cond['cond_r']['x'] = conditions["cond_r"]["x"].view(-1, 3)
                     out_cond['cond_r']['cell'] = cell.view(-1,3,3)
                     out_cond['cond_r']['to_jimages'] = to_jimages_cond_r
+                    out_cond['cond_r']['num_bonds'] = num_bonds_cond_r
 
                     out_cond["species"] = aatype
                     out_cond['cond_f']["mask"] = conditions['cond_f']["mask"]
@@ -563,7 +562,7 @@ class EquivariantTransformer_dpm(EquivariantTransformer):
             aatype = torch.zeros([B,T,N], dtype=torch.long, device=x.device)
             species = torch.nn.functional.one_hot(aatype, num_classes=self.num_species).to(torch.float)
         if self.object_aware:
-            scaler_out, vector_out, edge_attr = self._graph_forward(species.reshape(-1,self.num_species), edge_index, edge_attr, edge_vec, t.reshape(-1,1), out_cond, sub_graph_mask=sub_graph_mask)
+            scaler_out, vector_out = self._graph_forward(species.reshape(-1,self.num_species), edge_index, edge_attr, edge_vec, t.reshape(-1,1), out_cond, sub_graph_mask=sub_graph_mask)
         else:
             scaler_out, vector_out = self._graph_forward(species.reshape(-1,self.num_species), edge_index, edge_attr, edge_vec, t.reshape(-1,1), out_cond)
         if self.design:

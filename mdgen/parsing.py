@@ -69,6 +69,7 @@ def parse_train_args():
     group.add_argument('--time_multiplier', type=float, default=100.)
     group.add_argument('--abs_pos_emb', action='store_true')
     group.add_argument('--abs_time_emb', action='store_true')
+    group.add_argument('--object_aware', action='store_true')
 
     group = parser.add_argument_group("Transport arguments")
     group.add_argument("--path-type", type=str, default="GVP", choices=["Linear", "GVP", "VP", "Schrodinger_Linear"])
