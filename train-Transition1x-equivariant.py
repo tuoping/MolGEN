@@ -26,14 +26,14 @@ class ResetLrCallback(pl.Callback):
 
 torch.set_float32_matmul_precision('medium')
 
-train_dataset = torch.load(os.path.join(args.data_dir, "tps_masked_train.pt"), weights_only=False)
+train_dataset = torch.load(os.path.join(args.data_dir, "tps_masked_train-fragmented.pt"), weights_only=False)
 trainsampler = BucketBatchSampler(train_dataset, batch_size=args.batch_size)
 
 if args.overfit:
     val_dataset = train_dataset
     valsampler = trainsampler
 else:
-    val_dataset = torch.load(os.path.join(args.data_dir, "tps_masked_val.pt"), weights_only=False)
+    val_dataset = torch.load(os.path.join(args.data_dir, "tps_masked_val-fragmented.pt"), weights_only=False)
     valsampler = BucketBatchSampler(val_dataset, batch_size=args.batch_size)
 
 train_loader = torch.utils.data.DataLoader(

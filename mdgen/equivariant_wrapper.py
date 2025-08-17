@@ -155,7 +155,7 @@ class EquivariantMDGenWrapper(Wrapper):
             num_vector_out=1
             latent_dim = 3
         
-        encoder = Encoder_dpm(num_species, args.embed_dim, 4, args.edge_dim, input_dim=1)
+        encoder = Encoder_dpm(num_species, args.embed_dim, 3, args.edge_dim, input_dim=1, object_aware=True)
         processor = Processor(num_convs=args.num_convs, node_dim=args.embed_dim, num_heads=args.num_heads, ff_dim=args.ff_dim, edge_dim=args.edge_dim)
         print("Initializing drift model")
         self.model = EquivariantTransformer_dpm(
@@ -170,13 +170,14 @@ class EquivariantMDGenWrapper(Wrapper):
             tps_condition=args.tps_condition,
             num_species=args.num_species,
             pbc=args.pbc,
+            object_aware=True,
         )
         if args.potential_model:
             num_scalar_out = 1
             latent_dim = 3
             num_vector_out = 0
             self.potential_model = EquivariantTransformer_dpm(
-                encoder = Encoder_dpm(num_species, args.embed_dim, 4, args.edge_dim, input_dim=1),
+                encoder = Encoder_dpm(num_species, args.embed_dim, 3, args.edge_dim, input_dim=1),
                 processor = Processor(num_convs=args.num_convs, node_dim=args.embed_dim, num_heads=args.num_heads, ff_dim=args.ff_dim, edge_dim=args.edge_dim),
                 decoder = Decoder(dim=args.embed_dim, num_scalar_out=num_scalar_out, num_vector_out=num_vector_out, num_species=args.num_species),
                 cutoff=args.cutoff,
@@ -201,6 +202,7 @@ class EquivariantMDGenWrapper(Wrapper):
                 potential_model = args.potential_model,
                 tps_condition=args.tps_condition,
                 pbc=args.pbc,
+                object_aware=True,
             )
         else:
             self.score_model = None
@@ -320,30 +322,9 @@ class EquivariantMDGenWrapper(Wrapper):
             else:
                 conditional_batch = torch.rand(1)[0] >= 1-self.args.ratio_conditonal
                 # conditional_batch = True
-
-        if (self.args.sim_condition and conditional_batch):
-            # For sim_condition, the x and x_next are separately feeded.
-            return {
-                "species": batch['species_next'],
-                "latents": batch['x_next'],
-                'loss_mask': batch["TKS_v_mask"],
-                'model_kwargs': {
-                    "x1": batch['x_next'],
-                    'v_mask': (batch["TKS_v_mask"]!=0).to(int),
-                    "aatype": batch['species_next'],
-                    "cell": batch['cell'],
-                    "num_atoms": batch["num_atoms"],
-                    "conditions": {
-                        'x':torch.where(cond_mask.unsqueeze(-1).bool(), latents, 0.0),
-                        "mask": cond_mask*(batch["TKS_mask"]!=0),
-                        'cell': batch['cell'],
-                        'species': batch['species'],
-                        'num_atoms': batch['num_atoms']
-                    }
-                },
-                'conditional_batch': conditional_batch
-            }
-        elif (self.args.tps_condition and conditional_batch):
+        else:
+            conditional_batch = None
+        if (self.args.tps_condition and conditional_batch):
             # For tps_condition, the x[:::] are feeded together, v_mask is not necessary.
             return {
                 "species": species,
@@ -357,13 +338,16 @@ class EquivariantMDGenWrapper(Wrapper):
                     "aatype": species,
                     "cell": batch['cell'],
                     "num_atoms": batch["num_atoms"],
+                    "fragments_idx": batch['fragments_idx'],
                     "conditions": {
                         'cond_f':{
-                            'x': torch.where(cond_mask_f.unsqueeze(-1).bool(), latents, 0.0)[:,0,...].unsqueeze(1).expand(B,T,L,3).reshape(-1,3),
+                            'x': latents[:,0,...].unsqueeze(1).expand(B,T,L,3).reshape(-1,3),
+                            "fragments_idx": batch['fragments_idx'][:,0,...].unsqueeze(1).expand(B,T,L).reshape(-1),
                             'mask': cond_mask_f[:,0,...].unsqueeze(1).expand(B,T,L).reshape(-1),
                         },
                         'cond_r':{
-                            'x': torch.where(cond_mask_r.unsqueeze(-1).bool(), latents, 0.0)[:,-1,...].unsqueeze(1).expand(B,T,L,3).reshape(-1,3),
+                            'x': latents[:,-1,...].unsqueeze(1).expand(B,T,L,3).reshape(-1,3),
+                            "fragments_idx": batch['fragments_idx'][:,-1,...].unsqueeze(1).expand(B,T,L).reshape(-1),
                             'mask': cond_mask_r[:,-1,...].unsqueeze(1).expand(B,T,L).reshape(-1),
                         }
                     }
@@ -381,6 +365,7 @@ class EquivariantMDGenWrapper(Wrapper):
                     'v_mask': (v_loss_mask!=0).to(int),
                     "cell": batch['cell'],
                     "num_atoms": batch["num_atoms"],
+                    "fragments_idx": batch['fragments_idx'],
                     "conditions": None
                 },
                 'conditional_batch': conditional_batch

@@ -47,7 +47,7 @@ def parse_train_args():
     
     ## Training data 
     group = parser.add_argument_group("Training data settings")
-    group.add_argument('--data_dir', type=str, default=None, required=True)
+    group.add_argument('--data_dir', type=str, default="tests/test_data/Transition1x")
     group.add_argument('--num_frames', type=int, default=1)
     group.add_argument('--suffix', type=str, default='')
 
