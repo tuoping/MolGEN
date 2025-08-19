@@ -437,9 +437,10 @@ class EquivariantMDGenWrapper(Wrapper):
                 assert torch.all((prep['loss_mask']!=0)[:,-1] == 0)
                 assert torch.all((prep['loss_mask']!=0)[:,1] == 1)
                 assert T == 3
-                labels = torch.argmax(prep["species"], dim=-1).ravel().cpu().numpy()  # B,T,L
+                labels = torch.argmax(prep["species"][:,1,...], dim=-1).ravel().cpu().numpy()  # B,T,L
                 symbols = [map_to_chemical_symbol[labels[i_elem]] for i_elem in range(len(labels))]
-                fragments_node = torch.unique_consecutive(prep['model_kwargs']['fragments_idx'], return_counts=True)[1] # prep['model_kwargs']['num_atoms'][:,1].ravel() # reshape B,1 to B*1
+                # fragments_node = torch.unique_consecutive(prep['model_kwargs']['fragments_idx'][:,1,...], return_counts=True)[1] # prep['model_kwargs']['num_atoms'][:,1].ravel() # reshape B,1 to B*1
+                fragments_node = prep['model_kwargs']['num_atoms'][:,1].ravel() # reshape B,1 to B*1
                 pred_xh = pred_pos[:,1,...].reshape(-1, 3) # reshape B,1,L,3 to B*1*L*3
                 target_xh = ref_pos[:,1,...].reshape(-1, 3) # reshape B,1,L,3 to B*1*L*3
                 rmsds = batch_rmsd_sb(
