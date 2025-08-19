@@ -56,7 +56,7 @@ class ICPlan:
             "sigma": norm * self.compute_sigma_t(t)[0],
             "linear": norm * (1 - t),
             "decreasing": 0.25 * (norm * th.cos(np.pi * t) + 1) ** 2,
-            "inccreasing-decreasing": norm * th.sin(np.pi * t) ** 2,
+            "increasing-decreasing": norm * th.sin(np.pi * t) ** 2,
         }
 
         try:
@@ -294,14 +294,14 @@ class PowPlan(ICPlan):
 
     def compute_alpha_t(self, t, p=2.0):
         # alpha(1)=0 and d/dt alpha -> 0 as t->1
-        alpha  = th.power((1 - t), (p))              # p>=2 makes slope vanish
-        dalpha = -p * th.power((1 - t), (p - 1))
+        alpha  = th.pow((1 - t), (p))              # p>=2 makes slope vanish
+        dalpha = -p * th.pow((1 - t), (p - 1))
         return alpha, dalpha
 
     def compute_sigma_t(self, t, sigma_min=1e-3, sigma_max=1.0, q=2.0):
         # sigma rises to sigma_max with zero slope at t=1
-        s      = 1 - th.power((1 - t), (q))          # smooth cap; q>=2
-        ds     = q * th.power((1 - t), (q - 1))
+        s      = 1 - th.pow((1 - t), (q))          # smooth cap; q>=2
+        ds     = q * th.pow((1 - t), (q - 1))
         sigma  = sigma_min + (sigma_max - sigma_min) * s
         dsigma = (sigma_max - sigma_min) * ds
         return sigma, dsigma
@@ -312,16 +312,6 @@ class PowPlan(ICPlan):
         if th.abs(alpha) < tol:
             raise ValueError(f"alpha is too small: {alpha}, t={t}, p={p}")
         return dalpha / alpha
-    
-    def plan_schrodinger_bridge(self, t, x0, x1, diffusion):
-        """
-        Plan for Schrodinger equation
-        diffusion = (g(t)**2)/2
-        """
-        xt = self.compute_xt(t, x0, x1)
-        ut = (1-2*t)/(t*(1-t)) * (xt - (t*x1 - (1-t)*x0)) + (x1-x0)
-        score = (t*x1+(1-t)*x0 -xt)/(2*diffusion)/t/(1-t)
-        return t, xt, ut, score
 
     
 
@@ -342,8 +332,8 @@ class TimeWarpPlan(ICPlan):
     def compute_alpha_t(self, t, kind="smoothstep", p=1.0):
         # Optional p>=1 to taper even flatter near t=1: alpha=(1-phi)^p
         s, ds = self._phi(t, kind)
-        alpha  = np.power((1 - s), p)
-        dalpha = -p * np.power((1 - s), p - 1) * ds
+        alpha  = th.pow((1 - s), p)
+        dalpha = -p * th.pow((1 - s), p - 1) * ds
         return alpha, dalpha
 
     def compute_sigma_t(self, t, kind="smoothstep", sigma_min=0.0):

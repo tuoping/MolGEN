@@ -39,6 +39,7 @@ class PathType(enum.Enum):
     LINEAR = enum.auto()
     GVP = enum.auto()
     VP = enum.auto()
+    Pow = enum.auto()
 
 
 class WeightType(enum.Enum):
@@ -108,6 +109,7 @@ class Transport:
             PathType.LINEAR: path.ICPlan,
             PathType.GVP: path.GVPCPlan,
             PathType.VP: path.VPCPlan,
+            PathType.Pow: path.PowPlan,
         }
         self.args = args
         self.loss_type = loss_type
@@ -220,10 +222,10 @@ class Transport:
                         assert torch.all(t == t_2)
                         xt_samples.append(xt_2)
             else:
-                assert self.args.diffusion_form == "constant"
                 assert self.args.weight_loss_var_x0 == 0
-                t, xt, ut, eps = self.path_sampler.plan_schrodinger_bridge(t, x0[0], x1, torch.tensor(self.args.diffusion_norm))
-                lambda_t = self.path_sampler.compute_lambda_schrodinger_bridge(t, torch.tensor(self.args.diffusion_norm))
+                diffusion = self.path_sampler.compute_diffusion(x1, t, self.args.diffusion_form, self.args.diffusion_norm).view(-1)  # the input x here is not used
+                t, xt, ut, eps = self.path_sampler.plan_schrodinger_bridge(t, x0[0], x1, diffusion)
+                lambda_t = self.path_sampler.compute_lambda_schrodinger_bridge(t, diffusion)
 
 
             '''
@@ -696,6 +698,7 @@ def create_transport(
     path_choice = {
         "Schrodinger_Linear": PathType.LINEAR,
         "Linear": PathType.LINEAR,
+        "Pow": PathType.Pow,
         "GVP": PathType.GVP,
         "VP": PathType.VP,
     }

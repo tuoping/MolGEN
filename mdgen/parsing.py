@@ -72,7 +72,7 @@ def parse_train_args():
     group.add_argument('--object_aware', action='store_true')
 
     group = parser.add_argument_group("Transport arguments")
-    group.add_argument("--path-type", type=str, default="GVP", choices=["Linear", "GVP", "VP", "Schrodinger_Linear"])
+    group.add_argument("--path-type", type=str, default="GVP", choices=["Linear", "GVP", "VP", "Pow", "Schrodinger_Linear"])
     group.add_argument("--prediction", type=str, default="velocity", choices=["velocity", "score", "noise"])
     group.add_argument("--sampling_method", type=str, default="dopri5", choices=["dopri5", "euler"])
     group.add_argument('--alpha_max', type=float, default=8)
@@ -87,7 +87,7 @@ def parse_train_args():
 
     # ## Diffusion settings
     group = parser.add_argument_group("Diffusion settings")
-    group.add_argument("--diffusion-form", type=str, default="constant", choices=["constant"])
+    group.add_argument("--diffusion-form", type=str, default="constant", choices=["constant" ,'increasing-decreasing'])
     group.add_argument("--diffusion-norm", type=float, default=1.0)
     
 
