@@ -174,7 +174,7 @@ class Wrapper(pl.LightningModule):
             W = 5  # warmup epochs
             max_lr = 3e-4
             T = 900 + W  # cosine length (adjust)
-            base, min_lr = 1e-4, 5e-7
+            base, min_lr = 1e-4, 3e-5
             if W < 1: max_lr = base
         
             opt = torch.optim.AdamW(self.parameters(), lr=base)
