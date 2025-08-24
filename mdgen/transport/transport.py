@@ -309,7 +309,10 @@ class Transport:
                 else:
                     raise Exception(f"Wrong KL argument: {self.args.KL}")
                 if self.score_model is not None:
-                    terms['loss_score'] = mean_flat((lambda_t[:,None,None,None] * score_model_output + eps)**2, mask)
+                    if self.args.KL == "L1":
+                        terms['loss_score'] = mean_flat((lambda_t[:,None,None,None] * score_model_output + eps).abs(), mask)
+                    else:
+                        terms['loss_score'] = mean_flat((lambda_t[:,None,None,None] * score_model_output + eps)**2, mask)
                     terms['loss'] = terms['loss_flow']+terms['loss_score']
                 else:
                     if self.args.weight_loss_var_x0 > 0:
