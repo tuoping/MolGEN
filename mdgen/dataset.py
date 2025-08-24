@@ -751,7 +751,7 @@ class EquivariantTransformerDataset_Transition1x(torch.utils.data.Dataset):
         elif self.tps_condition:
             return {
                 "name": data.rxn,
-                'e_now': torch.stack([torch.tensor(1000), E_barrier, torch.tensor(1000)]),
+                'e_now': torch.stack([data.E_reactant, data.E_transition_state, data.E_product]),
                 "species": torch.stack([data.z_reactant, data.z_transition_state, data.z_product]),
                 "x": torch.stack([data.pos_reactant, data.pos_transition_state, data.pos_product]),
                 "fragments_idx": torch.stack([data.fragments_index_reaction, data.fragments_index_transition_state, data.fragments_index_product]),

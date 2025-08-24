@@ -287,8 +287,27 @@ class Transport:
                 # s_est = self.path_sampler.get_score_from_velocity(model_output, xt, t)
                 # div_v = divergence(model, xt, t, model_kwargs).unsqueeze(-1)
                 # terms["loss_fisherreg"] = mean_flat((div_v + (model_output*s_est).sum(dim=-1).unsqueeze(-1))**2, mask)
-
-                terms['loss_flow'] = mean_flat((0.5*(model_output)**2 - (ut)*model_output), mask)
+                if self.args.KL == 'symm':
+                    logQ_ = (-(t[:,None,None,None]*model_output)**2)/2
+                    logP_ = (-(t[:,None,None,None]*ut)**2)/2
+                    logm = torch.logaddexp(logP_, logQ_) - torch.ones_like(ut)*torch.log(torch.tensor(2.0))
+                    kl_p_m = (logP_.exp() * (logP_ - logm)).sum(dim=-1)
+                    kl_q_m = (logQ_.exp() * (logQ_ - logm)).sum(dim=-1)
+                    terms['loss_flow'] = 0.5 * (kl_p_m + kl_q_m)
+                elif self.args.KL == "reverse":
+                    logQ_ = (-(t[:,None,None,None]*model_output)**2)/2
+                    logP_ = (-(t[:,None,None,None]*ut)**2)/2
+                    terms['loss_flow'] = logQ_.exp()*(logQ_ - logP_)
+                elif self.args.KL == "forward":
+                    logQ_ = (-(t[:,None,None,None]*model_output)**2)/2
+                    logP_ = (-(t[:,None,None,None]*ut)**2)/2
+                    terms['loss_flow'] = logP_.exp()*(logP_ - logQ_)
+                elif self.args.KL == "L2":
+                    terms['loss_flow'] = mean_flat((0.5*(model_output)**2 - (ut)*model_output), mask)
+                elif self.args.KL == "L1":
+                    terms['loss_flow'] = mean_flat((model_output - ut).abs(), mask)
+                else:
+                    raise Exception(f"Wrong KL argument: {self.args.KL}")
                 if self.score_model is not None:
                     terms['loss_score'] = mean_flat((lambda_t[:,None,None,None] * score_model_output + eps)**2, mask)
                     terms['loss'] = terms['loss_flow']+terms['loss_score']

@@ -43,7 +43,7 @@ def readlog(dir, trainlosskeyword="\'train_loss\'", exclude_epochs=exclude_epoch
                         alltrainsteps_baseline.append(float(l[idx_t+1].replace(",","").replace("np.float64(","").replace(")","")))
                         # break
                     if trainlosskeyword in t:
-                        alltrainlosses_baseline.append(float(l[idx_t+1].replace(",","").replace("np.float64(","").replace(")","")))
+                        alltrainlosses_baseline.append(float(l[idx_t+1].replace(",","").replace("np.float64(","").replace(")","").replace("}",'')))
                     if "conditional_batch" in t:
                         allconditional_bool.append(float(l[idx_t+1].replace(",","").replace("np.float64(","").replace(")","")))
     return alltrainlosses_baseline, alltrainsteps_baseline, allconditional_bool
@@ -53,7 +53,8 @@ def plot_1losses(dir_dir_b1024, key="\'train_loss\'", after_epoch=None, before_e
     plt.rcParams["figure.figsize"] = (6,5)
     fig = plt.figure()
     alltrainlosses_dir_b1024, alltrainsteps_dir_b1024, allconditional_bool = readlog(dir_dir_b1024, trainlosskeyword=key)
-    # np.save(key, np.vstack([alltrainsteps_dir_b1024, alltrainlosses_dir_b1024]))
+    alltrainlosses_dir_b1024 = np.array(alltrainlosses_dir_b1024)
+    np.save(key, np.vstack([alltrainsteps_dir_b1024, alltrainlosses_dir_b1024]))
     before_idx = None
     after_idx = None
     if len(alltrainlosses_dir_b1024) != 0:
@@ -66,13 +67,11 @@ def plot_1losses(dir_dir_b1024, key="\'train_loss\'", after_epoch=None, before_e
         
         
     ### remove the loss value when restart training 
-    # if "loss_gen" in key:
-    #     stable_idx = np.where(np.array(alltrainlosses_dir_b1024)<-1.1)[0]
-    # else:
-    stable_idx = np.arange(len(alltrainsteps_dir_b1024), dtype=int)
+    # stable_idx = np.arange(len(alltrainsteps_dir_b1024), dtype=int)
+    stable_idx = np.where(np.abs(alltrainlosses_dir_b1024) <10000)[0]
     alltrainlosses_dir_b1024 = np.array(alltrainlosses_dir_b1024)[stable_idx]
     alltrainsteps_dir_b1024 = np.array(alltrainsteps_dir_b1024)[stable_idx]
-    allconditional_bool = np.array(allconditional_bool)
+    allconditional_bool = np.array(allconditional_bool)[stable_idx]
     # plotting
     positive_idx = np.where(np.array(alltrainlosses_dir_b1024[after_idx:before_idx])>0)[0][:]
     negative_idx = np.where(np.array(alltrainlosses_dir_b1024[after_idx:before_idx])<=0)[0][:]
@@ -93,7 +92,7 @@ def plot_1losses(dir_dir_b1024, key="\'train_loss\'", after_epoch=None, before_e
     if len(negative_idx) > 0:
         plt.axhline(np.array(alltrainlosses_dir_b1024[after_idx:before_idx])[negative_idx][-1], ls="--", c="r")
     # plt.semilogy()
-    setfigform_simple("epoch","loss", ylimit=(ymin, ymax))
+    setfigform_simple("epoch",key, ylimit=(ymin, ymax))
     plt.legend()
     plt.title(dir_dir_b1024, fontdict=font)
     
@@ -105,15 +104,15 @@ def plot_1losses(dir_dir_b1024, key="\'train_loss\'", after_epoch=None, before_e
 import argparse
 
 parser = argparse.ArgumentParser(description="DCD → Extended XYZ with triclinic lattice")
-parser.add_argument("--after_epoch", type=int, default=0, )
+parser.add_argument("--after_epoch", type=int, default=None, )
 parser.add_argument("--before_epoch",  type=int, default=None)
 parser.add_argument("--ymin_val",  type=float, default=None)
 parser.add_argument("--ymax_val",  type=float, default=None)
 parser.add_argument("--ymin_train",  type=float, default=None)
 parser.add_argument("--ymax_train",  type=float, default=None)
-parser.add_argument("--key",  type=str, default="\'val_loss_gen\'")
+parser.add_argument("--key",  type=str, default="val_loss_gen")
 args = parser.parse_args()
 
 dir = f"./"
 plot_1losses(dir, key="\'train_loss\'", after_epoch=args.after_epoch, before_epoch=args.before_epoch, ymin=args.ymin_train, ymax=args.ymax_train)
-plot_1losses(dir, key=args.key, after_epoch=args.after_epoch, before_epoch=args.before_epoch, ymin=args.ymin_val, ymax=args.ymax_val)
+plot_1losses(dir, key=f"\'{args.key}\'", after_epoch=args.after_epoch, before_epoch=args.before_epoch, ymin=args.ymin_val, ymax=args.ymax_val)
