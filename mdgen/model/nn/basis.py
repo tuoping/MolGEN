@@ -94,3 +94,43 @@ class GaussianRandomFourierFeatures(nn.Module):
             v_proj = 2 * torch.pi * v @ self.B
             features = torch.cat([torch.cos(v_proj), torch.sin(v_proj)], dim=-1)
             return self.proj(features)
+
+
+class RBFEmb(nn.Module):
+    r"""
+    radial basis function to embed distances
+    modified: delete cutoff with r
+    """
+
+    def __init__(self, num_rbf, rbound_upper, rbf_trainable=False):
+        super().__init__()
+        self.rbound_upper = rbound_upper
+        self.rbound_lower = 0
+        self.num_rbf = num_rbf
+        self.rbf_trainable = rbf_trainable
+        means, betas = self._initial_params()
+
+        self.register_buffer("means", means)
+        self.register_buffer("betas", betas)
+
+    def _initial_params(self):
+        start_value = torch.exp(torch.scalar_tensor(-self.rbound_upper))
+        end_value = torch.exp(torch.scalar_tensor(-self.rbound_lower))
+        means = torch.linspace(start_value, end_value, self.num_rbf)
+        betas = torch.tensor(
+            [(2 / self.num_rbf * (end_value - start_value)) ** -2] * self.num_rbf
+        )
+        return means, betas
+
+    def reset_parameters(self):
+        means, betas = self._initial_params()
+        self.means.data.copy_(means)
+        self.betas.data.copy_(betas)
+
+    def forward(self, dist):
+        dist = dist.unsqueeze(-1)
+        rbounds = 0.5 * (torch.cos(dist * torch.pi / self.rbound_upper) + 1.0)
+        rbounds = rbounds * (dist < self.rbound_upper).float()
+        return rbounds * torch.exp(
+            -self.betas * torch.square((torch.exp(-dist) - self.means))
+        )

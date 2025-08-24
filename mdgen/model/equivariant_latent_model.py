@@ -10,7 +10,7 @@ import copy
 
 from .nn.mlp import MLP
 from .nn.convs import EquivariantTransformerLayer
-from .nn.basis import GaussianRandomFourierFeatures
+from .nn.basis import GaussianRandomFourierFeatures, RBFEmb
 
 # Typing
 from torch import Tensor
@@ -253,7 +253,7 @@ def get_subgraph_mask(edge_index: Tensor, n_frag_switch: Tensor) -> Tensor:
     return in_same_frag.to(torch.int64)
 
 class EquivariantTransformer_dpm(EquivariantTransformer):
-    def __init__(self, encoder, processor, decoder, cutoff, latent_dim, embed_dim, otf_graph = True, design=False, potential_model=False, tps_condition=False, abs_time_emb=False, num_frames=None, num_species=5, pbc=True, object_aware=False):
+    def __init__(self, encoder, processor, decoder, cutoff, latent_dim, embed_dim, num_radial=96, otf_graph = True, design=False, potential_model=False, tps_condition=False, abs_time_emb=False, num_frames=None, num_species=5, pbc=True, object_aware=False):
         super().__init__(encoder, processor, decoder)
         self.cutoff = cutoff
         self.otf_graph = otf_graph
@@ -261,6 +261,8 @@ class EquivariantTransformer_dpm(EquivariantTransformer):
         self.potential_model = potential_model
         self.tps_condition = tps_condition
         self.pbc = pbc
+
+        self.radial_emb = RBFEmb(num_radial, self.cutoff)
 
         self.max_num_neighbors_threshold = 50
         self.max_cell_images_per_dim = 5
@@ -310,9 +312,11 @@ class EquivariantTransformer_dpm(EquivariantTransformer):
         e2 = torch.cross(x[row], (x[col]+ offsets), dim=-1)
         e2 = e2/e2.norm(dim=-1, keepdim=True)
         e3 = torch.linalg.cross(e1, e2)
-
         # Fij  = torch.stack([e1, e2, e3], dim=1)                  # [E,3,3]
-        Sij = torch.hstack([(x[row]*e1).sum(-1, keepdim=True), (x[row]*e2).sum(-1, keepdim=True), (x[row]*e3).sum(-1, keepdim=True), ])  # dim=edge_index.shape[1]
+
+        radial_emb_dist = self.radial_emb(edge_vec.norm(dim=-1))
+
+        Sij = torch.hstack([(x[row]*e1).sum(-1, keepdim=True), (x[row]*e2).sum(-1, keepdim=True), (x[row]*e3).sum(-1, keepdim=True), radial_emb_dist])  # dim=edge_index.shape[1]
         
         return Sij
 

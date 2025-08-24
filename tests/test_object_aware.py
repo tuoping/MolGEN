@@ -41,6 +41,7 @@ args.sim_condition = False
 args.design = False
 args.potential_model = False
 args.pbc = False 
+args.object_aware = True
 
 os.environ["MODEL_DIR"] = os.path.join("tests_cache", args.run_name)
 
