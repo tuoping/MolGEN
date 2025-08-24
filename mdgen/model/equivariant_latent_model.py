@@ -418,7 +418,7 @@ class EquivariantTransformer_dpm(EquivariantTransformer):
                 cell=None, 
                 num_atoms=None,
                 conditions=None, 
-                aatype=None, latt_feature=None, fragments_idx = None):
+                aatype=None, fragments_idx = None):
         B, T, N, _ = x.shape
         assert t.shape == (B,)
 
@@ -575,59 +575,50 @@ class EquivariantTransformer_dpm(EquivariantTransformer):
         elif self.potential_model:
             return scaler_out.reshape(B, T, N, -1)
         else:
-            if latt_feature is not None:
-                raise Exception("Lattice flow not implemented")
-
             return vector_out.reshape(B, T, N, -1)
         
     def forward(self, x: Tensor, t: Tensor, 
                 cell=None, 
                 num_atoms=None,
                 conditions=None,
-                aatype=None, x_latt=None, x1=None, v_mask=None, latt_feature=None, fragments_idx = None):
+                aatype=None, x_latt=None, x1=None, v_mask=None, fragments_idx = None):
         if self.design:
             x_ = x_latt
             aatype_ = x
             if v_mask is not None: x_ = x_*v_mask+x1*(1-v_mask)
-            scaler_out = self.inference(x_, t, cell, num_atoms, conditions, aatype_, latt_feature=latt_feature, fragments_idx=fragments_idx)
+            scaler_out = self.inference(x_, t, cell, num_atoms, conditions, aatype_, fragments_idx=fragments_idx)
             return scaler_out*v_mask
         elif self.potential_model:
             if v_mask is not None:
                 x = x*v_mask+x1*(1-v_mask)
-            scaler_out = self.inference(x, t, cell, num_atoms, conditions, aatype)
+            scaler_out = self.inference(x, t, cell, num_atoms, aatype=aatype, fragments_idx=fragments_idx)
+            assert (torch.where(v_mask.ravel() == 0)[0]).size(0) + (torch.where((1-v_mask).ravel() == 0)[0]).size(0) == (v_mask.ravel()).size(0)
             return scaler_out
         else:
             if v_mask is not None: x = x*v_mask+x1*(1-v_mask)
-            if latt_feature is not None:
-                assert not torch.isnan(latt_feature['cell']).any()
-                vector_out = self.inference(x, t, latt_feature['cell'], num_atoms, conditions, aatype, latt_feature=latt_feature, fragments_idx=fragments_idx)
-            else:
-                vector_out = self.inference(x, t, cell, num_atoms, conditions, aatype, fragments_idx=fragments_idx)
+            vector_out = self.inference(x, t, cell, num_atoms, conditions, aatype, fragments_idx=fragments_idx)
             return vector_out*v_mask
 
     def forward_inference(self, x: Tensor, t: Tensor, 
                 cell=None, 
                 num_atoms=None,
                 conditions=None,
-                aatype=None, x_latt=None, x1=None, v_mask=None, latt_feature=None, fragments_idx = None):
+                aatype=None, x_latt=None, x1=None, v_mask=None, fragments_idx = None):
         if self.design:
             x_ = x_latt
             aatype_ = x
             if v_mask is not None:
                 x_ = x_*v_mask+x1*(1-v_mask)
-            scaler_out = self.inference(x_, t, cell, num_atoms, conditions, aatype_, latt_feature, fragments_idx=fragments_idx)
+            scaler_out = self.inference(x_, t, cell, num_atoms, conditions, aatype_, fragments_idx=fragments_idx)
             return scaler_out*v_mask
         elif self.potential_model:
             if v_mask is not None:
                 x = x*v_mask+x1*(1-v_mask)
-            scaler_out = self.inference(x, t, cell, num_atoms, conditions, aatype)
+            scaler_out = self.inference(x, t, cell, num_atoms, aatype=aatype)
             return scaler_out
         else:
             x = x*v_mask+x1*(1-v_mask)
-            if latt_feature is not None:
-                vector_out = self.inference(x, t, latt_feature['cell'], num_atoms, conditions, aatype, latt_feature, fragments_idx=fragments_idx)
-            else:
-                vector_out = self.inference(x, t, cell, num_atoms, conditions, aatype, fragments_idx=fragments_idx)
+            vector_out = self.inference(x, t, cell, num_atoms, conditions, aatype, fragments_idx=fragments_idx)
             return vector_out*v_mask
     
     

@@ -179,8 +179,8 @@ class EquivariantMDGenWrapper(Wrapper):
             latent_dim = 3
             num_vector_out = 0
             self.potential_model = EquivariantTransformer_dpm(
-                encoder = Encoder_dpm(num_species, args.embed_dim, 3, args.edge_dim, input_dim=1),
-                processor = Processor(num_convs=args.num_convs, node_dim=args.embed_dim, num_heads=args.num_heads, ff_dim=args.ff_dim, edge_dim=args.edge_dim),
+                encoder = encoder,
+                processor = processor,
                 decoder = Decoder(dim=args.embed_dim, num_scalar_out=num_scalar_out, num_vector_out=num_vector_out, num_species=args.num_species),
                 cutoff=args.cutoff,
                 latent_dim=latent_dim,
@@ -190,6 +190,7 @@ class EquivariantMDGenWrapper(Wrapper):
                 tps_condition=args.tps_condition,
                 num_species=args.num_species,
                 pbc=args.pbc,
+                object_aware=args.object_aware
             )
         if args.path_type == "Schrodinger_Linear":
             print("Initializing score model")
@@ -408,7 +409,7 @@ class EquivariantMDGenWrapper(Wrapper):
             # forces = -torch.autograd.grad(energy, prep['latents'])[0]
             loss_energy = (((energy -prep["E"])**2)*prep['loss_mask_potential_model']).sum(-1)
             self.prefix_log('loss_energy', loss_energy)        
-            loss += loss_energy
+            loss += loss_energy * 0.1
         self.prefix_log('model_dur', time.time() - start)
         self.prefix_log('loss', loss)
 
