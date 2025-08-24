@@ -26,14 +26,14 @@ class ResetLrCallback(pl.Callback):
 
 torch.set_float32_matmul_precision('medium')
 
-train_dataset = torch.load(os.path.join(args.data_dir, "tps_masked_train-fragmented.pt"), weights_only=False)
+train_dataset = torch.load(os.path.join(args.data_dir, "tps_masked_train-fragmented_cutoffx1.5.pt"), weights_only=False)
 trainsampler = BucketBatchSampler(train_dataset, batch_size=args.batch_size)
 
 if args.overfit:
     val_dataset = train_dataset
     valsampler = trainsampler
 else:
-    val_dataset = torch.load(os.path.join(args.data_dir, "tps_masked_val-fragmented.pt"), weights_only=False)
+    val_dataset = torch.load(os.path.join(args.data_dir, "tps_masked_val-fragmented_cutoffx1.5.pt"), weights_only=False)
     valsampler = BucketBatchSampler(val_dataset, batch_size=args.batch_size)
 
 train_loader = torch.utils.data.DataLoader(
@@ -50,12 +50,6 @@ val_loader = torch.utils.data.DataLoader(
 
 model = EquivariantMDGenWrapper(args)
 
-# checkpoint = torch.load(args.ckpt, weights_only=False)
-# checkpoint["hyper_parameters"]['args'].pbc = False
-# checkpoint["hyper_parameters"]['args'].tps_condition = True
-# checkpoint["hyper_parameters"]['args'].potential_model = True
-# model = EquivariantMDGenWrapper(**checkpoint["hyper_parameters"])
-# model.load_state_dict(checkpoint["state_dict"], strict=False)
 
 if args.weight_loss_var_x0 > 0:
     callbacks_fn = [
@@ -94,13 +88,9 @@ else:
         ),
         ModelCheckpoint(
             dirpath=os.environ["MODEL_DIR"], 
+            filename="{epoch:03d}-{step:07d}-{val_meanRMSD_Kabsch:.4f}",
             save_top_k=1,
             monitor="val_meanRMSD_Kabsch",
-            every_n_epochs=args.ckpt_freq,
-        ),
-        ModelCheckpoint(
-            dirpath=os.environ["MODEL_DIR"], 
-            save_top_k=1,
             every_n_epochs=args.ckpt_freq,
         ),
         ModelSummary(max_depth=2),
