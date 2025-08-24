@@ -51,7 +51,7 @@ class ICPlan:
         """
         t = expand_t_like_x(t, x)
         choices = {
-            "constant": norm,
+            "constant": norm * th.ones_like(t, device=t.device),
             "SBDM": norm * self.compute_drift(x, t)[1],
             "sigma": norm * self.compute_sigma_t(t)[0],
             "linear": norm * (1 - t),
