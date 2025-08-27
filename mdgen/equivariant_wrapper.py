@@ -150,22 +150,22 @@ class EquivariantMDGenWrapper(Wrapper):
         elif args.pbc:
             num_scalar_out = 0
             num_vector_out=1
-            latent_dim = args.embed_dim
+            latent_dim = 256
         else:
             num_scalar_out = 0
             num_vector_out=1
             latent_dim = 3
         
-        encoder = Encoder_dpm(num_species, args.embed_dim, 3 + num_radial, args.edge_dim, input_dim=1, object_aware=args.object_aware)
-        processor = Processor(num_convs=args.num_convs, node_dim=args.embed_dim, num_heads=args.num_heads, ff_dim=args.ff_dim, edge_dim=args.edge_dim)
+        encoder = Encoder_dpm(num_species, 256, 3 + num_radial, 256, input_dim=1, object_aware=args.object_aware)
+        processor = Processor(num_convs=6, node_dim=256, num_heads=8, ff_dim=768, edge_dim=256)
         print("Initializing drift model")
         self.model = EquivariantTransformer_dpm(
             encoder = encoder,
             processor = processor,
-            decoder = Decoder(dim=args.embed_dim, num_scalar_out=num_scalar_out, num_vector_out=num_vector_out, num_species=args.num_species),
+            decoder = Decoder(dim=256, num_scalar_out=num_scalar_out, num_vector_out=num_vector_out, num_species=args.num_species),
             cutoff=args.cutoff,
             latent_dim=latent_dim,
-            embed_dim=args.embed_dim,
+            embed_dim=256,
             num_radial = num_radial,
             design=args.design,
             potential_model = False,
@@ -181,7 +181,7 @@ class EquivariantMDGenWrapper(Wrapper):
             self.potential_model = EquivariantTransformer_dpm(
                 encoder = encoder,
                 processor = processor,
-                decoder = Decoder(dim=args.embed_dim, num_scalar_out=num_scalar_out, num_vector_out=num_vector_out, num_species=args.num_species),
+                decoder = Decoder(dim=512, num_scalar_out=num_scalar_out, num_vector_out=num_vector_out, num_species=args.num_species),
                 cutoff=args.cutoff,
                 latent_dim=latent_dim,
                 embed_dim=args.embed_dim,

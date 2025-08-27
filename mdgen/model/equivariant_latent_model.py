@@ -27,10 +27,10 @@ class Encoder(nn.Module):
         
         # self.embed_atom = nn.Embedding(num_species, node_dim)
         self.embed_atom = nn.Linear(self.num_species, node_dim)
-        self.embed_bond = MLP([init_edge_dim, edge_dim, edge_dim], act=nn.SiLU())
-        self.phi_s = MLP([node_dim*2 + edge_dim, edge_dim, node_dim], act=nn.SiLU())
+        self.embed_bond = MLP([init_edge_dim, edge_dim, node_dim], act=nn.SiLU())
+        self.phi_s = MLP([node_dim*2 + node_dim, edge_dim, node_dim], act=nn.SiLU())
         self.phi_h = MLP([node_dim*2,            edge_dim, node_dim], act=nn.SiLU())
-        self.phi_v = MLP([node_dim*2 + edge_dim, edge_dim, node_dim], act=nn.SiLU())
+        self.phi_v = MLP([node_dim*2 + node_dim, edge_dim, node_dim], act=nn.SiLU())
 
     def forward(self, species: Tensor, edge_index: Tensor, edge_attr: Tensor, edge_vec: Tensor) -> Tuple[Tensor, Tensor, Tensor]:
         num_nodes = len(species)
@@ -60,8 +60,8 @@ class Encoder_dpm(Encoder):
             MLP([node_dim, edge_dim, node_dim], act=nn.SiLU()),
         )
         if object_aware:
-            self.phi_s_object_aware = MLP([node_dim*2 + edge_dim + node_dim*2, edge_dim, node_dim], act=nn.SiLU())
-            self.phi_v_object_aware = MLP([node_dim*2 + edge_dim + node_dim*2, edge_dim, node_dim], act=nn.SiLU())
+            self.phi_s_object_aware = MLP([node_dim*2 + node_dim + node_dim*2, edge_dim, node_dim], act=nn.SiLU())
+            self.phi_v_object_aware = MLP([node_dim*2 + node_dim + node_dim*2, edge_dim, node_dim], act=nn.SiLU())
         self.object_aware = object_aware
 
     def forward(self, species: Tensor, edge_index: Tensor, edge_attr: Tensor, edge_vec: Tensor, t: Tensor, sub_graph_mask=None) -> Tuple[Tensor, Tensor, Tensor, Tensor]:
@@ -252,6 +252,8 @@ def get_subgraph_mask(edge_index: Tensor, n_frag_switch: Tensor) -> Tensor:
     in_same_frag = n_frag_switch[edge_index[0]] == n_frag_switch[edge_index[1]]
     return in_same_frag.to(torch.int64)
 
+from torch_geometric.utils import to_dense_adj
+
 class EquivariantTransformer_dpm(EquivariantTransformer):
     def __init__(self, encoder, processor, decoder, cutoff, latent_dim, embed_dim, num_radial=96, otf_graph = True, design=False, potential_model=False, tps_condition=False, abs_time_emb=False, num_frames=None, num_species=5, pbc=True, object_aware=False):
         super().__init__(encoder, processor, decoder)
@@ -302,23 +304,67 @@ class EquivariantTransformer_dpm(EquivariantTransformer):
             print("WARNING:: tps_condition not implemented for when species of the TS is different from the R or P")
         
     def scalarize(self, x, edge_index, edge_vec, lattice, to_jimages, num_bonds):
-        num_nodes = x.shape[0]
         row, col = edge_index[0], edge_index[1]
+        # --- Offsets to bring neighbors into the same image as the center ---
+        # lattice: [B,3,3] or [1,3,3]; to_jimages: [E,3]; num_bonds: [B] counts per structure
+        lattice_edges = torch.repeat_interleave(lattice, num_bonds, dim=0)         # [E,3,3]
+        offsets = torch.einsum('ej,ejk->ek', to_jimages.float(), lattice_edges)     # [E,3]
+        xj = x[col] + offsets     
+
         e1 = edge_vec / edge_vec.norm(dim=-1, keepdim=True)
-
-        lattice_edges = torch.repeat_interleave(lattice, num_bonds, dim=0)
-        offsets = torch.einsum("bi,bij->bj", to_jimages.float(), lattice_edges)
-
-        e2 = torch.cross(x[row], (x[col]+ offsets), dim=-1)
-        e2 = e2/e2.norm(dim=-1, keepdim=True)
-        e3 = torch.linalg.cross(e1, e2)
-        # Fij  = torch.stack([e1, e2, e3], dim=1)                  # [E,3,3]
-
-        radial_emb_dist = self.radial_emb(edge_vec.norm(dim=-1))
-
-        Sij = torch.hstack([(x[row]*e1).sum(-1, keepdim=True), (x[row]*e2).sum(-1, keepdim=True), (x[row]*e3).sum(-1, keepdim=True), radial_emb_dist])  # dim=edge_index.shape[1]
         
+        com_i = scatter_mean(xj, row, dim=0, dim_size=x.size(0))                    # [N,3]
+        ui = com_i[row] - x[row]      
+        # Gram–Schmidt with fallback
+        ui_proj = ui - (ui * e1).sum(-1, keepdim=True) * e1
+        # ui_norm = ui_proj.norm(dim=-1, keepdim=True)
+        # # fallback: project a fixed axis if nearly degenerate
+        # fallback = torch.tensor([1.0, 0.0, 0.0], device=x.device).expand_as(ui_proj)
+        # fb_proj = fallback - (fallback * e1).sum(-1, keepdim=True) * e1
+        # use_fb = (ui_norm < 1e-9)
+        # ui_proj = torch.where(use_fb, fb_proj, ui_proj)
+        e2 = ui_proj / (ui_proj.norm(dim=-1, keepdim=True) + 1e-12)
+
+        # Complete the right-handed frame
+        e3 = torch.cross(e1, e2, dim=-1)  # or torch.linalg.cross
+        
+        radial = self.radial_emb(edge_vec.norm(dim=-1))   # [E, d]
+
+        s1 = (edge_vec * e1).sum(-1, keepdim=True)        # ≈ ||r|| by construction
+        s2 = (edge_vec * e2).sum(-1, keepdim=True)
+        s3 = (edge_vec * e3).sum(-1, keepdim=True)
+        Sij = torch.hstack([s1, s2, s3, radial]) 
+        
+        # Node-wise primary axis: from neighbor COM to node (relative)
+        e1_i = (x - com_i)
+        e1_i = e1_i / (e1_i.norm(dim=-1, keepdim=True))
+        
+        # Auxiliary direction: e.g., mean of normalized incoming relative edges to i
+        # This is rotation-equivariant and translation-invariant.
+        unit_edges_to_i = -edge_vec / edge_vec.norm(dim=-1, keepdim=True)
+        u_i = scatter_mean(unit_edges_to_i, row, dim=0, dim_size=x.size(0))  # [N,3]
+        
+        u_i_proj = u_i - (u_i * e1_i).sum(-1, keepdim=True) * e1_i
+        # u_i_norm = u_i_proj.norm(dim=-1, keepdim=True)
+        # # node-level fallback (project a fixed axis)
+        # fallback_n = torch.tensor([0.0, 1.0, 0.0], device=x.device).expand_as(u_i_proj)
+        # fb_n_proj = fallback_n - (fallback_n * e1_i).sum(-1, keepdim=True) * e1_i
+        # use_fb_n = (u_i_norm < 1e-9)
+        # u_i_proj = torch.where(use_fb_n, fb_n_proj, u_i_proj)
+        e2_i = u_i_proj / (u_i_proj.norm(dim=-1, keepdim=True) + 1e-12)
+        e3_i = torch.cross(e1_i, e2_i, dim=-1)
+        
+        Fi = torch.stack([e1_i, e2_i, e3_i], dim=1)  # [N, 3, 3]
+        self.Fi = Fi
+
         return Sij
+    
+    
+    def FTE_tensorize(self, V):
+        alpha = torch.einsum('nck,njk->ncj', V, self.Fi)      # [N, C, 3] local components
+        V_loc = torch.einsum('ncj,njk->nck', alpha, self.Fi)  # back to global
+        return V_loc
+
 
 
     def _graph_forward(self, species: Tensor, edge_index: Tensor, edge_attr: Tensor, edge_vec: Tensor, t: Tensor, out_cond=None, sub_graph_mask=None) -> Tuple[Tensor, Tensor]:

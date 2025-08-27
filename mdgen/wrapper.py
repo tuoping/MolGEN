@@ -167,14 +167,14 @@ class Wrapper(pl.LightningModule):
 
     def configure_optimizers(self):
         if not self.args.lr_decay:
-            opt = torch.optim.AdamW(self.parameters(), lr=1e-4)
+            opt = torch.optim.AdamW(self.parameters(), lr=5e-4)
             return opt
         else:
             # linear warmup to 1e-4 over W epochs, then cosine back to 3e-5
-            W = 5  # warmup epochs
-            max_lr = 3e-4
-            T = 900 + W  # cosine length (adjust)
-            base, min_lr = 1e-4, 3e-5
+            W = 0  # warmup epochs
+            max_lr = 1e-4
+            T = 600 + W  # cosine length (adjust)
+            base, min_lr = 5e-4, 3e-5
             if W < 1: max_lr = base
         
             opt = torch.optim.AdamW(self.parameters(), lr=base)

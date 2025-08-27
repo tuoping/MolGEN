@@ -133,15 +133,14 @@ def so3_random(device):
     if torch.linalg.det(Q) < 0: Q[:,0] = -Q[:,0]
     return Q
 
-R = so3_random(x.device)
-print(R)
+R = torch.rand(3)
 
 ## Rotate Fi
 Fi      = model.model.Fi.clone()              # [N,3,3]
-Fi_rot  = Fi@R.T
+Fi_rot  = Fi
 
-x_r = x @ R.T   
-cell_r = cell @ R.T
+x_r = x + R
+cell_r = cell
 edge_index_r, to_jimages_r, num_bonds_r = radius_graph_pbc(
     cart_coords=x_r.view(-1, 3),
     lattice=cell_r.view(-1, 3, 3),
@@ -163,7 +162,7 @@ out_r = get_pbc_distances(
     return_distance_vec=True,
 )
 edge_vec_r = out_r['distance_vec']
-assert torch.allclose(edge_vec_r, edge_vec @ R.T, atol=1e-7)
+assert torch.allclose(edge_vec_r, edge_vec, atol=1e-7)
 edge_attr_r = model.model.scalarize(x_r.view(-1, 3), edge_index_r, edge_vec_r, cell_r.view(-1,3,3), to_jimages_r, num_bonds_r)
 
 def vec_err(A, B, eps=1e-12):
@@ -175,7 +174,7 @@ def vec_err(A, B, eps=1e-12):
 # Edge frame primary axis (should already hold if your earlier assert on edge_vec_r passes)
 e1     = edge_vec / edge_vec.norm(dim=-1, keepdim=True)
 e1_r   = edge_vec_r / edge_vec_r.norm(dim=-1, keepdim=True)
-print('edge_vec_err =', (e1_r - e1 @ R.T).abs().max().item())
+print('edge_vec_err =', (e1_r - e1 ).abs().max().item())
 # print('com_err =', (com_i_r - com_i @ R.T).abs().max().item())
 
 # H_r, V_r = _encoder(species.view(-1, model.model.num_species), edge_index_r, edge_attr_r, edge_vec_r)
@@ -193,10 +192,10 @@ orth_err = (torch.linalg.norm(torch.einsum('nij,nkj->nik', Fi,   Fi)   - I) +
             torch.linalg.norm(torch.einsum('nij,nkj->nik', Fi_r, Fi_r) - I)).item()
 print('orth_err =', orth_err)
 
-print("raw V err =", vec_err(V_r, V @ R.T).item())
-print("after FTE err =", vec_err(fte_V_r, fte_V @ R.T).item())
+print("raw V err =", vec_err(V_r, V).item())
+print("after FTE err =", vec_err(fte_V_r, fte_V).item())
 
 print("h err =", ((H-H_r).abs()/H.abs()).max())
 assert torch.allclose(H, H_r, rtol=1e-3)
-assert torch.allclose(V_r, V @ R.T, rtol=1e-3, atol=5e-5   )
-assert torch.allclose(fte_V_r, fte_V @ R.T, rtol=1e-3, atol=5e-5   )
+assert torch.allclose(V_r, V, rtol=1e-3, atol=5e-5   )
+assert torch.allclose(fte_V_r, fte_V, rtol=1e-3, atol=5e-5   )
