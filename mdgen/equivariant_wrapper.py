@@ -156,7 +156,7 @@ class EquivariantMDGenWrapper(Wrapper):
             num_vector_out=1
             latent_dim = 3
         
-        encoder = Encoder_dpm(num_species, 256, 3 + num_radial, 256, input_dim=1, object_aware=args.object_aware)
+        encoder = Encoder_dpm(num_species, 256, 16 + num_radial, 256, input_dim=1, object_aware=args.object_aware)
         processor = Processor(num_convs=6, node_dim=256, num_heads=8, ff_dim=768, edge_dim=256)
         print("Initializing drift model")
         self.model = EquivariantTransformer_dpm(

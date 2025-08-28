@@ -10,7 +10,7 @@ import copy
 
 from .nn.mlp import MLP
 from .nn.convs import EquivariantTransformerLayer
-from .nn.basis import GaussianRandomFourierFeatures, RBFEmb
+from .nn.basis import GaussianRandomFourierFeatures, EdgeCGBlock
 
 # Typing
 from torch import Tensor
@@ -246,94 +246,7 @@ def get_subgraph_mask(edge_index: Tensor, n_frag_switch: Tensor) -> Tensor:
 
 import torch
 from torch import Tensor
-
-from e3nn import o3
-
-def build_edge_attr_sph(
-    x: Tensor,                  # [N, 3] atom coordinates (cartesian)
-    edge_index: Tensor,         # [2, E]
-    lattice: Tensor | None,     # [B, 3, 3] or [1, 3, 3] (batched cell) or None (no PBC)
-    to_jimages: Tensor | None,  # [E, 3] integer shifts (only if PBC)
-    num_bonds: Tensor | None,   # [B] number of edges per structure (only if PBC)
-    cutoff: float,              # cutoff radius used to build the graph
-    lmax: int = 2,              # max degree for spherical harmonics
-    num_rbf: int = 32,          # # radial basis functions
-    rbf_gamma: float | None = None,  # width of Gaussians (auto if None)
-    eps: float = 1e-12,
-):
-    """
-    Returns:
-      edge_vec   : [E, 3]   minimum-image edge vectors r_ij
-      r_norm     : [E, 1]   ||r_ij||
-      rbf        : [E, num_rbf]      radial basis features
-      Ylm        : [E, sum_{l=0..lmax}(2l+1)]  real spherical harmonics of r_hat
-      edge_attr  : [E, num_rbf + sum(2l+1)]    concatenation (typical 'edge_attr')
-    """
-    row, col = edge_index
-
-    # --- Build minimum-image edge vectors r_ij ---
-    if lattice is not None and to_jimages is not None and num_bonds is not None:
-        # Repeat the cell per edge then compute offsets = M * cell
-        lattice_edges = torch.repeat_interleave(lattice, num_bonds, dim=0)      # [E,3,3]
-        offsets = torch.einsum("ej,ejk->ek", to_jimages.to(x.dtype), lattice_edges)  # [E,3]
-        xj = x[col] + offsets
-    else:
-        xj = x[col]
-
-    edge_vec = xj - x[row]                                  # [E, 3]
-    r_norm = torch.norm(edge_vec, dim=-1, keepdim=True).clamp_min(eps)
-    r_hat = edge_vec / r_norm                                # [E, 3]
-
-    # --- Radial basis (Gaussian RBF) ---
-    # Centers linearly spaced in [0, cutoff]; gamma auto-tuned to cover the interval
-    device = x.device
-    centers = torch.linspace(0.0, cutoff, num_rbf, device=device)
-    if rbf_gamma is None:
-        # heuristic: neighboring centers ~ 3σ apart
-        delta = centers[1] - centers[0] if num_rbf > 1 else cutoff
-        rbf_gamma = 1.0 / (delta ** 2 + eps)
-    rbf = torch.exp(-rbf_gamma * (r_norm - centers.view(1, -1)) ** 2)  # [E, num_rbf]
-
-    # --- Real spherical harmonics Y_lm(r_hat) ---
-    # if use_e3nn and _HAS_E3NN:
-    # e3nn expects unit vectors; set normalize=True to ignore radius
-    irreps_list = list(range(lmax + 1))  # l = 0..lmax
-    # Returns concatenated components for l=0..lmax with ordering m=-l..l (real form)
-    Ylm = o3.spherical_harmonics(
-        irreps_list, r_hat, normalize=True, normalization='component'
-    )  # [E, sum_{l}(2l+1)]
-    '''
-    else:
-        # Minimal fallback (no e3nn): implement real SH up to l=2
-        # For higher l, install e3nn.
-        xh, yh, zh = r_hat.unbind(-1)
-        # l=0
-        Y0 = 0.5 / torch.sqrt(torch.tensor(torch.pi, device=device)) * torch.ones_like(xh)  # Y00
-        comps = [Y0]
-        if lmax >= 1:
-            # real SH (Condon-Shortley, 'physics' convention), normalization compatible with e3nn 'component'
-            # Y1-1 ~ y, Y10 ~ z, Y11 ~ x
-            c = torch.sqrt(torch.tensor(3.0/(4.0*torch.pi), device=device))
-            comps += [c * yh, c * zh, c * xh]
-        if lmax >= 2:
-            # A simple set of 5 real SH l=2; not exactly e3nn's normalization but OK as fallback
-            c = torch.sqrt(torch.tensor(15.0/(4.0*torch.pi), device=device))
-            Y2m2 = c * xh * yh
-            Y2m1 = c * yh * zh
-            Y20  = torch.sqrt(torch.tensor(5.0/(16.0*torch.pi), device=device)) * (3*zh*zh - 1)
-            Y21  = c * xh * zh
-            Y22  = torch.sqrt(torch.tensor(15.0/(16.0*torch.pi), device=device)) * (xh*xh - yh*yh)
-            comps += [Y2m2, Y2m1, Y20, Y21, Y22]
-        Ylm = torch.stack(comps, dim=-1)  # [E, sum(2l+1)]
-    '''
-
-    # --- Final edge_attr (scalars only) ---
-    edge_attr = torch.cat([rbf, Ylm], dim=-1)               # [E, num_rbf + sum(2l+1)]
-
-    return edge_vec, r_norm, rbf, Ylm, edge_attr
-
-
-from torch_geometric.utils import to_dense_adj
+import torch.nn as nn
 
 class EquivariantTransformer_dpm(EquivariantTransformer):
     def __init__(self, encoder, processor, decoder, cutoff, latent_dim, embed_dim, num_radial=96, otf_graph = True, design=False, potential_model=False, tps_condition=False, abs_time_emb=False, num_frames=None, num_species=5, pbc=True, object_aware=False):
@@ -345,7 +258,14 @@ class EquivariantTransformer_dpm(EquivariantTransformer):
         self.tps_condition = tps_condition
         self.pbc = pbc
 
-        self.radial_emb = RBFEmb(num_radial, self.cutoff)
+        node_irreps = [(32, (0, +1))]                 # 32x0e
+        msg_irreps  = [(64, (0, +1)), (16, (1, -1))]  # 64x0e + 16x1o
+        self.edge_block = EdgeCGBlock(node_irreps, msg_irreps, lmax=2, num_rbf=num_radial, cutoff=self.cutoff)
+        self.embed_atom = nn.Sequential(
+            nn.Linear(num_species, 32, bias=False),  # learnable per-species weights
+            nn.SiLU(),
+            nn.Linear(32, 32)
+        )
 
         self.max_num_neighbors_threshold = 50
         self.max_cell_images_per_dim = 5
@@ -384,7 +304,7 @@ class EquivariantTransformer_dpm(EquivariantTransformer):
             print("WARNING:: tps_condition not implemented for when cell of the TS is different from the R or P")
             print("WARNING:: tps_condition not implemented for when species of the TS is different from the R or P")
         
-    def scalarize(self, x, edge_index, edge_vec, lattice, to_jimages, num_bonds):
+    def LSE_scalarize(self, x, edge_index, edge_vec, lattice, to_jimages, num_bonds):
         row, col = edge_index[0], edge_index[1]
         # --- Offsets to bring neighbors into the same image as the center ---
         # lattice: [B,3,3] or [1,3,3]; to_jimages: [E,3]; num_bonds: [B] counts per structure
@@ -455,12 +375,17 @@ class EquivariantTransformer_dpm(EquivariantTransformer):
         if self.tps_condition and out_cond is not None:
             if self.pbc:
                 with torch.no_grad():
+                    '''
                     edge_attr_cond_f = self.scalarize(out_cond['cond_f']['x'], 
                                                       out_cond['cond_f']["edge_index"], 
                                                       out_cond['cond_f']['distance_vec'], 
                                                       out_cond['cond_f']['cell'], 
                                                       out_cond['cond_f']['to_jimages'],
                                                       out_cond['cond_f']['num_bonds'])
+                    '''
+                    edge_attr_cond_f = self.edge_block(self.embed_atom(out_cond['species'].view(-1, self.num_species)), 
+                                                        out_cond['cond_f']["edge_index"], 
+                                                        out_cond['cond_f']['distance_vec'])
                     cond_f, v_cond_f, edge_attr_cond_f = self.encoder(
                         out_cond['species'].view(-1,self.num_species), 
                         out_cond['cond_f']['edge_index'], 
@@ -469,12 +394,17 @@ class EquivariantTransformer_dpm(EquivariantTransformer):
                         torch.ones([*out_cond['species'].shape[:-1],1], device=out_cond['species'].device).reshape(-1,1), 
                         out_cond['cond_f']['sub_graph_mask']
                         )
+                    '''
                     edge_attr_cond_r = self.scalarize(out_cond['cond_r']['x'], 
                                                       out_cond['cond_r']["edge_index"], 
                                                       out_cond['cond_r']['distance_vec'], 
                                                       out_cond['cond_r']['cell'], 
                                                       out_cond['cond_r']['to_jimages'],
                                                       out_cond['cond_r']['num_bonds'])
+                    '''
+                    edge_attr_cond_r = self.edge_block(self.embed_atom(out_cond['species'].view(-1, self.num_species)), 
+                                                        out_cond['cond_r']["edge_index"], 
+                                                        out_cond['cond_r']['distance_vec'])
                     cond_r, v_cond_r, edge_attr_cond_r = self.encoder(
                         out_cond['species'].view(-1,self.num_species), 
                         out_cond['cond_r']['edge_index'], 
@@ -509,12 +439,17 @@ class EquivariantTransformer_dpm(EquivariantTransformer):
                         edge_index_cond = out_cond["edge_index"]
                         edge_len_cond = out_cond["distances"]
                         edge_vec_cond = out_cond["distance_vec"]
+                        '''
                         edge_attr_cond = self.scalarize(out_cond['cond']['x'], 
                                                       out_cond['cond']["edge_index"], 
                                                       out_cond['cond']['distance_vec'], 
                                                       out_cond['cond']['cell'], 
                                                       out_cond['cond']['to_jimages'],
                                                       out_cond['cond']['num_bonds'])
+                        '''
+                        edge_attr_cond_f = self.edge_block(self.embed_atom(out_cond['species'].view(-1, self.num_species)), 
+                                                        out_cond['cond']["edge_index"], 
+                                                        out_cond['cond']['distance_vec'])
                         species_cond = out_cond["species"]
                         h_cond, v_cond, edge_attr_cond = self.encoder(
                             species_cond.view(-1,self.num_species), 
@@ -684,7 +619,8 @@ class EquivariantTransformer_dpm(EquivariantTransformer):
         edge_index = out["edge_index"]
         edge_len = out["distances"]
         edge_vec = out["distance_vec"]
-        edge_attr = self.scalarize(x.view(-1,3), edge_index, edge_vec, cell.view(-1,3,3), to_jimages, num_bonds)
+        # edge_attr = self.scalarize(x.view(-1,3), edge_index, edge_vec, cell.view(-1,3,3), to_jimages, num_bonds)
+        edge_attr = self.edge_block(self.embed_atom(species.view(-1, self.num_species)), edge_index, edge_vec)
 
         t = t.unsqueeze(-1).unsqueeze(1).expand(-1,T,-1).unsqueeze(2).expand(-1,-1,N,-1)
         if aatype is not None:
