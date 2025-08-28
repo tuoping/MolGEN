@@ -60,8 +60,9 @@ class Encoder_dpm(Encoder):
             MLP([node_dim, edge_dim, node_dim], act=nn.SiLU()),
         )
         if object_aware:
-            self.phi_s_object_aware = MLP([node_dim*2 + node_dim + node_dim*2, edge_dim, node_dim], act=nn.SiLU())
-            self.phi_v_object_aware = MLP([node_dim*2 + node_dim + node_dim*2, edge_dim, node_dim], act=nn.SiLU())
+            self.phi_s_cross = MLP([node_dim*2, edge_dim, node_dim], act=nn.SiLU())
+            self.phi_h_cross = MLP([node_dim*2, edge_dim, node_dim], act=nn.SiLU())
+            self.phi_fuse = MLP([node_dim*2, edge_dim, node_dim], act=nn.SiLU())
         self.object_aware = object_aware
 
     def forward(self, species: Tensor, edge_index: Tensor, edge_attr: Tensor, edge_vec: Tensor, t: Tensor, sub_graph_mask=None) -> Tuple[Tensor, Tensor, Tensor, Tensor]:
@@ -73,7 +74,9 @@ class Encoder_dpm(Encoder):
             return self.forward_object_aware(species, edge_index, edge_attr, edge_vec, t, sub_graph_mask)
 
 
-    def cross_graph(self, species: Tensor, edge_index: Tensor, edge_attr: Tensor, edge_vec: Tensor, sub_graph_mask: Tensor) -> Tuple[Tensor, Tensor, Tensor, Tensor]:
+    def forward_object_aware(self, species: Tensor, edge_index: Tensor, edge_attr: Tensor, edge_vec: Tensor, t: Tensor, sub_graph_mask=None) -> Tuple[Tensor, Tensor, Tensor, Tensor]:
+        # h_cross = self.cross_graph(species, edge_index, edge_attr[:,3:], edge_vec, sub_graph_mask == 0)
+
         num_nodes = len(species)
         i = edge_index[0]
         j = edge_index[1]
@@ -89,32 +92,21 @@ class Encoder_dpm(Encoder):
             f, scatter(self.phi_s(e) * f[i]*sub_graph_mask[:,None], index=j, dim=0, dim_size=num_nodes)
         ], dim=-1))
 
-        return h0      
-
-    def forward_object_aware(self, species: Tensor, edge_index: Tensor, edge_attr: Tensor, edge_vec: Tensor, t: Tensor, sub_graph_mask=None) -> Tuple[Tensor, Tensor, Tensor, Tensor]:
-        h_cross = self.cross_graph(species, edge_index, edge_attr, edge_vec, sub_graph_mask == 0)
-
-        num_nodes = len(species)
-        i = edge_index[0]
-        j = edge_index[1]
-
-        # Embed node and edge features
-        f         = self.embed_atom(species)
-        edge_attr = self.embed_bond(edge_attr)
-
-        # Convolve node features
-        e  = torch.cat([f[i]*sub_graph_mask[:,None], f[j]*sub_graph_mask[:,None], edge_attr*sub_graph_mask[:,None], h_cross[i], h_cross[j]], dim=-1)
-
-        h0 = self.phi_h(torch.cat([
-            f, scatter(self.phi_s_object_aware(e) * f[i]*sub_graph_mask[:,None], index=j, dim=0, dim_size=num_nodes)
-        ], dim=-1))
-
         # Initialize vector features
-        v0 = scatter((edge_vec * sub_graph_mask[:, None] )[:, None, :] * self.phi_v_object_aware(e)[:, :, None], index=j, dim=0, dim_size=num_nodes)
+        v0 = scatter((edge_vec * sub_graph_mask[:, None] )[:, None, :] * self.phi_v(e)[:, :, None], index=j, dim=0, dim_size=num_nodes)
 
+        # ---------------- 2) CROSS-OBJECT SCALAR PASS (NO GEOMETRY) ----------------
+        h0_i, h0_j = h0[i], h0[j]
+        m_cross = self.phi_s_cross(torch.cat([h0_i, h0_j], dim=1)) * (1-sub_graph_mask[:,None])
+
+        h0_cross= self.phi_h_cross(
+            torch.cat([h0, scatter(m_cross, index=j, dim=0, dim_size=num_nodes)], dim=1)
+
+        )
+        h_out = self.phi_fuse(torch.cat([h0, h0_cross], dim=-1))
         # Add time embedding to node features
-        h0 = h0 + self.embed_time(t)
-        return h0, v0, edge_attr
+        h_out = h_out + self.embed_time(t)
+        return h_out, v0, edge_attr
 
 
     def forward_generic(self, species: Tensor, edge_index: Tensor, edge_attr: Tensor, edge_vec: Tensor, t: Tensor) -> Tuple[Tensor, Tensor, Tensor, Tensor]:
@@ -252,6 +244,95 @@ def get_subgraph_mask(edge_index: Tensor, n_frag_switch: Tensor) -> Tensor:
     in_same_frag = n_frag_switch[edge_index[0]] == n_frag_switch[edge_index[1]]
     return in_same_frag.to(torch.int64)
 
+import torch
+from torch import Tensor
+
+from e3nn import o3
+
+def build_edge_attr_sph(
+    x: Tensor,                  # [N, 3] atom coordinates (cartesian)
+    edge_index: Tensor,         # [2, E]
+    lattice: Tensor | None,     # [B, 3, 3] or [1, 3, 3] (batched cell) or None (no PBC)
+    to_jimages: Tensor | None,  # [E, 3] integer shifts (only if PBC)
+    num_bonds: Tensor | None,   # [B] number of edges per structure (only if PBC)
+    cutoff: float,              # cutoff radius used to build the graph
+    lmax: int = 2,              # max degree for spherical harmonics
+    num_rbf: int = 32,          # # radial basis functions
+    rbf_gamma: float | None = None,  # width of Gaussians (auto if None)
+    eps: float = 1e-12,
+):
+    """
+    Returns:
+      edge_vec   : [E, 3]   minimum-image edge vectors r_ij
+      r_norm     : [E, 1]   ||r_ij||
+      rbf        : [E, num_rbf]      radial basis features
+      Ylm        : [E, sum_{l=0..lmax}(2l+1)]  real spherical harmonics of r_hat
+      edge_attr  : [E, num_rbf + sum(2l+1)]    concatenation (typical 'edge_attr')
+    """
+    row, col = edge_index
+
+    # --- Build minimum-image edge vectors r_ij ---
+    if lattice is not None and to_jimages is not None and num_bonds is not None:
+        # Repeat the cell per edge then compute offsets = M * cell
+        lattice_edges = torch.repeat_interleave(lattice, num_bonds, dim=0)      # [E,3,3]
+        offsets = torch.einsum("ej,ejk->ek", to_jimages.to(x.dtype), lattice_edges)  # [E,3]
+        xj = x[col] + offsets
+    else:
+        xj = x[col]
+
+    edge_vec = xj - x[row]                                  # [E, 3]
+    r_norm = torch.norm(edge_vec, dim=-1, keepdim=True).clamp_min(eps)
+    r_hat = edge_vec / r_norm                                # [E, 3]
+
+    # --- Radial basis (Gaussian RBF) ---
+    # Centers linearly spaced in [0, cutoff]; gamma auto-tuned to cover the interval
+    device = x.device
+    centers = torch.linspace(0.0, cutoff, num_rbf, device=device)
+    if rbf_gamma is None:
+        # heuristic: neighboring centers ~ 3σ apart
+        delta = centers[1] - centers[0] if num_rbf > 1 else cutoff
+        rbf_gamma = 1.0 / (delta ** 2 + eps)
+    rbf = torch.exp(-rbf_gamma * (r_norm - centers.view(1, -1)) ** 2)  # [E, num_rbf]
+
+    # --- Real spherical harmonics Y_lm(r_hat) ---
+    # if use_e3nn and _HAS_E3NN:
+    # e3nn expects unit vectors; set normalize=True to ignore radius
+    irreps_list = list(range(lmax + 1))  # l = 0..lmax
+    # Returns concatenated components for l=0..lmax with ordering m=-l..l (real form)
+    Ylm = o3.spherical_harmonics(
+        irreps_list, r_hat, normalize=True, normalization='component'
+    )  # [E, sum_{l}(2l+1)]
+    '''
+    else:
+        # Minimal fallback (no e3nn): implement real SH up to l=2
+        # For higher l, install e3nn.
+        xh, yh, zh = r_hat.unbind(-1)
+        # l=0
+        Y0 = 0.5 / torch.sqrt(torch.tensor(torch.pi, device=device)) * torch.ones_like(xh)  # Y00
+        comps = [Y0]
+        if lmax >= 1:
+            # real SH (Condon-Shortley, 'physics' convention), normalization compatible with e3nn 'component'
+            # Y1-1 ~ y, Y10 ~ z, Y11 ~ x
+            c = torch.sqrt(torch.tensor(3.0/(4.0*torch.pi), device=device))
+            comps += [c * yh, c * zh, c * xh]
+        if lmax >= 2:
+            # A simple set of 5 real SH l=2; not exactly e3nn's normalization but OK as fallback
+            c = torch.sqrt(torch.tensor(15.0/(4.0*torch.pi), device=device))
+            Y2m2 = c * xh * yh
+            Y2m1 = c * yh * zh
+            Y20  = torch.sqrt(torch.tensor(5.0/(16.0*torch.pi), device=device)) * (3*zh*zh - 1)
+            Y21  = c * xh * zh
+            Y22  = torch.sqrt(torch.tensor(15.0/(16.0*torch.pi), device=device)) * (xh*xh - yh*yh)
+            comps += [Y2m2, Y2m1, Y20, Y21, Y22]
+        Ylm = torch.stack(comps, dim=-1)  # [E, sum(2l+1)]
+    '''
+
+    # --- Final edge_attr (scalars only) ---
+    edge_attr = torch.cat([rbf, Ylm], dim=-1)               # [E, num_rbf + sum(2l+1)]
+
+    return edge_vec, r_norm, rbf, Ylm, edge_attr
+
+
 from torch_geometric.utils import to_dense_adj
 
 class EquivariantTransformer_dpm(EquivariantTransformer):
@@ -307,13 +388,13 @@ class EquivariantTransformer_dpm(EquivariantTransformer):
         row, col = edge_index[0], edge_index[1]
         # --- Offsets to bring neighbors into the same image as the center ---
         # lattice: [B,3,3] or [1,3,3]; to_jimages: [E,3]; num_bonds: [B] counts per structure
-        lattice_edges = torch.repeat_interleave(lattice, num_bonds, dim=0)         # [E,3,3]
-        offsets = torch.einsum('ej,ejk->ek', to_jimages.float(), lattice_edges)     # [E,3]
-        xj = x[col] + offsets     
+        # lattice_edges = torch.repeat_interleave(lattice, num_bonds, dim=0)         # [E,3,3]
+        # offsets = torch.einsum('ej,ejk->ek', to_jimages.float(), lattice_edges)     # [E,3]
+        # xj = x[col] + offsets     
 
         e1 = edge_vec / edge_vec.norm(dim=-1, keepdim=True)
         
-        com_i = scatter_mean(xj, row, dim=0, dim_size=x.size(0))                    # [N,3]
+        com_i = scatter_mean(edge_vec, row, dim=0, dim_size=x.size(0))                    # [N,3]
         ui = com_i[row] - x[row]      
         # Gram–Schmidt with fallback
         ui_proj = ui - (ui * e1).sum(-1, keepdim=True) * e1

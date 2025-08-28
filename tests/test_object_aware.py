@@ -144,12 +144,11 @@ out_r = get_pbc_distances(
 edge_vec_r = out_r['distance_vec']
 edge_attr_r = model.model.scalarize(x_r.view(-1, 3), edge_index_r, edge_vec_r, cell.view(-1,3,3), to_jimages_r, num_bonds_r)
 
-print((sub_graph_mask!=sub_graph_mask_r).sum(dim=-1))
-
 H_r, V_r, edge_attr_r = model.model.encoder(species.view(-1, model.model.num_species), edge_index_r, edge_attr_r, edge_vec_r, t, sub_graph_mask_r)
-assert torch.allclose(H, H_r, atol=1e-4)
+print("h err =", ((H-H_r).abs()/H.abs()).max())
+assert torch.allclose(H, H_r, rtol=1e-3)
 
 fragments_idx_V = prep['model_kwargs']['fragments_idx'].reshape(-1).unsqueeze(-1).unsqueeze(-1)
 
 V_benchmark = V @ R.T * (fragments_idx_V == 0) + V * (fragments_idx_V != 0)
-assert torch.allclose(V_r, V_benchmark, atol=1e-3)
+assert torch.allclose(V_r, V_benchmark, rtol=1e-3, atol=5e-5)
