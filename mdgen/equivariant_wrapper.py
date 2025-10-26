@@ -158,19 +158,13 @@ class EquivariantMDGenWrapper(Wrapper):
             num_vector_out=1
             latent_dim = 3
         
-        ## hp1:
-        # encoder = Encoder_dpm(num_species, 256, num_radial+64, 256, input_dim=1, object_aware=args.object_aware)
-        ## hp2:
         if args.tps_condition:
             encoder = Encoder_dpm(num_species, 256, (64+48+8)*3, 256, input_dim=1, object_aware=args.object_aware)
+        elif args.sim_condition:
+            encoder = Encoder_dpm(num_species, 256, (64+48+8)*2, 256, input_dim=1, object_aware=args.object_aware)
         else:
             encoder = Encoder_dpm(num_species, 256, (64+48+8), 256, input_dim=1, object_aware=args.object_aware)
-        ## hp2.1:
-        # encoder = Encoder_dpm(num_species, 256, 280, 256, input_dim=1, object_aware=args.object_aware)
-        ## hp2.2:
-        # encoder = Encoder_dpm(num_species, 256, 312, 256, input_dim=1, object_aware=args.object_aware)
-        ## hp3:
-        # encoder = Encoder_dpm(num_species, 256, 16 + num_radial, 256, input_dim=1, object_aware=args.object_aware)
+
         processor = Processor(num_convs=6, node_dim=256, num_heads=8, ff_dim=768, edge_dim=256)
         print("Initializing drift model")
         self.model = EquivariantTransformer_dpm(
@@ -184,6 +178,7 @@ class EquivariantMDGenWrapper(Wrapper):
             design=args.design,
             potential_model = False,
             tps_condition=args.tps_condition,
+            sim_condition=args.sim_condition,
             num_species=args.num_species,
             pbc=args.pbc,
             object_aware=args.object_aware,
@@ -202,6 +197,7 @@ class EquivariantMDGenWrapper(Wrapper):
                 design=args.design,
                 potential_model = args.potential_model,
                 tps_condition=args.tps_condition,
+                sim_condition=args.sim_condition,
                 num_species=args.num_species,
                 pbc=args.pbc,
                 object_aware=args.object_aware
@@ -218,6 +214,7 @@ class EquivariantMDGenWrapper(Wrapper):
                 design=args.design,
                 potential_model = args.potential_model,
                 tps_condition=args.tps_condition,
+                sim_condition=args.sim_condition,
                 pbc=args.pbc,
                 object_aware=args.object_aware,
             )
@@ -322,8 +319,10 @@ class EquivariantMDGenWrapper(Wrapper):
             batch['TKS_v_mask'] = torch.ones(B,T,L,3, dtype=int, device=species.device)
 
         if self.args.sim_condition:
+            cond_mask_f = torch.zeros(B, T, L, dtype=int, device=species.device)
             cond_mask = torch.zeros(B, T, L, dtype=int, device=species.device)
-            cond_mask[:, 0] = 1
+            cond_mask_f[:, 0] = 1
+            cond_mask[:, -1] = 1
             if self.stage == "inference":
                 conditional_batch = True
             else:
@@ -346,7 +345,6 @@ class EquivariantMDGenWrapper(Wrapper):
         else:
             conditional_batch = None
         if (self.args.tps_condition and conditional_batch):
-            # For tps_condition, the x[:::] are feeded together, v_mask is not necessary.
             return {
                 "species": species.to(_TORCH_FLOAT_PRECISION),
                 "latents": latents.to(_TORCH_FLOAT_PRECISION),
@@ -371,6 +369,35 @@ class EquivariantMDGenWrapper(Wrapper):
                             "fragments_idx": batch['fragments_idx'][:,-1,...].unsqueeze(1).expand(B,T,L).reshape(-1),
                             'mask': cond_mask_r[:,-1,...].unsqueeze(1).expand(B,T,L).reshape(-1),
                         }
+                    }
+                },
+                'conditional_batch': conditional_batch
+            }
+        elif (self.args.sim_condition and conditional_batch):
+            return {
+                "species": species.to(_TORCH_FLOAT_PRECISION),
+                "latents": latents.to(_TORCH_FLOAT_PRECISION),
+                # 'E': batch['e_now'].to(_TORCH_FLOAT_PRECISION),
+                'loss_mask': batch["TKS_v_mask"]*cond_mask.unsqueeze(-1).to(_TORCH_FLOAT_PRECISION),
+                'loss_mask_potential_model': (batch["TKS_mask"]!=0).to(int)[:,:,0]*cond_mask[:,:,0],
+                'model_kwargs': {
+                    "x1": latents[:,-1,...].unsqueeze(1).expand(B,T,L,3).to(_TORCH_FLOAT_PRECISION),
+                    'v_mask': (batch["TKS_v_mask"]!=0).to(int)*cond_mask.unsqueeze(-1),
+                    "aatype": species.to(_TORCH_FLOAT_PRECISION),
+                    "cell": batch['cell'].to(_TORCH_FLOAT_PRECISION),
+                    "num_atoms": batch["num_atoms"],
+                    "fragments_idx": batch['fragments_idx'],
+                    "conditions": {
+                        'cond_f':{
+                            'x': latents[:,0,...].unsqueeze(1).expand(B,T,L,3).reshape(-1,3).to(_TORCH_FLOAT_PRECISION),             # Only using the 1st configuration as cond_f
+                            "fragments_idx": batch['fragments_idx'][:,0,...].unsqueeze(1).expand(B,T,L).reshape(-1),
+                            'mask': cond_mask_f[:,0,...].unsqueeze(1).expand(B,T,L).reshape(-1),          # Since only 1st configuration is inputed and cond_mask already masked the prediction only to the TPS, cond_mask_f here is a place_holder
+                        },
+                        # 'cond_r':{
+                        #     'x': latents[:,-1,...].unsqueeze(1).expand(B,T,L,3).reshape(-1,3).to(_TORCH_FLOAT_PRECISION),
+                        #     "fragments_idx": batch['fragments_idx'][:,-1,...].unsqueeze(1).expand(B,T,L).reshape(-1),
+                        #     'mask': cond_mask_r[:,-1,...].unsqueeze(1).expand(B,T,L).reshape(-1),
+                        # }
                     }
                 },
                 'conditional_batch': conditional_batch

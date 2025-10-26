@@ -728,25 +728,7 @@ class EquivariantTransformerDataset_Transition1x(torch.utils.data.Dataset):
         h_mask = mask.unsqueeze(-1).expand(-1,-1,self.num_species) # T,L,num_species
         huge_cell = torch.eye(3,3)*200
 
-        if self.sim_condition:
-            raise Exception("For transition state generation")
-            return {
-                "name": data.rxn,
-                "species": torch.stack([data.z_reactant, data.z_product, data.z_reactant]),
-                "species_next": torch.stack([data.z for data in dataset_next]),
-                "x": torch.stack([data.pos for data in dataset]),
-                'x_next': torch.stack(x_next).to(torch.float32),
-                "cell": torch.stack([data.cell for data in dataset]),
-                "num_atoms": torch.stack([data.num_atoms for data in dataset]),
-                "mask": mask,
-                "v_mask": v_mask,
-                "h_mask": h_mask,
-                "TKS_mask": TKS_mask,
-                "TKS_v_mask": TKS_v_mask,
-                "TKS_h_mask": TKS_h_mask,
-                "e_now": torch.stack([data.E_now for data in dataset]),
-            }
-        elif self.tps_condition:
+        if self.sim_condition or self.tps_condition:
             return {
                 "name": data.rxn,
                 'e_now': torch.stack([data.E_reactant, data.E_transition_state if hasattr(data, 'E_transition_state') else torch.tensor(0.), data.E_product if hasattr(data, 'E_product') else torch.tensor(0.)]),

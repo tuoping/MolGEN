@@ -328,27 +328,11 @@ class Transport:
                 t, xt, ut, eps = self.path_sampler.plan_schrodinger_bridge(t, x0[0], x1, diffusion)
                 lambda_t = self.path_sampler.compute_lambda_schrodinger_bridge(t, diffusion)
 
-
-            '''
-            ## add latent noise using antithetic sampling
-            # gamma_t = (0.9*t*(1-t)).sqrt()[:,None,None,None]
-            # dt_gamma_t = (0.9/2*(1-2*t)/((t*(1-t)).sqrt()))[:,None,None,None]
-            # xt += gamma_t*x0
-            # xt_ = xt.clone()
-            # xt_ -= gamma_t*x0
-            # ut += dt_gamma_t*x0
-            # ut_ = ut.clone()
-            # ut_ -= dt_gamma_t*x0
-            '''
         
         B = x1.shape[0]
         assert t.shape == (B,)
         model_output = model(xt, t, **model_kwargs)
-        if self.args.weight_loss_var_x0 > 0:
-            model_output_samples = [model_output]
-            for xt_2 in xt_samples:
-                model_output_2 = model(xt_2, t, **model_kwargs)
-                model_output_samples.append(model_output_2)
+        assert self.args.weight_loss_var_x0 == 0
         if self.score_model is not None:
             score_model_output = self.score_model(xt, t, **model_kwargs)
 
@@ -370,14 +354,6 @@ class Transport:
                 if self.args.weight_loss_var_x0 > 0:
                     ## model_output_samples: list of tensors, each [B, ...] same shape
                     stacked = torch.stack(model_output_samples, dim=0)  # [K, B, ...]
-                    '''
-                    eps = 1e-8
-                    stacked_n = stacked / (stacked.norm(dim=-1, keepdim=True) + eps)
-                    model_output_mean = stacked_n.mean(0, keepdim=True).detach()
-                    model_output_mean = model_output_mean / (model_output_mean.norm(dim=-1, keepdim=True) + eps)
-                    cos = th.nn.functional.cosine_similarity(stacked_n, model_output_mean, dim=-1)
-                    terms['loss_var'] = (1-cos).mean(dim = 0)
-                    '''
                     K = stacked.shape[0]
                     idx_i, idx_j = torch.triu_indices(K, K, offset=1)
                     stacked_i = stacked[idx_i]
@@ -421,9 +397,7 @@ class Transport:
                     terms['loss_score'] = mean_flat((lambda_t[:,None,None,None] * score_model_output + eps)**2, mask)
                     terms['loss'] = terms['loss_flow']+terms['loss_score']
                 else:
-                    if self.args.weight_loss_var_x0 > 0:
-                        terms['loss'] = terms['loss_flow'] + mean_flat(terms['loss_var'], mask[...,0])*self.args.weight_loss_var_x0
-                    elif self.args.KL == 'symm':
+                    if self.args.KL == 'symm':
                         # terms['loss'] = self.pref_symmkl*terms['loss_entropy'] + terms['loss_symmkl'] + terms['loss_l1']
                         terms['loss'] = terms['loss_symmkl'] # + terms['loss_l1']
                     elif self.args.KL == 'alpha':
@@ -459,6 +433,8 @@ class Transport:
 
         return terms
 
+    '''
+    ### Figuring out a better solution
     def sample_latt(self, x1, cell):
         """Sampling x0 & t based on shape of x1, and the particle density.
         And reorder x0 by Hungarian algorithm over the distance matrix between x0 and x1
@@ -484,6 +460,7 @@ class Transport:
         cell_0 = (torch.eye(3,3).unsqueeze(0).expand(T,-1,-1).unsqueeze(0).expand(B,-1,-1,-1).to(x1.device))*length_prior_cell[:,:,None,None]
 
         return t, x0, x1, cell_0
+    '''
 
     def get_drift(
             self
