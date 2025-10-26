@@ -128,7 +128,6 @@ class RBFEmb(nn.Module):
         self.betas.data.copy_(betas)
 
     def forward(self, dist):
-        dist = dist.unsqueeze(-1)
         rbounds = 0.5 * (torch.cos(dist * torch.pi / self.rbound_upper) + 1.0)
         rbounds = rbounds * (dist < self.rbound_upper).float()
         return rbounds * torch.exp(
@@ -192,7 +191,7 @@ class EdgeCGBlock(nn.Module):
 
         # Now this will parse cleanly
         self.tp = FCTP(self.node_irreps, self.edge_irreps, self.msg_irreps)
-
+        self._rbf = RBFEmb(num_rbf, self.cutoff)
 
     @property
     def node_dim(self): return self.node_irreps.dim
@@ -201,9 +200,6 @@ class EdgeCGBlock(nn.Module):
     @property
     def edge_dim(self): return self.edge_irreps.dim
 
-    def _rbf(self, r: Tensor) -> Tensor:
-        # r: [E, 1] -> [E, num_rbf]
-        return torch.exp(-self.rbf_gamma * (r - self.rbf_centers.view(1, -1)) ** 2)
 
     def _edge_features(self, edge_vec: Tensor) -> Tensor:
         """
@@ -214,7 +210,10 @@ class EdgeCGBlock(nn.Module):
         E = edge_vec.size(0)
         r = edge_vec.norm(dim=-1, keepdim=True).clamp_min(eps)  # [E,1]
         r_hat = edge_vec / r                                    # [E,3]
+        
         rbf = self._rbf(r)                                      # [E,num_rbf]
+        rbounds = 0.5 * (torch.cos(edge_vec.norm(-1) * torch.pi / self.cutoff) + 1.0)
+        rbf = rbounds.unsqueeze(-1) * rbf
 
         # Y_lm up to lmax
         Ys = [o3.spherical_harmonics([l], r_hat, normalize=True, normalization='component')  # [E, 2l+1]

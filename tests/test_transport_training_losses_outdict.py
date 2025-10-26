@@ -13,9 +13,8 @@ train_loader = torch.utils.data.DataLoader(
 sample_batch = next(iter(train_loader))
 
 
-from argparse import Namespace
-
-args = Namespace(ckpt=None, validate=False, num_workers=4, epochs=10000, overfit=False, train_batches=None, val_batches=None, val_repeat=25, inference_batches=0, batch_size=128, val_freq=None, val_epoch_freq=1, no_validate=False, designability_freq=1, print_freq=100, ckpt_freq=40, wandb=False, run_name='default', accumulate_grad=1, grad_clip=1.0, check_grad=False, grad_checkpointing=False, adamW=False, ema=False, ema_decay=0.999, lr=0.0001, precision='32-true', suffix="", dropout=0.0, scale_factor=1.0, num_layers=5, embed_dim=64, time_multiplier=100.0, abs_pos_emb=True, abs_time_emb=False, prediction='velocity', sampling_method='dopri5', alpha_max=8, discrete_loss_weight=0.5, dirichlet_flow_temp=1.0, allow_nan_cfactor=False, tps_condition=True, design=False, design_from_traj=False, frame_interval=None, cond_interval=None)
+from mdgen.parsing import parse_train_args
+args = parse_train_args()
 
 args.data_dir="tests/test_data/Transition1x" 
 args.num_frames=3
@@ -39,20 +38,21 @@ args.tps_condition = True
 args.sim_condition = False
 # args.prediction='score'
 # args.sampling_method = "Euler"
-
+args.object_aware = True
 args.design = False
 args.potential_model = False
 args.pbc = False 
+args.ratio_conditonal = 1
 
 os.environ["MODEL_DIR"] = os.path.join("tests_cache", args.run_name)
 
 from mdgen.equivariant_wrapper import EquivariantMDGenWrapper
 model = EquivariantMDGenWrapper(args)
-
+model.eval()
 model.iter_step += 1
 model.stage = "train"
 prep = model.prep_batch(sample_batch)
-
+print(prep['model_kwargs']['v_mask'])
 out_dict = model.transport.training_losses(
     model=model.model,
     x1=prep['latents'],
@@ -61,11 +61,12 @@ out_dict = model.transport.training_losses(
     model_kwargs=prep['model_kwargs']
 )
 
-t, xt, ut = model.transport.path_sampler.plan(out_dict['t'], out_dict['x0'], prep['latents'])
+t, xt, ut = model.transport.path_sampler.plan(out_dict['t'], out_dict['x0'][0], prep['latents'])
 model_output = model.model(xt, t, **prep['model_kwargs'])
+
 assert torch.all(out_dict['pred'][:,0,...] == 0)
 assert torch.all(out_dict['pred'][:,2,...] == 0)
-assert torch.allclose(out_dict['pred'][:,1,...], model_output[:,1,...])
+assert torch.allclose(out_dict['pred'][:,:,...], model_output[:,:,...])
 assert torch.all(out_dict['loss_continuous'][:,0,...]==0)
 assert torch.all(out_dict['loss_continuous'][:,2,...]==0)
 loss_continuous = ((0.5*(model_output)**2 - (ut)*model_output)*prep['loss_mask'])

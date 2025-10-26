@@ -51,6 +51,23 @@ class Encoder(nn.Module):
         v0 = scatter(edge_vec[:, None, :] * self.phi_v(e)[:, :, None], index=j, dim=0, dim_size=num_nodes)
         return h0, v0, edge_attr
 
+from e3nn import o3
+
+def msg_to_invariants_from_irreps(msg_e, irreps_like):
+    irreps = o3.Irreps(irreps_like)
+    E, C = msg_e.shape
+    out, off = [], 0
+    for mul, ir in irreps:  # ir.dim = 2ℓ+1
+        d = mul * ir.dim
+        if d == 0: continue
+        blk = msg_e[:, off:off+d].reshape(E, mul, ir.dim)
+        off += d
+        inv = blk.squeeze(-1) if ir.l == 0 else blk.norm(dim=-1)   # [E, mul]
+        if inv.dim() == 1: inv = inv.unsqueeze(-1)
+        out.append(inv)
+    if off != C:
+        raise ValueError(f"msg_e channels {C} != irreps total {off}")
+    return msg_e.new_zeros((E,0)) if not out else torch.cat(out, dim=1)  # [E, Σ mul]
 
 class Encoder_dpm(Encoder):
     def __init__(self, num_species: int, node_dim: int, init_edge_dim: int, edge_dim: int, input_dim: int, object_aware: bool=False) -> None:
@@ -76,7 +93,7 @@ class Encoder_dpm(Encoder):
 
     def forward_object_aware(self, species: Tensor, edge_index: Tensor, edge_attr: Tensor, edge_vec: Tensor, t: Tensor, sub_graph_mask=None) -> Tuple[Tensor, Tensor, Tensor, Tensor]:
         # h_cross = self.cross_graph(species, edge_index, edge_attr[:,3:], edge_vec, sub_graph_mask == 0)
-
+        sub_graph_mask = (sub_graph_mask > 0).to(species.dtype)  
         num_nodes = len(species)
         i = edge_index[0]
         j = edge_index[1]
@@ -156,23 +173,42 @@ class Decoder(nn.Module):
         self.dim = dim
         self.num_scalar_out = num_scalar_out
         self.num_vector_out = num_vector_out
-        self.Oh = nn.Parameter(torch.randn(dim, num_scalar_out))
-        self.Ov = nn.Parameter(torch.randn(dim, num_vector_out))
+        # Scalars
+        self.Oh = nn.Parameter(torch.empty(dim, num_scalar_out))
+        # Vectors: channel mix shared across xyz (equivariant)
+        self.Ov = nn.Parameter(torch.empty(dim, num_vector_out))
+
+        # Better init
+        nn.init.kaiming_uniform_(self.Oh, a=5**0.5)
+        nn.init.kaiming_uniform_(self.Ov, a=5**0.5)
         self.num_species = num_species
 
-    def forward(self, h:Tensor, v: Tensor) -> Tensor:
-        h_ = h @ self.Oh
-        v_out = torch.einsum('ndi, df -> nfi', v, self.Ov)
-        # print('Decoder--> h=', h_)
-        # print('Decoder--> v=', v_out)
-        # raise RuntimeError
-        # return h_out, v_out.squeeze()
-        if h_.shape[-1] >= self.num_species:
-            h_out_1 = h_[...,:-self.num_species]
-            h_out_2 = torch.nn.functional.softmax(h_[...,-self.num_species:], dim=-1)
-            return torch.hstack([h_out_1, h_out_2]), v_out.squeeze()
-        else:
-            return h_, v_out.squeeze()
+    def forward(self, h: torch.Tensor, v: torch.Tensor):
+        """
+        h: [N, D]
+        v: [N, D, 3]  (last axis is xyz)
+        returns:
+          h_out: [N, num_scalar_out] (species part softmaxed if present)
+          v_out: [N, num_vector_out, 3]
+        """
+        assert v.dim() == 3 and v.size(-1) == 3, f"expected v [N,D,3], got {list(v.shape)}"
+        v = v.contiguous()
+
+        # Scalars
+        h_out = h @ self.Oh  # [N, S]
+
+        # Vectors: mix channels only; identical weights for x/y/z
+        # (V @ Ov) commutes with rotation on the last axis → stays equivariant
+        v_out = torch.einsum('ndk,df->nfk', v, self.Ov)  # [N, F, 3]
+
+        # Optional species softmax on scalars ONLY
+        if h_out.shape[-1] >= self.num_species:
+            head = h_out[..., :-self.num_species]
+            species = torch.softmax(h_out[..., -self.num_species:], dim=-1)
+            h_out = torch.hstack([head, species])
+
+        # IMPORTANT: do NOT squeeze — preserve [N, F, 3] even when F==1 or N==1
+        return h_out, v_out
         
 
     def extra_repr(self) -> str:
@@ -195,9 +231,7 @@ class EquivariantTransformer(nn.Module):
 
 
 from .utils.data_utils import (
-    frac_to_cart_coords_with_lattice,
     get_pbc_distances,
-    lattice_params_to_matrix_torch,
     radius_graph_pbc,
 )
 
@@ -249,15 +283,59 @@ from torch import Tensor
 import torch.nn as nn
 
 class EquivariantTransformer_dpm(EquivariantTransformer):
-    def __init__(self, encoder, processor, decoder, cutoff, latent_dim, embed_dim, num_radial=96, otf_graph = True, design=False, potential_model=False, tps_condition=False, abs_time_emb=False, num_frames=None, num_species=5, pbc=True, object_aware=False):
+    def __init__(self, encoder, processor, decoder, cutoff, latent_dim, embed_dim, num_radial=96, otf_graph = True, design=False, potential_model=False, tps_condition=False, num_frames=None, num_species=5, pbc=True, object_aware=False):
         super().__init__(encoder, processor, decoder)
         self.cutoff = cutoff
         self.otf_graph = otf_graph
         self.design = design
         self.potential_model = potential_model
         self.tps_condition = tps_condition
-        self.pbc = pbc
+        self.pbc = True
 
+        '''
+        ## hp1:
+        node_irreps = [(128, (0, +1))]                 # 32x0e
+        msg_irreps  = [(64, (0, +1)), (32, (1, -1))]  # 64x0e + 16x1o
+        self.edge_block = EdgeCGBlock(node_irreps, msg_irreps, lmax=2, num_rbf=num_radial, cutoff=self.cutoff)
+        self.embed_atom = nn.Sequential(
+            nn.Linear(num_species, 128, bias=False),  # learnable per-species weights
+            nn.SiLU(),
+            nn.Linear(128, 128)
+        )
+        '''
+        ## hp2:
+        node_irreps = [(128, (0, +1))]                 # 32x0e
+        msg_irreps  = [(64, (0, +1)), (48, (1, -1)), (8, (2, +1))]
+        self.edge_block = EdgeCGBlock(node_irreps, msg_irreps, lmax=3, num_rbf=num_radial, cutoff=self.cutoff)
+        self.embed_atom = nn.Sequential(
+            nn.Linear(num_species, 128, bias=False),  # learnable per-species weights
+            nn.SiLU(),
+            nn.Linear(128, 128)
+        )
+        '''
+        ## hp2.1:
+        node_irreps = [(128, (0, +1))]                 # 32x0e
+        msg_irreps  = [(48, (0, +1)), (64, (1, -1)), (8, (2, +1))]
+        self.edge_block = EdgeCGBlock(node_irreps, msg_irreps, lmax=3, num_rbf=num_radial, cutoff=self.cutoff)
+        self.embed_atom = nn.Sequential(
+            nn.Linear(num_species, 128, bias=False),  # learnable per-species weights
+            nn.SiLU(),
+            nn.Linear(128, 128)
+        )
+        '''
+        '''
+        ## hp2.2:
+        node_irreps = [(128, (0, +1))]                 # 32x0e
+        msg_irreps  = [(32, (0, +1)), (80, (1, -1)), (8, (2, +1))]
+        self.edge_block = EdgeCGBlock(node_irreps, msg_irreps, lmax=3, num_rbf=num_radial, cutoff=self.cutoff)
+        self.embed_atom = nn.Sequential(
+            nn.Linear(num_species, 128, bias=False),  # learnable per-species weights
+            nn.SiLU(),
+            nn.Linear(128, 128)
+        )
+        '''
+        '''
+        ## hp3:
         node_irreps = [(32, (0, +1))]                 # 32x0e
         msg_irreps  = [(64, (0, +1)), (16, (1, -1))]  # 64x0e + 16x1o
         self.edge_block = EdgeCGBlock(node_irreps, msg_irreps, lmax=2, num_rbf=num_radial, cutoff=self.cutoff)
@@ -266,6 +344,7 @@ class EquivariantTransformer_dpm(EquivariantTransformer):
             nn.SiLU(),
             nn.Linear(32, 32)
         )
+        '''
 
         self.max_num_neighbors_threshold = 50
         self.max_cell_images_per_dim = 5
@@ -277,24 +356,7 @@ class EquivariantTransformer_dpm(EquivariantTransformer):
             self.cond_to_emb_r = nn.Linear(cond_dim, embed_dim)
             self.mask_to_emb_f = nn.Embedding(cond_dim, embed_dim)
             self.mask_to_emb_r = nn.Embedding(cond_dim, embed_dim)
-            if self.pbc:
-                self.v_cond_to_emb_f = nn.Linear(cond_dim, embed_dim)
-                self.v_cond_to_emb_r = nn.Linear(cond_dim, embed_dim)
-            else:
-                self.v_cond_to_emb_f = nn.Linear(cond_dim, 3*embed_dim)
-                self.v_cond_to_emb_r = nn.Linear(cond_dim, 3*embed_dim)
-            self.v_mask_to_emb_f = nn.Embedding(cond_dim, 3*embed_dim)
-            self.v_mask_to_emb_r = nn.Embedding(cond_dim, 3*embed_dim)
-        else:
-            self.cond_to_emb = nn.Linear(cond_dim, embed_dim)
-            self.mask_to_emb = nn.Embedding(cond_dim, embed_dim)
 
-        self.abs_time_emb = abs_time_emb
-        if abs_time_emb:
-            self.register_buffer('time_embed',
-                                 nn.Parameter(torch.zeros(1, num_frames, embed_dim), requires_grad=False))
-            time_embed = get_1d_sincos_pos_embed_from_grid(self.time_embed.shape[-1], np.arange(num_frames))
-            self.time_embed.data.copy_(torch.from_numpy(time_embed).float().unsqueeze(0))
         
         self.num_species = num_species
         self.embed_dim = embed_dim
@@ -303,167 +365,72 @@ class EquivariantTransformer_dpm(EquivariantTransformer):
         if self.pbc and self.tps_condition:
             print("WARNING:: tps_condition not implemented for when cell of the TS is different from the R or P")
             print("WARNING:: tps_condition not implemented for when species of the TS is different from the R or P")
-        
-    def LSE_scalarize(self, x, edge_index, edge_vec, lattice, to_jimages, num_bonds):
-        row, col = edge_index[0], edge_index[1]
-        # --- Offsets to bring neighbors into the same image as the center ---
-        # lattice: [B,3,3] or [1,3,3]; to_jimages: [E,3]; num_bonds: [B] counts per structure
-        # lattice_edges = torch.repeat_interleave(lattice, num_bonds, dim=0)         # [E,3,3]
-        # offsets = torch.einsum('ej,ejk->ek', to_jimages.float(), lattice_edges)     # [E,3]
-        # xj = x[col] + offsets     
-
-        e1 = edge_vec / edge_vec.norm(dim=-1, keepdim=True)
-        
-        com_i = scatter_mean(edge_vec, row, dim=0, dim_size=x.size(0))                    # [N,3]
-        ui = com_i[row] - x[row]      
-        # Gram–Schmidt with fallback
-        ui_proj = ui - (ui * e1).sum(-1, keepdim=True) * e1
-        # ui_norm = ui_proj.norm(dim=-1, keepdim=True)
-        # # fallback: project a fixed axis if nearly degenerate
-        # fallback = torch.tensor([1.0, 0.0, 0.0], device=x.device).expand_as(ui_proj)
-        # fb_proj = fallback - (fallback * e1).sum(-1, keepdim=True) * e1
-        # use_fb = (ui_norm < 1e-9)
-        # ui_proj = torch.where(use_fb, fb_proj, ui_proj)
-        e2 = ui_proj / (ui_proj.norm(dim=-1, keepdim=True) + 1e-12)
-
-        # Complete the right-handed frame
-        e3 = torch.cross(e1, e2, dim=-1)  # or torch.linalg.cross
-        
-        radial = self.radial_emb(edge_vec.norm(dim=-1))   # [E, d]
-
-        s1 = (edge_vec * e1).sum(-1, keepdim=True)        # ≈ ||r|| by construction
-        s2 = (edge_vec * e2).sum(-1, keepdim=True)
-        s3 = (edge_vec * e3).sum(-1, keepdim=True)
-        Sij = torch.hstack([s1, s2, s3, radial]) 
-        
-        # Node-wise primary axis: from neighbor COM to node (relative)
-        e1_i = (x - com_i)
-        e1_i = e1_i / (e1_i.norm(dim=-1, keepdim=True))
-        
-        # Auxiliary direction: e.g., mean of normalized incoming relative edges to i
-        # This is rotation-equivariant and translation-invariant.
-        unit_edges_to_i = -edge_vec / edge_vec.norm(dim=-1, keepdim=True)
-        u_i = scatter_mean(unit_edges_to_i, row, dim=0, dim_size=x.size(0))  # [N,3]
-        
-        u_i_proj = u_i - (u_i * e1_i).sum(-1, keepdim=True) * e1_i
-        # u_i_norm = u_i_proj.norm(dim=-1, keepdim=True)
-        # # node-level fallback (project a fixed axis)
-        # fallback_n = torch.tensor([0.0, 1.0, 0.0], device=x.device).expand_as(u_i_proj)
-        # fb_n_proj = fallback_n - (fallback_n * e1_i).sum(-1, keepdim=True) * e1_i
-        # use_fb_n = (u_i_norm < 1e-9)
-        # u_i_proj = torch.where(use_fb_n, fb_n_proj, u_i_proj)
-        e2_i = u_i_proj / (u_i_proj.norm(dim=-1, keepdim=True) + 1e-12)
-        e3_i = torch.cross(e1_i, e2_i, dim=-1)
-        
-        Fi = torch.stack([e1_i, e2_i, e3_i], dim=1)  # [N, 3, 3]
-        self.Fi = Fi
-
-        return Sij
-    
-    
-    def FTE_tensorize(self, V):
-        alpha = torch.einsum('nck,njk->ncj', V, self.Fi)      # [N, C, 3] local components
-        V_loc = torch.einsum('ncj,njk->nck', alpha, self.Fi)  # back to global
-        return V_loc
-
 
 
     def _graph_forward(self, species: Tensor, edge_index: Tensor, edge_attr: Tensor, edge_vec: Tensor, t: Tensor, out_cond=None, sub_graph_mask=None) -> Tuple[Tensor, Tensor]:
-        h, v, edge_attr = self.encoder(species, edge_index, edge_attr, edge_vec, t, sub_graph_mask)
-        if self.abs_time_emb:
-            h = h + self.time_embed[:, :, None]
+        num_edges = edge_index.shape[1]
         if self.tps_condition and out_cond is not None:
             if self.pbc:
                 with torch.no_grad():
-                    '''
-                    edge_attr_cond_f = self.scalarize(out_cond['cond_f']['x'], 
-                                                      out_cond['cond_f']["edge_index"], 
-                                                      out_cond['cond_f']['distance_vec'], 
-                                                      out_cond['cond_f']['cell'], 
-                                                      out_cond['cond_f']['to_jimages'],
-                                                      out_cond['cond_f']['num_bonds'])
-                    '''
                     edge_attr_cond_f = self.edge_block(self.embed_atom(out_cond['species'].view(-1, self.num_species)), 
                                                         out_cond['cond_f']["edge_index"], 
                                                         out_cond['cond_f']['distance_vec'])
+                    assert edge_attr_cond_f.shape[0] == num_edges, "  ".join([str(x) for x in edge_attr_cond_f.shape]+[str(num_edges)])
+                    edge_attr_cond_f = msg_to_invariants_from_irreps(edge_attr_cond_f, self.edge_block.msg_irreps)
+                    assert edge_attr_cond_f.shape[0] == num_edges, "  ".join([str(x) for x in edge_attr_cond_f.shape]+[str(num_edges)])
+                    '''
                     cond_f, v_cond_f, edge_attr_cond_f = self.encoder(
                         out_cond['species'].view(-1,self.num_species), 
                         out_cond['cond_f']['edge_index'], 
                         edge_attr_cond_f, 
                         out_cond['cond_f']['distance_vec'], 
-                        torch.ones([*out_cond['species'].shape[:-1],1], device=out_cond['species'].device).reshape(-1,1), 
+                        torch.ones([*out_cond['species'].shape[:-1],1], device=out_cond['species'].device).reshape(-1,1).to(species.dtype), 
                         out_cond['cond_f']['sub_graph_mask']
                         )
                     '''
-                    edge_attr_cond_r = self.scalarize(out_cond['cond_r']['x'], 
-                                                      out_cond['cond_r']["edge_index"], 
-                                                      out_cond['cond_r']['distance_vec'], 
-                                                      out_cond['cond_r']['cell'], 
-                                                      out_cond['cond_r']['to_jimages'],
-                                                      out_cond['cond_r']['num_bonds'])
-                    '''
+
                     edge_attr_cond_r = self.edge_block(self.embed_atom(out_cond['species'].view(-1, self.num_species)), 
                                                         out_cond['cond_r']["edge_index"], 
                                                         out_cond['cond_r']['distance_vec'])
+                    edge_attr_cond_r = msg_to_invariants_from_irreps(edge_attr_cond_r, self.edge_block.msg_irreps)
+                    '''
                     cond_r, v_cond_r, edge_attr_cond_r = self.encoder(
                         out_cond['species'].view(-1,self.num_species), 
                         out_cond['cond_r']['edge_index'], 
                         edge_attr_cond_r, 
                         out_cond['cond_r']['distance_vec'], 
-                        torch.ones([*out_cond['species'].shape[:-1],1], device=out_cond['species'].device).reshape(-1,1),
+                        torch.ones([*out_cond['species'].shape[:-1],1], device=out_cond['species'].device).reshape(-1,1).to(species.dtype),
                         out_cond['cond_r']['sub_graph_mask']
                         )
+                    '''
                     cond_f_mask = out_cond["cond_f"]['mask']
                     cond_r_mask = out_cond["cond_r"]['mask']
                     
-                    
-                h = h + self.cond_to_emb_f(cond_f) + self.mask_to_emb_f(cond_f_mask)
-                h = h + self.cond_to_emb_r(cond_r) + self.mask_to_emb_r(cond_r_mask)
-                v_embc_f = self.v_cond_to_emb_f(v_cond_f.transpose(1,2)).permute(0,2,1)
-                v = v + v_embc_f.reshape(-1,self.embed_dim,3) +  self.v_mask_to_emb_f(cond_f_mask).reshape(-1,self.embed_dim,3)
-                v_embc_r = self.v_cond_to_emb_r(v_cond_r.transpose(1,2)).permute(0,2,1)
-                v = v + v_embc_r.reshape(-1,self.embed_dim,3) +  self.v_mask_to_emb_r(cond_r_mask).reshape(-1,self.embed_dim,3)
-            else:
-                cond_f_x = out_cond["cond_f"]['x']
-                cond_r_x = out_cond["cond_r"]['x']
-                cond_f_mask = out_cond["cond_f"]['mask']
-                cond_r_mask = out_cond["cond_r"]['mask']
-                h = h + self.cond_to_emb_f(cond_f_x) + self.mask_to_emb_f(cond_f_mask)
-                h = h + self.cond_to_emb_r(cond_r_x) + self.mask_to_emb_r(cond_r_mask)
-                v = v + self.v_cond_to_emb_f(cond_f_x).reshape(-1,self.embed_dim,3) + self.v_mask_to_emb_f(cond_f_mask).reshape(-1,self.embed_dim,3)
-                v = v + self.v_cond_to_emb_r(cond_r_x).reshape(-1,self.embed_dim,3) + self.v_mask_to_emb_r(cond_r_mask).reshape(-1,self.embed_dim,3)
-        else:
-            if out_cond is not None:
-                if self.pbc:
-                    with torch.no_grad():
-                        edge_index_cond = out_cond["edge_index"]
-                        edge_len_cond = out_cond["distances"]
-                        edge_vec_cond = out_cond["distance_vec"]
-                        '''
-                        edge_attr_cond = self.scalarize(out_cond['cond']['x'], 
-                                                      out_cond['cond']["edge_index"], 
-                                                      out_cond['cond']['distance_vec'], 
-                                                      out_cond['cond']['cell'], 
-                                                      out_cond['cond']['to_jimages'],
-                                                      out_cond['cond']['num_bonds'])
-                        '''
-                        edge_attr_cond_f = self.edge_block(self.embed_atom(out_cond['species'].view(-1, self.num_species)), 
-                                                        out_cond['cond']["edge_index"], 
-                                                        out_cond['cond']['distance_vec'])
-                        species_cond = out_cond["species"]
-                        h_cond, v_cond, edge_attr_cond = self.encoder(
-                            species_cond.view(-1,self.num_species), 
-                            edge_index_cond, edge_attr_cond, edge_vec_cond, 
-                            torch.zeros([*species_cond.shape[:-1],1], device=species_cond.device).reshape(-1,1)
-                            )
-                        # h_cond, v_cond = self.processor(h_cond, v_cond, edge_index_cond, edge_attr_cond, edge_len=torch.linalg.norm(edge_vec_cond, dim=1, keepdim=True))
-                    h = h + self.h_cond_to_emb(h_cond) 
-                    h = h + self.mask_to_emb(out_cond["mask"].reshape(-1))
-                    v_embc = self.v_cond_to_emb(v_cond.transpose(1,2)).permute(0,2,1)
-                    v = v + v_embc.reshape(-1,self.embed_dim,3) +  self.v_mask_to_emb(out_cond["mask"]).reshape(-1,self.embed_dim,3)
-                else:
-                    h = h + self.cond_to_emb(out_cond["x"].reshape(-1,3)) + self.mask_to_emb(out_cond["mask"].reshape(-1))
+                # h_f = self.cond_to_emb_f(cond_f) + self.mask_to_emb_f(cond_f_mask)
+                # h_r = self.cond_to_emb_r(cond_r) + self.mask_to_emb_r(cond_r_mask)
+                # v_f = self.v_cond_to_emb_f(v_cond_f.transpose(1,2)).permute(0,2,1).reshape(-1,self.embed_dim,3) +  self.v_mask_to_emb_f(cond_f_mask).reshape(-1,self.embed_dim,3)
+                # v_r = self.v_cond_to_emb_r(v_cond_r.transpose(1,2)).permute(0,2,1).reshape(-1,self.embed_dim,3) +  self.v_mask_to_emb_r(cond_r_mask).reshape(-1,self.embed_dim,3)
 
+            assert edge_attr.shape[0] == edge_attr_cond_f.shape[0], "  ".join([str(edge_attr.shape[0]), str(edge_attr_cond_f.shape[0])])
+            assert edge_attr.shape[0] == edge_attr_cond_r.shape[0], "  ".join([str(edge_attr.shape[0]), str(edge_attr_cond_r.shape[0])])
+            assert edge_attr.shape[1] == edge_attr_cond_f.shape[1], "  ".join([str(edge_attr.shape[1]), str(edge_attr_cond_f.shape[1])])
+            assert edge_attr.shape[1] == edge_attr_cond_r.shape[1], "  ".join([str(edge_attr.shape[1]), str(edge_attr_cond_r.shape[1])])
+            h, v, edge_attr = self.encoder(species, edge_index, torch.cat([edge_attr, edge_attr_cond_f, edge_attr_cond_r], dim=-1), edge_vec, t, sub_graph_mask)
+            h = h + self.mask_to_emb_f(cond_f_mask) + self.mask_to_emb_r(cond_r_mask)
+
+        else:
+            h, v, edge_attr = self.encoder(species, edge_index, edge_attr, edge_vec, t, sub_graph_mask)
+
+        def _filter_edges(_edge_index, _edge_attr, _edge_vec, _mask: torch.Tensor):
+                # mask: [E] in {0,1}
+                keep = (_mask > 0)
+                idx = keep.nonzero(as_tuple=True)[0]
+                return _edge_index[:, idx], _edge_attr[idx], _edge_vec[idx]
+
+        # ... inside your forward (right before calling the processor) ...
+        # sub_graph_mask is what you already computed (1=intra, 0=inter)
+        if self.object_aware:
+            edge_index, edge_attr, edge_vec = _filter_edges(edge_index, edge_attr, edge_vec, sub_graph_mask)
 
         h, v = self.processor(h, v, edge_index, edge_attr, edge_len=torch.linalg.norm(edge_vec, dim=1, keepdim=True))
         # print('processor--> h=', )
@@ -500,6 +467,7 @@ class EquivariantTransformer_dpm(EquivariantTransformer):
 
             if conditions is not None and self.pbc:
                 if self.tps_condition:
+                    '''
                     edge_index_cond_f, to_jimages_cond_f, num_bonds_cond_f = radius_graph_pbc(
                         cart_coords=conditions["cond_f"]['x'].view(-1, 3),
                         lattice=cell.view(-1, 3, 3),
@@ -508,6 +476,7 @@ class EquivariantTransformer_dpm(EquivariantTransformer):
                         max_num_neighbors_threshold=self.max_num_neighbors_threshold,
                         max_cell_images_per_dim=self.max_cell_images_per_dim,
                     )
+                    assert torch.all(edge_index_cond_f == edge_index)
                     edge_index_cond_r, to_jimages_cond_r, num_bonds_cond_r = radius_graph_pbc(
                         cart_coords=conditions["cond_r"]['x'].view(-1, 3),
                         lattice=cell.view(-1, 3, 3),
@@ -516,24 +485,17 @@ class EquivariantTransformer_dpm(EquivariantTransformer):
                         max_num_neighbors_threshold=self.max_num_neighbors_threshold,
                         max_cell_images_per_dim=self.max_cell_images_per_dim,
                     )
-
+                    assert torch.all(edge_index_cond_r == edge_index)
+                    '''
                     # remove inter-object edges here from edge_index
                     if self.object_aware:
                         assert conditions["cond_f"]['fragments_idx'] is not None
-                        sub_graph_mask_f = get_subgraph_mask(edge_index_cond_f, conditions["cond_f"]['fragments_idx'].reshape(-1))
+                        sub_graph_mask_f = get_subgraph_mask(edge_index, conditions["cond_f"]['fragments_idx'].reshape(-1))
 
                         assert conditions["cond_r"]['fragments_idx'] is not None
-                        sub_graph_mask_r = get_subgraph_mask(edge_index_cond_r, conditions["cond_r"]['fragments_idx'].reshape(-1))
+                        sub_graph_mask_r = get_subgraph_mask(edge_index, conditions["cond_r"]['fragments_idx'].reshape(-1))
 
-                else:
-                    edge_index_cond, to_jimages_cond, num_bonds_cond = radius_graph_pbc(
-                        cart_coords=conditions["x"].view(-1, 3),
-                        lattice=conditions["cell"].view(-1, 3, 3),
-                        num_atoms=conditions["num_atoms"].view(-1),
-                        radius=self.cutoff,
-                        max_num_neighbors_threshold=self.max_num_neighbors_threshold,
-                        max_cell_images_per_dim=self.max_cell_images_per_dim,
-                    )
+
             # self.otf_graph = False
 
         out = get_pbc_distances(
@@ -554,14 +516,15 @@ class EquivariantTransformer_dpm(EquivariantTransformer):
                     out_cond = {}
                     out_cond['cond_f'] = get_pbc_distances(
                         conditions["cond_f"]["x"].view(-1, 3),
-                        edge_index_cond_f,
+                        edge_index,
                         cell.view(-1, 3, 3),
-                        to_jimages_cond_f,
+                        to_jimages,
                         num_atoms.view(-1),
-                        num_bonds_cond_f,
+                        num_bonds,
                         coord_is_cart=True,
                         return_offsets=True,
                         return_distance_vec=True,
+                        recalculate_offsets=True
                     )
                     if self.object_aware:
                         out_cond['cond_f']['sub_graph_mask'] = sub_graph_mask_f
@@ -569,19 +532,20 @@ class EquivariantTransformer_dpm(EquivariantTransformer):
                         out_cond['cond_f']['sub_graph_mask'] = None
                     out_cond['cond_f']['x'] = conditions["cond_f"]["x"].view(-1, 3)
                     out_cond['cond_f']['cell'] = cell.view(-1,3,3)
-                    out_cond['cond_f']['to_jimages'] = to_jimages_cond_f
-                    out_cond['cond_f']['num_bonds'] = num_bonds_cond_f
+                    out_cond['cond_f']['to_jimages'] = to_jimages
+                    out_cond['cond_f']['num_bonds'] = num_bonds
 
                     out_cond['cond_r'] = get_pbc_distances(
                         conditions["cond_r"]["x"].view(-1, 3),
-                        edge_index_cond_r,
+                        edge_index,
                         cell.view(-1, 3, 3),
-                        to_jimages_cond_r,
+                        to_jimages,
                         num_atoms.view(-1),
-                        num_bonds_cond_r,
+                        num_bonds,
                         coord_is_cart=True,
                         return_offsets=True,
                         return_distance_vec=True,
+                        recalculate_offsets=True
                     )
                     if self.object_aware:
                         out_cond['cond_r']['sub_graph_mask'] = sub_graph_mask_r
@@ -589,29 +553,13 @@ class EquivariantTransformer_dpm(EquivariantTransformer):
                         out_cond['cond_r']['sub_graph_mask'] = None
                     out_cond['cond_r']['x'] = conditions["cond_r"]["x"].view(-1, 3)
                     out_cond['cond_r']['cell'] = cell.view(-1,3,3)
-                    out_cond['cond_r']['to_jimages'] = to_jimages_cond_r
-                    out_cond['cond_r']['num_bonds'] = num_bonds_cond_r
+                    out_cond['cond_r']['to_jimages'] = to_jimages
+                    out_cond['cond_r']['num_bonds'] = num_bonds
 
                     out_cond["species"] = aatype
                     out_cond['cond_f']["mask"] = conditions['cond_f']["mask"]
                     out_cond['cond_r']["mask"] = conditions['cond_r']["mask"]
-                else:
-                    out_cond = get_pbc_distances(
-                        conditions["x"].view(-1, 3),
-                        edge_index_cond,
-                        conditions["cell"].view(-1, 3, 3),
-                        to_jimages_cond,
-                        conditions["num_atoms"].view(-1),
-                        num_bonds_cond,
-                        coord_is_cart=True,
-                        return_offsets=True,
-                        return_distance_vec=True,
-                    )
-                    out_cond['x'] = conditions[x].view(-1,3)
-                    out_cond["species"] = conditions["species"]
-                    out_cond["mask"] = conditions["mask"]
-                    out_cond["cell"] = conditions["cell"].view(-1,3,3)
-                    out_cond['to_jimages'] = to_jimages_cond
+ 
             else:
                 out_cond = conditions
         else:
@@ -628,6 +576,7 @@ class EquivariantTransformer_dpm(EquivariantTransformer):
 
         # edge_attr = self.scalarize(x.view(-1,3), edge_index, edge_vec, cell.view(-1,3,3), to_jimages, num_bonds)
         edge_attr = self.edge_block(self.embed_atom(species.view(-1, self.num_species)), edge_index, edge_vec)
+        edge_attr = msg_to_invariants_from_irreps(edge_attr, self.edge_block.msg_irreps)
 
         t = t.unsqueeze(-1).unsqueeze(1).expand(-1,T,-1).unsqueeze(2).expand(-1,-1,N,-1)
         if self.object_aware:
@@ -685,174 +634,7 @@ class EquivariantTransformer_dpm(EquivariantTransformer):
             x = x*v_mask+x1*(1-v_mask)
             vector_out = self.inference(x, t, cell, num_atoms, conditions, aatype, fragments_idx=fragments_idx)
             return vector_out*v_mask
-    
-    
-    def _get_processed_var(self, x: Tensor, t: Tensor, 
-                cell=None, 
-                num_atoms=None,
-                conditions=None, 
-                aatype=None):
-        assert cell is not None
-        B, T, N, _ = x.shape
-        assert t.shape == (B,)
-        if self.otf_graph:
-            self.edge_index, self.to_jimages, self.num_bonds = radius_graph_pbc(
-                cart_coords=x.view(-1, 3),
-                lattice=cell.view(-1, 3, 3),
-                num_atoms=num_atoms.view(-1),
-                radius=self.cutoff,
-                max_num_neighbors_threshold=self.max_num_neighbors_threshold,
-                max_cell_images_per_dim=self.max_cell_images_per_dim,
-            )
-            # if conditions is not None:
-            #     self.edge_index_cond, self.to_jimages_cond, self.num_bonds_cond = radius_graph_pbc(
-            #         cart_coords=conditions["x"].view(-1, 3),
-            #         lattice=conditions["cell"].view(-1, 3, 3),
-            #         num_atoms=conditions["num_atoms"].view(-1),
-            #         radius=self.cutoff,
-            #         max_num_neighbors_threshold=self.max_num_neighbors_threshold,
-            #         max_cell_images_per_dim=self.max_cell_images_per_dim,
-            #     )
-            # self.otf_graph = False
 
-        out = get_pbc_distances(
-            x.view(-1, 3),
-            self.edge_index,
-            cell.view(-1, 3, 3),
-            self.to_jimages,
-            num_atoms.view(-1),
-            self.num_bonds,
-            coord_is_cart=True,
-            return_offsets=True,
-            return_distance_vec=True,
-        )
-        # if conditions is not None:
-        #     out_cond = get_pbc_distances(
-        #         conditions["x"].view(-1, 3),
-        #         self.edge_index_cond,
-        #         conditions["cell"].view(-1, 3, 3),
-        #         self.to_jimages_cond,
-        #         conditions["num_atoms"].view(-1),
-        #         self.num_bonds_cond,
-        #         coord_is_cart=True,
-        #         return_offsets=True,
-        #         return_distance_vec=True,
-        #     )
-        #     out_cond["species"] = conditions["species"]
-        #     out_cond["mask"] = conditions["mask"]
-        edge_index = out["edge_index"]
-        edge_len = out["distances"]
-        edge_vec = out["distance_vec"]
-        edge_attr = torch.hstack([edge_vec, edge_len.view(-1, 1)])
-
-        t = t.unsqueeze(-1).unsqueeze(1).expand(-1,T,-1).unsqueeze(2).expand(-1,-1,N,-1)
-        if aatype is not None:
-            species = aatype
-        else:
-            aatype = torch.zeros([B,T,N], dtype=torch.long, device=x.device)
-            species = torch.nn.functional.one_hot(aatype, num_classes=self.num_species, dtype=torch.float)
-            
-        h, v, edge_attr = self.encoder(species.reshape(-1,self.num_species), edge_index, edge_attr, edge_vec, t.reshape(-1,1))
-        h, v = self.processor(h, v, edge_index, edge_attr, edge_len=torch.linalg.norm(edge_vec, dim=1, keepdim=True))
-        return h, v
-    
-    def _get_encoded_var(self, x: Tensor, t: Tensor, 
-                cell=None, 
-                num_atoms=None,
-                conditions=None, 
-                aatype=None):
-        assert cell is not None
-        B, T, N, _ = x.shape
-        assert t.shape == (B,)
-        if self.otf_graph:
-            self.edge_index, self.to_jimages, self.num_bonds = radius_graph_pbc(
-                cart_coords=x.view(-1, 3),
-                lattice=cell.view(-1, 3, 3),
-                num_atoms=num_atoms.view(-1),
-                radius=self.cutoff,
-                max_num_neighbors_threshold=self.max_num_neighbors_threshold,
-                max_cell_images_per_dim=self.max_cell_images_per_dim,
-            )
-            # if conditions is not None:
-            #     self.edge_index_cond, self.to_jimages_cond, self.num_bonds_cond = radius_graph_pbc(
-            #         cart_coords=conditions["x"].view(-1, 3),
-            #         lattice=conditions["cell"].view(-1, 3, 3),
-            #         num_atoms=conditions["num_atoms"].view(-1),
-            #         radius=self.cutoff,
-            #         max_num_neighbors_threshold=self.max_num_neighbors_threshold,
-            #         max_cell_images_per_dim=self.max_cell_images_per_dim,
-            #     )
-            # self.otf_graph = False
-
-        out = get_pbc_distances(
-            x.view(-1, 3),
-            self.edge_index,
-            cell.view(-1, 3, 3),
-            self.to_jimages,
-            num_atoms.view(-1),
-            self.num_bonds,
-            coord_is_cart=True,
-            return_offsets=True,
-            return_distance_vec=True,
-        )
-        # if conditions is not None:
-        #     out_cond = get_pbc_distances(
-        #         conditions["x"].view(-1, 3),
-        #         self.edge_index_cond,
-        #         conditions["cell"].view(-1, 3, 3),
-        #         self.to_jimages_cond,
-        #         conditions["num_atoms"].view(-1),
-        #         self.num_bonds_cond,
-        #         coord_is_cart=True,
-        #         return_offsets=True,
-        #         return_distance_vec=True,
-        #     )
-        #     out_cond["species"] = conditions["species"]
-        #     out_cond["mask"] = conditions["mask"]
-        edge_index = out["edge_index"]
-        edge_len = out["distances"]
-        edge_vec = out["distance_vec"]
-        edge_attr = torch.hstack([edge_vec, edge_len.view(-1, 1)])
-
-        t = t.unsqueeze(-1).unsqueeze(1).expand(-1,T,-1).unsqueeze(2).expand(-1,-1,N,-1)
-        if aatype is not None:
-            species = aatype
-        else:
-            aatype = torch.zeros([B,T,N], dtype=torch.long, device=x.device)
-            species = torch.nn.functional.one_hot(aatype, num_classes=self.num_species, dtype=torch.float)
-            
-        h, v, edge_attr = self.encoder(species.reshape(-1,self.num_species), edge_index, edge_attr, edge_vec, t.reshape(-1,1))
-        
-        return h, v, edge_attr
-
-    def forward_encoder(self, x: Tensor, t: Tensor, 
-                cell=None, 
-                num_atoms=None,
-                conditions=None,
-                aatype=None, x_latt=None):
-        if self.design:
-            x_ = x_latt
-            aatype_ = x
-            scaler_out = self._get_encoded_var(x_, t, cell, num_atoms, conditions, aatype_)
-            return scaler_out
-        else:
-            vector_out = self._get_encoded_var(x, t, cell, num_atoms, conditions, aatype)
-            return vector_out
-        
-
-    def forward_processor(self, x: Tensor, t: Tensor, 
-                cell=None, 
-                num_atoms=None,
-                conditions=None,
-                aatype=None, x_latt=None):
-        if self.design:
-            x_ = x_latt
-            aatype_ = x
-            scaler_out = self._get_processed_var(x_, t, cell, num_atoms, conditions, aatype_)
-            return scaler_out
-        else:
-            vector_out = self._get_processed_var(x, t, cell, num_atoms, conditions, aatype)
-            return vector_out
 
     def rearrange_batch(self, idx, model_kwargs:dict):
         B = idx.shape[0]
@@ -861,13 +643,16 @@ class EquivariantTransformer_dpm(EquivariantTransformer):
             if 'conditions' not in k:
                 model_kwargs[k] = model_kwargs[k][idx]
             else:
+                '''
                 if self.tps_condition:
                     model_kwargs['conditions']['cond_f']['x'] = model_kwargs['conditions']['cond_f']['x'].reshape(B,-1,3)[idx].reshape(-1,3)
                     model_kwargs['conditions']['cond_f']['mask'] = model_kwargs['conditions']['cond_f']['mask'].reshape(B,-1)[idx].reshape(-1)
                     model_kwargs['conditions']['cond_r']['x'] = model_kwargs['conditions']['cond_r']['x'].reshape(B,-1,3)[idx].reshape(-1,3)
                     model_kwargs['conditions']['cond_r']['mask'] = model_kwargs['conditions']['cond_r']['mask'].reshape(B,-1)[idx].reshape(-1)
                 else:
-                    raise Exception("The required condition not implemented")
+                '''
+                if model_kwargs[k] is not None:
+                    raise Exception("Shouldn't input condition")
 
 class TransformerDecoder(nn.Module):
     def __init__(self, dim: int, num_scalar_out: int, num_vector_out: int, 

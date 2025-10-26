@@ -74,7 +74,7 @@ def parse_train_args():
     group = parser.add_argument_group("Transport arguments")
     group.add_argument("--path-type", type=str, default="GVP", choices=["Linear", "GVP", "VP", "Pow", "Schrodinger_Linear"])
     group.add_argument("--prediction", type=str, default="velocity", choices=["velocity", "score", "noise"])
-    group.add_argument("--KL", type=str, default="L2", choices=['forward', 'reverse', 'symm', "L2", 'L1'])
+    group.add_argument("--KL", type=str, default="L2", choices=['forward', 'reverse', 'symm', "L2", 'L1', 'alpha'])
     group.add_argument("--sampling_method", type=str, default="dopri5", choices=["dopri5", "euler"])
     group.add_argument('--alpha_max', type=float, default=8)
     group.add_argument('--discrete_loss_weight', type=float, default=0.5)
@@ -82,7 +82,8 @@ def parse_train_args():
     group.add_argument('--allow_nan_cfactor', action='store_true')
     group.add_argument('--x0std', type=float, default=1.0)
     group.add_argument('--dynOT', action='store_true')
-    # group.add_argument("--loss-weight", type=none_or_str, default=None, choices=[None, "velocity", "likelihood"])
+    group.add_argument('--beta_sample_t', type=float, default=0.8)
+    group.add_argument("--loss-weight", type=str, default=None, choices=["None", "velocity", "likelihood"])
     group.add_argument('--weight_loss_var_x0', type=float, default=0)
 
 
@@ -120,6 +121,8 @@ def parse_train_args():
 
     args = parser.parse_args()
     os.environ["MODEL_DIR"] = os.path.join("workdir", args.run_name)
+    if args.loss_weight == "None":
+        args.loss_weight = None
 
     return args
 

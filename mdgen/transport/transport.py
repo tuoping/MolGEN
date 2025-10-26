@@ -92,6 +92,98 @@ def batch_ot_match(x0, x1, epsilon=0.05, iters=100):
         idx = P.argmax(dim=1)                                  # [B]
     return idx
 
+import torch
+
+def sinkhorn_match_along_L(x0, x1, epsilon=0.05, iters=100):
+    """
+    Match x0 -> x1 along the sequence (L) dimension using entropic OT (Sinkhorn),
+    independently for each batch.
+
+    Args:
+        x0: Tensor [B, L, D]  (e.g., D=3)
+        x1: Tensor [B, L, D]
+        epsilon: entropic regularization strength
+        iters: number of Sinkhorn iterations
+
+    Returns:
+        idx: LongTensor [B, L], where idx[b, i] is the matched j in x1[b] for x0[b, i]
+    """
+    assert x0.shape == x1.shape and x0.dim() == 3, "x0 and x1 must be [B, L, D] and equal shape"
+    B, L, D = x0.shape
+
+    with torch.no_grad():
+        # Cost matrices per batch: [B, L, L] (squared Euclidean)
+        C = torch.cdist(x0, x1, p=2.0) ** 2
+
+        # Log kernel
+        log_K = -C / epsilon  # [B, L, L]
+
+        # Dual scalings (log-domain Sinkhorn)
+        u = torch.zeros(B, L, device=log_K.device, dtype=log_K.dtype)  # [B, L]
+        v = torch.zeros(B, L, device=log_K.device, dtype=log_K.dtype)  # [B, L]
+
+        # Iterate Sinkhorn updates (log-domain, batched)
+        for _ in range(iters):
+            # Row scaling: u[b, i] = -logsumexp_j (log_K[b, i, j] + v[b, j])
+            u = -torch.logsumexp(log_K + v.unsqueeze(1), dim=2)
+            # Col scaling: v[b, j] = -logsumexp_i (log_K[b, i, j] + u[b, i])
+            v = -torch.logsumexp(log_K + u.unsqueeze(2), dim=1)
+
+        # Transport plan in log-domain then exp
+        log_P = log_K + u.unsqueeze(2) + v.unsqueeze(1)  # [B, L, L]
+        P = torch.exp(log_P)
+
+        # Hard matching per batch: argmax over columns
+        idx = P.argmax(dim=2)  # [B, L]
+
+    return idx
+
+
+import torch.distributions as D
+
+def sample_t_u_shaped(n, alpha=0.8, reweight=True, eps=1e-6):
+    # U-shaped proposal
+    dist = D.Beta(alpha, alpha)
+    t = dist.sample((n,)).clamp(eps, 1-eps)
+
+    if reweight:
+        # target p(t) = Uniform[0,1] => p(t)=1 on [0,1]
+        # importance weight w(t) = p(t)/q(t) = 1 / q(t)
+        q = torch.exp(dist.log_prob(t))
+        w = (1.0 / q)
+        w = w / w.mean()          # stabilize; keeps expected weight = 1
+    else:
+        w = torch.ones_like(t)
+
+    return t, w
+
+# def alpha_divergence(p, q, alpha, eps=1e-6):
+#     # p, q: probs (batch, K). alpha != 0,1
+#     p = p.clamp_min(eps)
+#     q = q.clamp_min(eps)
+#     if abs(alpha-1.0) < 1e-6:
+#         return (p * (p.log() - q.log())).sum(dim=-1).mean()  # forward KL
+#     if abs(alpha) < 1e-6:
+#         return (q * (q.log() - p.log())).sum(dim=-1).mean()  # reverse KL
+#     s = (p.pow(alpha) * q.pow(1.0 - alpha)).sum(dim=-1)
+#     return (1.0 / (alpha * (alpha - 1.0))) * (1.0 - s).mean()
+
+def alpha_divergence(log_p, log_q, alpha, eps=1e-6):
+    # p, q: probs (batch, K). alpha != 0,1
+    assert alpha >=0 and alpha <= 1, alpha
+    p = log_p.exp()
+    q = log_q.exp()
+    assert torch.all(torch.isfinite(p))
+    assert torch.all(torch.isfinite(q))
+    if abs(alpha-1.0) < 1e-6:
+        return (p * (log_p - log_q)).sum(dim=-1)  # forward KL
+    if abs(alpha) < 1e-6:
+        return (q * (log_q - log_p)).sum(dim=-1)  # reverse KL
+    # s = (p.pow(alpha) * q.pow(1.0 - alpha)).sum(dim=-1)
+    s = (alpha*log_p + (1-alpha)*log_q ).exp().sum(dim=-1)
+    assert torch.all(torch.isfinite(s)), "  ".join([str((alpha*log_p + (1-alpha)*log_q ).max()), str(log_p.max()), str(log_q.max()), str(alpha)])
+    return (1.0 / (alpha * (alpha - 1.0))) * (1.0 - s)
+
 class Transport:
 
     def __init__(
@@ -166,10 +258,12 @@ class Transport:
             x1 - data point; [batch, *dim]
         """
         x0 = []
-        for i in range(5):
+        for i in range(1):
             x0.append(th.randn_like(x1)*self.args.x0std)
         t0, t1 = self.check_interval(self.train_eps, self.sample_eps)
-        t = th.rand((x1.shape[0],)) * (t1 - t0) + t0
+        # t = th.rand((x1.shape[0],)) * (t1 - t0) + t0
+        t, _ = sample_t_u_shaped(x1.shape[0], self.args.beta_sample_t)
+        t = t*(t1-t0) + t0
         t = t.to(x1)
         return t, x0, x1
 
@@ -180,7 +274,8 @@ class Transport:
             aatype1=None, # target aatype
             mask=None,
             num_species=5,
-            model_kwargs=None
+            model_kwargs=None,
+            global_step = None
     ):
         """Loss for training the score model
         Args:
@@ -188,6 +283,15 @@ class Transport:
         - x1: datapoint
         - model_kwargs: additional arguments for the model
         """
+        #if global_step < 20:
+        #    self.pref_symmkl = 0.1*global_step
+        #    self.pref_alpha_div = 0.9 - 0.6*global_step/20
+        #else:
+        self.pref_symmkl = 1.
+        self.pref_alpha_div = 0.3
+        self.pref_reversekl = 0.3
+        assert self.pref_alpha_div >=0 and self.pref_alpha_div <= 1, "  ".join([str(self.pref_alpha_div), str(global_step)])
+
 
         if model_kwargs == None:
             model_kwargs = {}
@@ -197,9 +301,11 @@ class Transport:
         if self.args.dynOT:
             assert self.args.x0std > 0 and self.args.weight_loss_var_x0 == 0
             B,T,L,_ = x1.shape
-            idx = batch_ot_match(x0[0].reshape(B, -1), x1.reshape(B, -1)) 
-            x1 = x1[idx]
-            model.rearrange_batch(idx, model_kwargs)
+            idx = sinkhorn_match_along_L(x1.reshape(B, -1, 3), x0[0].reshape(B, -1, 3)) 
+            x0[0].copy_(
+                torch.gather(x0[0], 1, idx.unsqueeze(-1).expand(-1, -1, x0[0].size(-1)))
+            )
+            # model.rearrange_batch(idx, model_kwargs)
         if self.args.design:  # alterations made to the original SIT code to include dirichlet flow matching for design
             assert self.model_type == ModelType.VELOCITY
             seq_one_hot = aatype1
@@ -215,12 +321,7 @@ class Transport:
         else:
             if self.score_model is None:
                 t, xt, ut = self.path_sampler.plan(t, x0[0], x1)
-                if self.args.weight_loss_var_x0 > 0:
-                    xt_samples = []
-                    for x0_2 in x0[1:]:
-                        t_2, xt_2, ut_2 = self.path_sampler.plan(t, x0_2, x1)
-                        assert torch.all(t == t_2)
-                        xt_samples.append(xt_2)
+                assert self.args.weight_loss_var_x0 == 0
             else:
                 assert self.args.weight_loss_var_x0 == 0
                 diffusion = self.path_sampler.compute_diffusion(x1, t, self.args.diffusion_form, self.args.diffusion_norm).view(-1)  # the input x here is not used
@@ -293,15 +394,23 @@ class Transport:
                     logm = torch.logaddexp(logP_, logQ_) - torch.ones_like(ut)*torch.log(torch.tensor(2.0))
                     kl_p_m = (logP_.exp() * (logP_ - logm)).sum(dim=-1)
                     kl_q_m = (logQ_.exp() * (logQ_ - logm)).sum(dim=-1)
-                    terms['loss_flow'] = 0.5 * (kl_p_m + kl_q_m)
+                    terms['loss_symmkl'] = mean_flat(0.5 * (kl_p_m + kl_q_m), mask.mean(dim=-1)) 
+                    # terms['loss_entropy'] = mean_flat((logQ_.exp()*logQ_).sum(dim=-1), mask.mean(dim=-1)) 
+                    terms['loss_l1'] = mean_flat((model_output - ut).abs(), mask)
                 elif self.args.KL == "reverse":
                     logQ_ = (-(t[:,None,None,None]*model_output)**2)/2
                     logP_ = (-(t[:,None,None,None]*ut)**2)/2
-                    terms['loss_flow'] = logQ_.exp()*(logQ_ - logP_)
+                    terms['loss_flow'] = self.pref_reversekl*mean_flat(logQ_.exp()*(logQ_ - logP_), mask) + mean_flat((model_output - ut).abs(), mask)
                 elif self.args.KL == "forward":
                     logQ_ = (-(t[:,None,None,None]*model_output)**2)/2
                     logP_ = (-(t[:,None,None,None]*ut)**2)/2
-                    terms['loss_flow'] = logP_.exp()*(logP_ - logQ_)
+                    terms['loss_flow'] = mean_flat(logP_.exp()*(logP_ - logQ_), mask) + mean_flat((model_output - ut).abs(), mask)
+                elif self.args.KL == 'alpha':
+                    logQ_ = (-(t[:,None,None,None]*model_output)**2)/2
+                    logP_ = (-(t[:,None,None,None]*ut)**2)/2
+                    alpha_div = alpha_divergence(logP_, logQ_, self.pref_alpha_div, eps=1e-6)
+                    terms['loss_alphadiv'] = mean_flat(alpha_div, mask.mean(dim=-1))
+                    terms['loss_l1'] = mean_flat((model_output - ut).abs(), mask)
                 elif self.args.KL == "L2":
                     terms['loss_flow'] = mean_flat((0.5*(model_output)**2 - (ut)*model_output), mask)
                 elif self.args.KL == "L1":
@@ -314,6 +423,11 @@ class Transport:
                 else:
                     if self.args.weight_loss_var_x0 > 0:
                         terms['loss'] = terms['loss_flow'] + mean_flat(terms['loss_var'], mask[...,0])*self.args.weight_loss_var_x0
+                    elif self.args.KL == 'symm':
+                        # terms['loss'] = self.pref_symmkl*terms['loss_entropy'] + terms['loss_symmkl'] + terms['loss_l1']
+                        terms['loss'] = terms['loss_symmkl'] # + terms['loss_l1']
+                    elif self.args.KL == 'alpha':
+                        terms['loss'] = 0.1*terms['loss_alphadiv'] + terms['loss_l1']
                     else:
                         terms['loss'] = terms['loss_flow']
             else:
@@ -329,10 +443,10 @@ class Transport:
                     raise NotImplementedError()
 
                 if self.model_type == ModelType.NOISE:
-                    terms['loss'] = mean_flat(weight * ((model_output - x0) ** 2), mask)
+                    terms['loss'] = mean_flat(weight * ((model_output - x0[0]) ** 2), mask)
                 else:
-                    terms["loss_continuous"]=(weight * ((model_output * sigma_t + x0) ** 2)*mask)
-                    terms['loss'] = mean_flat(weight * ((model_output * sigma_t + x0) ** 2), mask) # loss by comparing the x_0
+                    terms["loss_continuous"]=(weight * ((model_output * sigma_t + x0[0]) ** 2)*mask)
+                    terms['loss'] = mean_flat(weight * ((model_output * sigma_t + x0[0]) ** 2), mask) # loss by comparing the x_0
 
         # more changes for dirichlet flow matching
 

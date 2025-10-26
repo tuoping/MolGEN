@@ -184,6 +184,67 @@ def cart_to_frac_coords_with_lattice(
     frac_coords = torch.einsum("bi,bij->bj", cart_coords, inv_lattice_nodes)
     return frac_coords % 1.0
 
+import torch
+from itertools import product
+
+def minimum_image_all_offsets(distance_vectors: torch.Tensor,
+                              cell: torch.Tensor):
+    """
+    Compute minimum-image displacement vectors by exhaustively trying all 27
+    periodic offsets in 3D and selecting the one with smallest norm.
+
+    Args
+    ----
+    distance_vectors : (N, 3) tensor
+        Raw displacement vectors r_j - r_i (Cartesian).
+    cell : (3, 3) or (N, 3, 3) tensor
+        Lattice matrix. Must match the convention used in your snippet:
+        row-vector (1x3) * cell (3x3) -> (1x3).
+        That is, integer coefficients (n1, n2, n3) are multiplied on the left.
+
+    Returns
+    -------
+    min_vectors : (N, 3) tensor
+        Minimum-image displacement for each input pair.
+    min_indices : (N,) long tensor
+        Which of the 27 offsets won for each pair (0..26).
+    min_norms : (N,) tensor
+        Norms of the chosen minimum-image displacements.
+    """
+    dv = distance_vectors  # (N, 3)
+    assert dv.dim() == 2 and dv.size(-1) == 3, "distance_vectors must be (N,3)"
+
+    N = dv.size(0)
+    device = dv.device
+    dtype = dv.dtype
+
+    # Generate all 27 integer offsets in [-1, 0, 1]^3 -> (27, 3)
+    all_off_int = torch.tensor(list(product([-1, 0, 1], repeat=3)),
+                               dtype=dtype, device=device)  # (27,3)
+
+
+    # Per-pair cell: (N,3,3)
+    assert cell.shape[0] == N and cell.shape[1:] == (3, 3), \
+        "batched cell must be (N,3,3) matching distance_vectors"
+    # Compute offsets for each pair:
+    # all_off_int: (27,3), cell: (N,3,3)
+    # result: (N,27,3), via left-multiplication by the integer offsets
+    cart_offsets = torch.einsum('oc,ncj->noj', all_off_int, cell)
+
+    # Candidate displacements under each offset: (N,27,3)
+    candidates = dv.unsqueeze(1) + cart_offsets
+
+    # Norms and argmin over the 27 images
+    norms = torch.linalg.norm(candidates, dim=-1)  # (N,27)
+    min_indices = torch.argmin(norms, dim=1)       # (N,)
+    min_norms = norms.gather(1, min_indices.unsqueeze(1)).squeeze(1)  # (N,)
+
+    # Gather the winning displacement vectors: (N,3)
+    batch_idx = torch.arange(N, device=device)
+    min_vectors = candidates[batch_idx, min_indices, :]
+    min_offsets = cart_offsets[min_indices]
+    return min_vectors, min_offsets, min_norms
+
 
 def get_pbc_distances(
     coords: torch.Tensor,
@@ -195,6 +256,7 @@ def get_pbc_distances(
     coord_is_cart: bool = False,
     return_offsets: bool = False,
     return_distance_vec: bool = False,
+    recalculate_offsets: bool = False,
 ) -> torch.Tensor:
     if coord_is_cart:
         pos = coords
@@ -208,8 +270,11 @@ def get_pbc_distances(
 
     # correct for pbc
     lattice_edges = torch.repeat_interleave(lattice, num_bonds, dim=0)
-    offsets = torch.einsum("bi,bij->bj", to_jimages.float(), lattice_edges)
-    distance_vectors += offsets
+    if recalculate_offsets:
+        distance_vectors, offsets, _ = minimum_image_all_offsets(distance_vectors, lattice_edges)
+    else:
+        offsets = torch.einsum("bi,bij->bj", to_jimages.to(lattice.dtype), lattice_edges)
+        distance_vectors += offsets
 
     # compute distances
     distances = distance_vectors.norm(dim=-1)
