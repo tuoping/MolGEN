@@ -293,8 +293,7 @@ class EquivariantTransformer_dpm(EquivariantTransformer):
         self.sim_condition = sim_condition
         self.pbc = True
 
-        ## hp2:
-        node_irreps = [(128, (0, +1))]                 # 32x0e
+        node_irreps = [(128, (0, +1))] 
         msg_irreps  = [(64, (0, +1)), (48, (1, -1)), (8, (2, +1))]
         self.edge_block = EdgeCGBlock(node_irreps, msg_irreps, lmax=3, num_rbf=num_radial, cutoff=self.cutoff)
         self.embed_atom = nn.Sequential(
