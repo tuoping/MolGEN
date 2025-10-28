@@ -14,7 +14,7 @@ args = Namespace(
     # sim_ckpt='workdir/Dataset2-sc-oa-TPS-x0std1.0-OT-symm/epoch=649-step=1890200-val_meanRMSD_Kabsch=0.1420.ckpt',
     sim_ckpt=sim_ckpt,
     # data_dir="./",
-    data_dir="data/RGD1/",
+    data_dir="data/Transition1x/",
     suffix="",
     out_dir=f"experiments/{out_dir}",
     num_frames=3,
@@ -36,7 +36,7 @@ with open(f"{args.out_dir}/README.md", "w") as fp:
 
 from mdgen.dataset import EquivariantTransformerDataset_Transition1x
 # dataset = EquivariantTransformerDataset_Transition1x(data_dirname=args.data_dir, sim_condition=args.sim_condition, tps_condition=args.tps_condition, num_species=5, stage=out_dir)
-dataset = EquivariantTransformerDataset_Transition1x(data_dirname=args.data_dir, sim_condition=args.sim_condition, tps_condition=args.tps_condition, num_species=5, stage="val")
+dataset = EquivariantTransformerDataset_Transition1x(data_dirname=args.data_dir, sim_condition=args.sim_condition, tps_condition=args.tps_condition, num_species=5, stage="test-fragmented_cutoffx1.5")
 
 ckpt = torch.load(args.sim_ckpt, weights_only=False)
 hparams = ckpt["hyper_parameters"]
@@ -86,8 +86,6 @@ def rollout(model, batch):
     
     positions, _ = model.inference(expanded_batch)
 
-    # mask_act_space = (batch["mask"] != 0)
-    # positions = positions*mask_act_space
     new_batch = {**batch}
     new_batch['x'] = positions
     return positions, new_batch
@@ -115,8 +113,7 @@ all_rollout_atoms = []
 all_rollout_atoms_ref = []
 import time
 
-# for i_rollout in range(0, len(idx_rollouts)):
-for i_rollout in [0]:
+for i_rollout in range(0, len(idx_rollouts)):
     idx = idx_rollouts[i_rollout]
     print("idx = ", idx, "rollout", i_rollout, out_dir)
     for i_trial in range(30):
@@ -168,14 +165,6 @@ for i_rollout in [0]:
             os.remove(filename)
         #     shutil.move(filename_ref_0, os.path.join(dirname, "bck.0.reftraj_0.xyz"))
             os.remove(filename_ref)
-        if model.args.sim_condition:
-            assert np.allclose(all_atoms[0].positions, all_atoms_ref[0].positions)
-            assert np.allclose(all_atoms[1].positions, all_atoms_ref[1].positions)
-            assert not np.allclose(all_atoms[2].positions, all_atoms_ref[2].positions)
-        elif model.args.tps_condition:
-            assert np.allclose(all_atoms[0].positions, all_atoms_ref[0].positions)
-            assert not np.allclose(all_atoms[1].positions, all_atoms_ref[1].positions)
-            assert np.allclose(all_atoms[2].positions, all_atoms_ref[2].positions)
         for atoms in all_atoms:
             atoms.set_cell(np.eye(3,3)*25)
             write(filename, atoms, append=True)
@@ -183,4 +172,13 @@ for i_rollout in [0]:
             for ref_atoms in all_atoms_ref:
                 ref_atoms.set_cell(np.eye(3,3)*25)
                 write(filename_ref, ref_atoms, append=True)
+        
+        if model.args.tps_condition:
+            assert np.allclose(all_atoms[2].positions, all_atoms_ref[2].positions)
+            assert np.allclose(all_atoms[0].positions, all_atoms_ref[0].positions)
+            assert not np.allclose(all_atoms[1].positions, all_atoms_ref[1].positions)
+        elif model.args.sim_condition:
+            assert not np.allclose(all_atoms[2].positions, all_atoms_ref[2].positions)
+            assert np.allclose(all_atoms[0].positions, all_atoms_ref[0].positions)
+            assert np.allclose(all_atoms[1].positions, all_atoms_ref[1].positions)
 
