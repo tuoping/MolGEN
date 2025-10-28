@@ -25,16 +25,22 @@ class ResetLrCallback(pl.Callback):
 
 
 torch.set_float32_matmul_precision('medium')
+from torch.utils.data import ConcatDataset
+from torch.utils.data import Subset
 
-train_dataset = torch.load(os.path.join(args.data_dir, "tps_masked_train-fragmented_cutoffx1.5.pt"), weights_only=False)
+train_dataset = torch.load(os.path.join("data/Transition1x", "tps_masked_train-fragmented_cutoffx1.5.pt"), weights_only=False)
+#train_dataset = ConcatDataset([
+#                                torch.load(os.path.join("data/Transition1x", "tps_masked_train-fragmented_cutoffx1.5.pt"), weights_only=False),
+#                                torch.load(os.path.join("data/RGD1", "tps_masked_train.pt"), weights_only=False),
+#                          ])
 trainsampler = BucketBatchSampler(train_dataset, batch_size=args.batch_size)
 
 if args.overfit:
     val_dataset = train_dataset
     valsampler = trainsampler
 else:
-    val_dataset = torch.load(os.path.join(args.data_dir, "tps_masked_val-fragmented_cutoffx1.5.pt"), weights_only=False)
-    valsampler = BucketBatchSampler(val_dataset, batch_size=args.batch_size)
+    val_dataset = torch.load(os.path.join("data/Transition1x", "tps_masked_val-fragmented_cutoffx1.5.pt"), weights_only=False)
+    valsampler = BucketBatchSampler(val_dataset, batch_size=args.batch_size, drop_last=True)
 
 train_loader = torch.utils.data.DataLoader(
     train_dataset,
@@ -102,7 +108,7 @@ trainer = pl.Trainer(
     max_epochs=args.epochs,
     limit_train_batches=args.train_batches or 1.0,
     limit_val_batches=0.0 if args.no_validate else (args.val_batches or 1.0),
-    num_sanity_val_steps=0,
+    num_sanity_val_steps=1,
     precision=args.precision,
     enable_progress_bar=not args.wandb or os.getlogin() == 'hstark',
     gradient_clip_val=args.grad_clip,
