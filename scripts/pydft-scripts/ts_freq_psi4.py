@@ -102,23 +102,23 @@ import numpy as np
 idx_inpath = int(sys.argv[1])
 idxmin = int(np.loadtxt("../idxmin.dat")[idx_inpath][1])
 import os
-if os.path.exists('optimized_ts_report_allfreq.txt'):
-    raise Exception('Done')
+'''
 if os.path.exists("ts_optimized.xyz"):
     inpath = Path("ts_optimized.xyz")
     atoms = read_xyz_optimized(inpath)
 else:
-    # raise Exception('Optimization failed')
-    inpath = Path(f"gentraj_{idxmin}.xyz")
-    atoms = read_xyz(inpath)
+'''
+if os.path.exists('ts_report_allfreq.txt'):
+    raise Exception('Done')
+inpath = Path(f"gentraj_{idxmin}.xyz")
+atoms = read_xyz(inpath)
 
 geom_str = atoms_to_psi4_geom(atoms, 0, 1)
 mol = psi4.geometry(geom_str)
 # Optional: force UHF for open-shell; for this example (singlet anion), RHF is fine.
 # psi4.set_options({"reference": "uhf"})
-
+'''
 # ---------- Run TS optimization ----------
-print(f"Optimizing configuration: gentraj_{idxmin}.xyz")
 print(">> Running TS optimization at {} / {}".format(method, basis))
 ts_energy = psi4.optimize(f"{method}/{basis}", molecule=mol)
 print("TS energy (Eh):", ts_energy)
@@ -127,13 +127,13 @@ print("TS energy (Eh):", ts_energy)
 ts_xyz = mol.save_string_xyz()
 Path("ts_optimized.xyz").write_text(ts_xyz)
 print("Saved optimized TS geometry to ts_optimized.xyz")
-
+'''
 # ---------- Verify with frequency analysis ----------
 psi4.set_options({
     'hessian_write': True,
-    'writer_file_label': 'optimized'
+    'writer_file_label': 'unoptimized'
     })
-print(">> Running frequency analysis to verify exactly one imaginary mode")
+print(f">> Running frequency analysis on gentraj_{idxmin}.xyz to verify exactly one imaginary mode")
 freq_result = psi4.frequency(f"{method}/{basis}", molecule=mol, return_wfn=True)
 wfn = freq_result[1]
 
@@ -147,12 +147,10 @@ print("Number of imaginary modes:", n_imag)
 # Write a small report
 report = []
 report.append(f"Method: {method} / {basis}")
-report.append(f"Optimizing configuration: gentraj_{idxmin}.xyz")
-
 # report.append(f"TS Energy (Eh): {ts_energy:.12f}")
 report.append(f"Number of imaginary frequencies: {n_imag}")
 report.append("Frequencies (cm^-1): " + ", ".join(f"{f:.5f}" for f in vibfreqs[:]))
-Path("optimized_ts_report_allfreq.txt").write_text("\n".join(report))
+Path("ts_report_allfreq.txt").write_text("\n".join(report))
 
 print("Wrote summary to ts_report.txt")
 print("Done.")
