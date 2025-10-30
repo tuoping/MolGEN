@@ -14,6 +14,102 @@ from torch_scatter import segment_coo, segment_csr
 
 from .globals import get_pyg_device
 
+import torch
+
+def minimum_image(dv: torch.Tensor, cell: torch.Tensor,):
+    """
+    dv:   (N,3) displacement vectors (row-vectors, Cartesian)
+    cell: (3,3) or (N,3,3) lattice, consistent with row-vector convention:
+          fractional row * cell -> Cartesian row.
+
+    Returns:
+      dv_min: (N,3) minimum-image displacement
+    """
+    # Map to fractional coords without forming inv(cell):
+    # Solve (cell^T) * x^T = dv^T  ==> x = dv @ inv(cell)
+    if cell.dim() == 2:
+        frac = torch.linalg.solve(cell.T, dv.T).T  # (N,3)
+    elif cell.dim() == 3:
+        # batched solve: broadcast over N
+        frac = torch.linalg.solve(cell.transpose(-1, -2), dv.unsqueeze(-1)).squeeze(-1)
+    else:
+        raise ValueError("cell must be (3,3) or (N,3,3)")
+
+    # Differentiable-ish wrap to [-0.5, 0.5):
+    # frac_wrapped = frac - round(frac)  (but round kills grads)
+    # Use a sawtooth via frac(): ((x + 0.5) % 1) - 0.5  but with torch.frac:
+    # torch.frac(x) = x - floor(x), gradient ~1 a.e., discontinuous at integers.
+    frac_wrapped = torch.frac(frac + 0.5) - 0.5
+
+    # Back to Cartesian
+    if cell.dim() == 2:
+        dv_min = frac_wrapped @ cell
+    else:
+        dv_min = torch.einsum('ni,nij->nj', frac_wrapped, cell)
+
+    return dv_min
+
+import torch
+from itertools import product
+
+def minimum_image_all_offsets(distance_vectors: torch.Tensor,
+                              cell: torch.Tensor):
+    """
+    Compute minimum-image displacement vectors by exhaustively trying all 27
+    periodic offsets in 3D and selecting the one with smallest norm.
+
+    Args
+    ----
+    distance_vectors : (N, 3) tensor
+        Raw displacement vectors r_j - r_i (Cartesian).
+    cell : (3, 3) or (N, 3, 3) tensor
+        Lattice matrix. Must match the convention used in your snippet:
+        row-vector (1x3) * cell (3x3) -> (1x3).
+        That is, integer coefficients (n1, n2, n3) are multiplied on the left.
+
+    Returns
+    -------
+    min_vectors : (N, 3) tensor
+        Minimum-image displacement for each input pair.
+    min_indices : (N,) long tensor
+        Which of the 27 offsets won for each pair (0..26).
+    min_norms : (N,) tensor
+        Norms of the chosen minimum-image displacements.
+    """
+    dv = distance_vectors  # (N, 3)
+    assert dv.dim() == 2 and dv.size(-1) == 3, "distance_vectors must be (N,3)"
+
+    N = dv.size(0)
+    device = dv.device
+    dtype = dv.dtype
+
+    # Generate all 27 integer offsets in [-1, 0, 1]^3 -> (27, 3)
+    all_off_int = torch.tensor(list(product([-1, 0, 1], repeat=3)),
+                               dtype=dtype, device=device)  # (27,3)
+
+
+    # Per-pair cell: (N,3,3)
+    assert cell.shape[0] == N and cell.shape[1:] == (3, 3), \
+        "batched cell must be (N,3,3) matching distance_vectors"
+    # Compute offsets for each pair:
+    # all_off_int: (27,3), cell: (N,3,3)
+    # result: (N,27,3), via left-multiplication by the integer offsets
+    cart_offsets = torch.einsum('oc,ncj->noj', all_off_int, cell)
+
+    # Candidate displacements under each offset: (N,27,3)
+    candidates = dv.unsqueeze(1) + cart_offsets
+
+    # Norms and argmin over the 27 images
+    norms = torch.linalg.norm(candidates, dim=-1)  # (N,27)
+    min_indices = torch.argmin(norms, dim=1)       # (N,)
+    min_norms = norms.gather(1, min_indices.unsqueeze(1)).squeeze(1)  # (N,)
+
+    # Gather the winning displacement vectors: (N,3)
+    batch_idx = torch.arange(N, device=device)
+    min_vectors = candidates[batch_idx, min_indices, :]
+
+    return min_vectors, min_indices, min_norms
+
 
 def get_pbc_distances(
     pos: torch.Tensor,
@@ -23,6 +119,7 @@ def get_pbc_distances(
     neighbors: torch.Tensor,
     return_offsets: bool = False,
     return_distance_vec: bool = False,
+    recalculate_offsets: bool = False,
 ) -> dict:
     row, col = edge_index
 
@@ -31,8 +128,11 @@ def get_pbc_distances(
     # correct for pbc
     neighbors = neighbors.to(cell.device)
     cell = torch.repeat_interleave(cell, neighbors, dim=0)
-    offsets = cell_offsets.float().view(-1, 1, 3).bmm(cell.float()).view(-1, 3)
-    distance_vectors += offsets
+    if recalculate_offsets:
+        distance_vectors, _, _ = minimum_image_all_offsets(distance_vectors, cell)
+    else:
+        offsets = cell_offsets.float().view(-1, 1, 3).bmm(cell.float()).view(-1, 3)
+        distance_vectors += offsets
 
     # compute distances
     distances = distance_vectors.norm(dim=-1)
@@ -188,7 +288,7 @@ def radius_graph_pbc(
 
     # Tensor of unit cells
     cells_per_dim = [
-        torch.arange(-rep, rep + 1, device=device, dtype=torch.float) for rep in max_rep
+        torch.arange(-rep, rep + 1, device=device, dtype=cell.dtype) for rep in max_rep
     ]
     cell_offsets = torch.cartesian_prod(*cells_per_dim)
     num_cells = len(cell_offsets)

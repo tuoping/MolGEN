@@ -25,16 +25,22 @@ class ResetLrCallback(pl.Callback):
 
 
 torch.set_float32_matmul_precision('medium')
+from torch.utils.data import ConcatDataset
+from torch.utils.data import Subset
 
-train_dataset = torch.load(os.path.join(args.data_dir, "tps_masked_train.pt"), weights_only=False)
+train_dataset = torch.load(os.path.join("data/Transition1x", "tps_masked_train-fragmented_cutoffx1.5.pt"), weights_only=False)
+#train_dataset = ConcatDataset([
+#                                torch.load(os.path.join("data/Transition1x", "tps_masked_train-fragmented_cutoffx1.5.pt"), weights_only=False),
+#                                torch.load(os.path.join("data/RGD1", "tps_masked_train.pt"), weights_only=False),
+#                          ])
 trainsampler = BucketBatchSampler(train_dataset, batch_size=args.batch_size)
 
 if args.overfit:
     val_dataset = train_dataset
     valsampler = trainsampler
 else:
-    val_dataset = torch.load(os.path.join(args.data_dir, "tps_masked_val.pt"), weights_only=False)
-    valsampler = BucketBatchSampler(val_dataset, batch_size=args.batch_size)
+    val_dataset = torch.load(os.path.join("data/Transition1x", "tps_masked_val-fragmented_cutoffx1.5.pt"), weights_only=False)
+    valsampler = BucketBatchSampler(val_dataset, batch_size=args.batch_size, drop_last=True)
 
 train_loader = torch.utils.data.DataLoader(
     train_dataset,
@@ -50,12 +56,6 @@ val_loader = torch.utils.data.DataLoader(
 
 model = EquivariantMDGenWrapper(args)
 
-# checkpoint = torch.load(args.ckpt, weights_only=False)
-# checkpoint["hyper_parameters"]['args'].pbc = False
-# checkpoint["hyper_parameters"]['args'].tps_condition = True
-# checkpoint["hyper_parameters"]['args'].potential_model = True
-# model = EquivariantMDGenWrapper(**checkpoint["hyper_parameters"])
-# model.load_state_dict(checkpoint["state_dict"], strict=False)
 
 if args.weight_loss_var_x0 > 0:
     callbacks_fn = [
@@ -65,22 +65,18 @@ if args.weight_loss_var_x0 > 0:
             save_top_k=1,
             monitor="val_loss_gen",
             every_n_epochs=args.ckpt_freq,
+            save_last=True,
         ),
         ModelCheckpoint(
             dirpath=os.environ["MODEL_DIR"], 
             save_top_k=1,
-            monitor="val_meanRMSD",
+            monitor="val_meanRMSD_Kabsch",
             every_n_epochs=args.ckpt_freq,
         ),
         ModelCheckpoint(
             dirpath=os.environ["MODEL_DIR"], 
             save_top_k=1,
             monitor="val_loss_var",
-            every_n_epochs=args.ckpt_freq,
-        ),
-        ModelCheckpoint(
-            dirpath=os.environ["MODEL_DIR"], 
-            save_top_k=1,
             every_n_epochs=args.ckpt_freq,
         ),
         ModelSummary(max_depth=2),
@@ -94,16 +90,13 @@ else:
             save_top_k=1,
             monitor="val_loss_gen",
             every_n_epochs=args.ckpt_freq,
+            save_last=True,
         ),
         ModelCheckpoint(
             dirpath=os.environ["MODEL_DIR"], 
+            filename="{epoch:03d}-{step:07d}-{val_meanRMSD_Kabsch:.4f}",
             save_top_k=1,
-            monitor="val_meanRMSD",
-            every_n_epochs=args.ckpt_freq,
-        ),
-        ModelCheckpoint(
-            dirpath=os.environ["MODEL_DIR"], 
-            save_top_k=1,
+            monitor="val_meanRMSD_Kabsch",
             every_n_epochs=args.ckpt_freq,
         ),
         ModelSummary(max_depth=2),
@@ -115,7 +108,7 @@ trainer = pl.Trainer(
     max_epochs=args.epochs,
     limit_train_batches=args.train_batches or 1.0,
     limit_val_batches=0.0 if args.no_validate else (args.val_batches or 1.0),
-    num_sanity_val_steps=0,
+    num_sanity_val_steps=1,
     precision=args.precision,
     enable_progress_bar=not args.wandb or os.getlogin() == 'hstark',
     gradient_clip_val=args.grad_clip,
