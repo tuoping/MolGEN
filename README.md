@@ -12,7 +12,7 @@ MolGEN initiates with a standard Gaussian distribution. Therefore, it also incor
 Please feel free to reach out to us at tuoping@berkeley.edu, liju@mit.edu with any questions.
 
 
-![algo.png](https://github.com/tuoping/MolGEN/blob/main/algo_schematic.png)
+![algo.png](https://github.com/tuoping/MolGEN/blob/e3/algo_schematic.png)
 
 ## Installation
 
