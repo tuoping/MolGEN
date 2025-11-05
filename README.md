@@ -50,7 +50,9 @@ pip install pyg_lib torch_scatter torch_sparse torch_cluster torch_spline_conv t
 ## Training
 
 Commands similar to these were used to train the models presented in the paper.
+
 When using Transition1x database, train the model with FM loss by "--KL L1", then fine-tune the model with KL divergence loss by "--KL symm".
+
 But when using RGD1 database, one can choose to train with FM loss and finetune, or only use KL divergence loss from scratch.
 ```
 
