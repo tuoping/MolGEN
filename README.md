@@ -50,9 +50,11 @@ pip install pyg_lib torch_scatter torch_sparse torch_cluster torch_spline_conv t
 ## Training
 
 Commands similar to these were used to train the models presented in the paper.
+When using Transition1x database, train the model with FM loss by "--KL L1", then fine-tune the model with KL divergence loss by "--KL symm".
+But when using RGD1 database, one can choose to train with FM loss and finetune, or only use KL divergence loss from scratch.
 ```
 
-python train-Transition1x-equivariant.py --tps_condition  --data_dir data/Transition1x/  --ckpt_freq 1  --epochs 2000 --run_name $workdir_name --cutoff 12 --val_epoch_freq 5 --x0std 1.0  --batch_size 64 --ratio_conditonal 1.0 --weight_loss_var_x0 0.0 --pbc --object_aware --path-type Linear  --KL symm --lr_decay 
+python train-Transition1x-equivariant.py --tps_condition  --data_dir data/Transition1x/  --ckpt_freq 1  --epochs 2000 --run_name $workdir_name --cutoff 12 --val_epoch_freq 5 --x0std 1.0  --batch_size 64 --ratio_conditonal 1.0 --weight_loss_var_x0 0.0 --pbc --object_aware --path-type Linear  --KL L1 --lr_decay 
 
 ```
 
