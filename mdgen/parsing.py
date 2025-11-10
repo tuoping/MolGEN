@@ -74,7 +74,7 @@ def parse_train_args():
     group = parser.add_argument_group("Transport arguments")
     group.add_argument("--path-type", type=str, default="GVP", choices=["Linear", "GVP", "VP", "Pow", "Schrodinger_Linear"])
     group.add_argument("--prediction", type=str, default="velocity", choices=["velocity", "score", "noise"])
-    group.add_argument("--KL", type=str, default="L2", choices=['forward', 'reverse', 'symm', "L2", 'L1', 'alpha'])
+    group.add_argument("--KL", type=str, default="L1", choices=['forward', 'reverse', 'symm', "L2", 'L1', 'alpha'])
     group.add_argument("--sampling_method", type=str, default="dopri5", choices=["dopri5", "euler"])
     group.add_argument('--alpha_max', type=float, default=8)
     group.add_argument('--discrete_loss_weight', type=float, default=0.5)
