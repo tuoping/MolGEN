@@ -157,16 +157,6 @@ def sample_t_u_shaped(n, alpha=0.8, reweight=True, eps=1e-6):
 
     return t, w
 
-# def alpha_divergence(p, q, alpha, eps=1e-6):
-#     # p, q: probs (batch, K). alpha != 0,1
-#     p = p.clamp_min(eps)
-#     q = q.clamp_min(eps)
-#     if abs(alpha-1.0) < 1e-6:
-#         return (p * (p.log() - q.log())).sum(dim=-1).mean()  # forward KL
-#     if abs(alpha) < 1e-6:
-#         return (q * (q.log() - p.log())).sum(dim=-1).mean()  # reverse KL
-#     s = (p.pow(alpha) * q.pow(1.0 - alpha)).sum(dim=-1)
-#     return (1.0 / (alpha * (alpha - 1.0))) * (1.0 - s).mean()
 
 def alpha_divergence(log_p, log_q, alpha, eps=1e-6):
     # p, q: probs (batch, K). alpha != 0,1
@@ -183,6 +173,13 @@ def alpha_divergence(log_p, log_q, alpha, eps=1e-6):
     s = (alpha*log_p + (1-alpha)*log_q ).exp().sum(dim=-1)
     assert torch.all(torch.isfinite(s)), "  ".join([str((alpha*log_p + (1-alpha)*log_q ).max()), str(log_p.max()), str(log_q.max()), str(alpha)])
     return (1.0 / (alpha * (alpha - 1.0))) * (1.0 - s)
+
+def geodesic_distance(x_string):
+    B,T,L,_ = x_string.shape
+    d = torch.zeros_like(x_string)
+    for i in range(1, T):
+        d += (x_string[0,i]-x_string[0, i-1])**2
+    return d/2
 
 class Transport:
 
@@ -298,14 +295,6 @@ class Transport:
         
         ### normal sampler of t
         t, x0, x1 = self.sample(x1)
-        if self.args.dynOT:
-            assert self.args.x0std > 0 and self.args.weight_loss_var_x0 == 0
-            B,T,L,_ = x1.shape
-            idx = sinkhorn_match_along_L(x1.reshape(B, -1, 3), x0[0].reshape(B, -1, 3)) 
-            x0[0].copy_(
-                torch.gather(x0[0], 1, idx.unsqueeze(-1).expand(-1, -1, x0[0].size(-1)))
-            )
-            # model.rearrange_batch(idx, model_kwargs)
         if self.args.design:  # alterations made to the original SIT code to include dirichlet flow matching for design
             assert self.model_type == ModelType.VELOCITY
             seq_one_hot = aatype1
@@ -351,15 +340,6 @@ class Transport:
         if not (self.args.design):
             if self.model_type == ModelType.VELOCITY:
                 terms["loss_continuous"]=((0.5*(model_output)**2 - (ut)*model_output))
-                if self.args.weight_loss_var_x0 > 0:
-                    ## model_output_samples: list of tensors, each [B, ...] same shape
-                    stacked = torch.stack(model_output_samples, dim=0)  # [K, B, ...]
-                    K = stacked.shape[0]
-                    idx_i, idx_j = torch.triu_indices(K, K, offset=1)
-                    stacked_i = stacked[idx_i]
-                    stacked_j = stacked[idx_j]
-                    pair_cos = torch.nn.functional.cosine_similarity(stacked_i, stacked_j, dim=-1)  
-                    terms['loss_var'] = (1-pair_cos).mean(dim = 0)
 
                 # s_est = self.path_sampler.get_score_from_velocity(model_output, xt, t)
                 # div_v = divergence(model, xt, t, model_kwargs).unsqueeze(-1)
@@ -433,34 +413,6 @@ class Transport:
 
         return terms
 
-    '''
-    ### Figuring out a better solution
-    def sample_latt(self, x1, cell):
-        """Sampling x0 & t based on shape of x1, and the particle density.
-        And reorder x0 by Hungarian algorithm over the distance matrix between x0 and x1
-          Args:
-            x1 - data point; [batch, *dim]
-        """
-        frac_x0 = (th.randn_like(x1)/2) % 1 - 0.5
-        _x0 = frac_x0@cell 
-        # Reorder x0 by Hungarian algorithm
-        B,T,N,_ = x1.shape
-        x0 = th.zeros_like(_x0)
-        # for i in range(B):
-        for j in range(T):
-            dist_mat = (x1[:,j].unsqueeze(2)-_x0[:,j].unsqueeze(1)).norm(dim=-1)
-            assignment = batch_linear_assignment(dist_mat)
-            for i in range(B):
-              x0[i,j] = _x0[i,j,assignment[i]]
-        t0, t1 = self.check_interval(self.train_eps, self.sample_eps)
-        t = th.rand((x1.shape[0],)) * (t1 - t0) + t0
-        t = t.to(x1)
-
-        length_prior_cell = torch.pow((cell[:,:,0,:]*torch.cross(cell[:,:,1,:], cell[:,:,2,:], dim=-1)).sum(dim=-1), 1./3.)
-        cell_0 = (torch.eye(3,3).unsqueeze(0).expand(T,-1,-1).unsqueeze(0).expand(B,-1,-1,-1).to(x1.device))*length_prior_cell[:,:,None,None]
-
-        return t, x0, x1, cell_0
-    '''
 
     def get_drift(
             self

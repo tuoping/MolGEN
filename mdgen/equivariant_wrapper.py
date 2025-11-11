@@ -148,32 +148,29 @@ class EquivariantMDGenWrapper(Wrapper):
         if args.design:
             num_scalar_out = self.args.num_species
             num_vector_out=0
-            latent_dim = self.args.num_species
         elif args.pbc:
             num_scalar_out = 0
             num_vector_out=1
-            latent_dim = 256
         else:
             num_scalar_out = 0
             num_vector_out=1
-            latent_dim = 3
+        latent_dim = args.embed_dim
         
         if args.tps_condition:
-            encoder = Encoder_dpm(num_species, 256, (64+48+8)*3, 256, input_dim=1, object_aware=args.object_aware)
+            encoder = Encoder_dpm(num_species, latent_dim, (64+48+8)*3, latent_dim, input_dim=1, cv_dim=2, object_aware=args.object_aware)
         elif args.sim_condition:
-            encoder = Encoder_dpm(num_species, 256, (64+48+8)*2, 256, input_dim=1, object_aware=args.object_aware)
+            encoder = Encoder_dpm(num_species, latent_dim, (64+48+8)*2, latent_dim, input_dim=1, object_aware=args.object_aware)
         else:
-            encoder = Encoder_dpm(num_species, 256, (64+48+8), 256, input_dim=1, object_aware=args.object_aware)
+            encoder = Encoder_dpm(num_species, latent_dim, (64+48+8), latent_dim, input_dim=1, object_aware=args.object_aware)
 
-        processor = Processor(num_convs=6, node_dim=256, num_heads=8, ff_dim=768, edge_dim=256)
+        processor = Processor(num_convs=5, node_dim=latent_dim, num_heads=8, ff_dim=args.ff_dim, edge_dim=latent_dim)
         print("Initializing drift model")
         self.model = EquivariantTransformer_dpm(
             encoder = encoder,
             processor = processor,
-            decoder = Decoder(dim=256, num_scalar_out=num_scalar_out, num_vector_out=num_vector_out, num_species=args.num_species),
+            decoder = Decoder(dim=latent_dim, num_scalar_out=num_scalar_out, num_vector_out=num_vector_out, num_species=args.num_species),
             cutoff=args.cutoff,
             latent_dim=latent_dim,
-            embed_dim=256,
             num_radial = num_radial,
             design=args.design,
             potential_model = False,
@@ -185,15 +182,13 @@ class EquivariantMDGenWrapper(Wrapper):
         )
         if args.potential_model:
             num_scalar_out = 1
-            latent_dim = 3
             num_vector_out = 0
             self.potential_model = EquivariantTransformer_dpm(
                 encoder = encoder,
                 processor = processor,
-                decoder = Decoder(dim=512, num_scalar_out=num_scalar_out, num_vector_out=num_vector_out, num_species=args.num_species),
+                decoder = Decoder(dim=latent_dim, num_scalar_out=num_scalar_out, num_vector_out=num_vector_out, num_species=args.num_species),
                 cutoff=args.cutoff,
                 latent_dim=latent_dim,
-                embed_dim=args.embed_dim,
                 design=args.design,
                 potential_model = args.potential_model,
                 tps_condition=args.tps_condition,
@@ -207,10 +202,9 @@ class EquivariantMDGenWrapper(Wrapper):
             self.score_model = EquivariantTransformer_dpm(
                 encoder = encoder,
                 processor = processor,
-                decoder = Decoder(dim=args.embed_dim, num_scalar_out=num_scalar_out, num_vector_out=num_vector_out),
+                decoder = Decoder(dim=latent_dim, num_scalar_out=num_scalar_out, num_vector_out=num_vector_out),
                 cutoff=args.cutoff,
                 latent_dim=latent_dim,
-                embed_dim=args.embed_dim,
                 design=args.design,
                 potential_model = args.potential_model,
                 tps_condition=args.tps_condition,
@@ -250,10 +244,8 @@ class EquivariantMDGenWrapper(Wrapper):
         log = gather_log(log, self.trainer.world_size)
         mean_log = get_log_mean(log)
         self.log("val_loss", mean_log['val_loss'])
-        if self.args.weight_loss_var_x0 > 0:
-            self.log("val_loss_var", mean_log['val_loss_var'])
-        self.log("val_loss_gen", mean_log['val_loss_gen'])
-        self.log("val_meanRMSD_Kabsch", mean_log['val_meanRMSD_Kabsch'])
+        # self.log("val_loss_gen", mean_log['val_loss_gen'])
+        # self.log("val_meanRMSD_Kabsch", mean_log['val_meanRMSD_Kabsch'])
         self.print_log(prefix='val', save=False)
 
     def prep_batch(self, batch):
@@ -472,6 +464,16 @@ class EquivariantMDGenWrapper(Wrapper):
         self.prefix_log('general_step_dur', time.time() - start1)
         self.last_log_time = time.time()
         if stage == "val":
+            # self._val_saddle_point_object_aware(batch, prep)
+            pass
+
+        if not torch.isfinite(loss.mean()):
+            return None
+        if torch.isnan(loss.mean()):
+            return None
+        return loss.mean()
+
+    def _val_saddle_point_object_aware(self, batch, prep, stage="val"):
             B,T,L,_ = prep['latents'].shape
             try:
                 pred_pos, _ = self.inference(batch, stage=stage)
@@ -509,12 +511,6 @@ class EquivariantMDGenWrapper(Wrapper):
             except:
                 print("WARNNING:: Inference failed !!!")
                 self.prefix_log('meanRMSD_Kabsch', torch.nan)
-
-        if not torch.isfinite(loss.mean()):
-            return None
-        if torch.isnan(loss.mean()):
-            return None
-        return loss.mean()
 
     def guided_velocity(self, x, t, cell=None, 
                 num_atoms=None,
@@ -588,6 +584,9 @@ class EquivariantMDGenWrapper(Wrapper):
             vector_out = prep["model_kwargs"]["x_now"]
             logits = samples[..., -self.args.num_species:]
         else:
+            print("WARNNING::")
+            print("Applying the following mask to the output vector:")
+            print(prep["model_kwargs"]['v_mask'])
             vector_out = samples *prep["model_kwargs"]['v_mask'] + prep["latents"]*(1-prep["model_kwargs"]['v_mask'])
 
         if self.args.design:

@@ -171,10 +171,10 @@ class Wrapper(pl.LightningModule):
             return opt
         else:
             # linear warmup to 1e-4 over W epochs, then cosine back to 3e-5
-            W = 0  # warmup epochs
+            W = 10  # warmup epochs
             max_lr = 1e-4
-            T = 120 + W  # cosine length (adjust)
-            base, min_lr = 7e-5, 3e-5
+            T = 200 + W  # cosine length (adjust)
+            base, min_lr = 5e-5, 3e-5
             '''
             W = 0  # warmup epochs
             max_lr = 0.5e-4

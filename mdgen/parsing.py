@@ -27,7 +27,7 @@ def parse_train_args():
     ## Logging args
     group = parser.add_argument_group("Logging settings")
     group.add_argument("--print_freq", type=int, default=100)
-    group.add_argument("--ckpt_freq", type=int, default=40)
+    group.add_argument("--ckpt_freq", type=int, default=10)
     group.add_argument("--wandb", action="store_true")
     group.add_argument("--run_name", type=str, default="default")
     
@@ -62,9 +62,6 @@ def parse_train_args():
     ## Model settings
     group = parser.add_argument_group("Model settings")
     group.add_argument('--dropout', type=float, default=0.0)
-    group.add_argument('--scale_factor', type=float, default=1.0)
-    group.add_argument('--num_layers', type=int, default=5)
-    group.add_argument('--embed_dim', type=int, default=384)
 
     group.add_argument('--time_multiplier', type=float, default=100.)
     group.add_argument('--abs_pos_emb', action='store_true')
@@ -72,9 +69,9 @@ def parse_train_args():
     group.add_argument('--object_aware', action='store_true')
 
     group = parser.add_argument_group("Transport arguments")
-    group.add_argument("--path-type", type=str, default="GVP", choices=["Linear", "GVP", "VP", "Pow", "Schrodinger_Linear"])
+    group.add_argument("--path-type", type=str, default="Linear", choices=["Linear", "GVP", "VP", "Pow", "Schrodinger_Linear"])
     group.add_argument("--prediction", type=str, default="velocity", choices=["velocity", "score", "noise"])
-    group.add_argument("--KL", type=str, default="L2", choices=['forward', 'reverse', 'symm', "L2", 'L1', 'alpha'])
+    group.add_argument("--KL", type=str, default="L1", choices=['forward', 'reverse', 'symm', "L2", 'L1', 'alpha'])
     group.add_argument("--sampling_method", type=str, default="dopri5", choices=["dopri5", "euler"])
     group.add_argument('--alpha_max', type=float, default=8)
     group.add_argument('--discrete_loss_weight', type=float, default=0.5)
@@ -100,16 +97,17 @@ def parse_train_args():
     group.add_argument('--design_from_traj', action='store_true')
     group.add_argument('--sim_condition', action='store_true')
     group.add_argument('--frame_interval', type=int, default=1)
-    group.add_argument('--ratio_conditonal', type=float, default=0.3)
+    group.add_argument('--ratio_conditonal', type=float, default=1.0)
     group.add_argument('--cond_interval', type=int, default=None) # for superresolution
     
     ## Equivariant Transformer settings
-    group.add_argument('--num_species', type=int, default=5)
-    group.add_argument('--edge_dim', type=int, default=64)
+    group.add_argument('--num_species', type=int, default=4)
+    group.add_argument('--embed_dim', type=int, default=128)
+    group.add_argument('--edge_dim', type=int, default=128)
     group.add_argument('--num_convs', type=int, default=5)
-    group.add_argument('--num_heads', type=int, default=4)
-    group.add_argument('--ff_dim', type=int, default=64)
-    group.add_argument('--cutoff', type=float, default=12)
+    group.add_argument('--num_heads', type=int, default=8)
+    group.add_argument('--ff_dim', type=int, default=128)
+    group.add_argument('--cutoff', type=float, default=5)
     
     ## nonequil. simulation settings
     group.add_argument('--potential_model', action='store_true')
