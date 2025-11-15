@@ -148,20 +148,17 @@ class EquivariantMDGenWrapper(Wrapper):
         if args.design:
             num_scalar_out = self.args.num_species
             num_vector_out=0
-        elif args.pbc:
-            num_scalar_out = 0
-            num_vector_out=1
         else:
             num_scalar_out = 0
             num_vector_out=1
         latent_dim = args.embed_dim
         
         if args.tps_condition:
-            encoder = Encoder_dpm(num_species, latent_dim, (64+48+8)*3, latent_dim, input_dim=1, cv_dim=2, object_aware=args.object_aware)
+            encoder = Encoder_dpm(num_species, latent_dim, (64+48+8)*3, latent_dim, input_dim=1, cv_dim=1, object_aware=args.object_aware)
         elif args.sim_condition:
-            encoder = Encoder_dpm(num_species, latent_dim, (64+48+8)*2, latent_dim, input_dim=1, object_aware=args.object_aware)
+            encoder = Encoder_dpm(num_species, latent_dim, (64+48+8)*2, latent_dim, input_dim=1, cv_dim=1, object_aware=args.object_aware)
         else:
-            encoder = Encoder_dpm(num_species, latent_dim, (64+48+8), latent_dim, input_dim=1, object_aware=args.object_aware)
+            encoder = Encoder_dpm(num_species, latent_dim, (64+48+8), latent_dim, input_dim=1, cv_dim=1, object_aware=args.object_aware)
 
         processor = Processor(num_convs=5, node_dim=latent_dim, num_heads=8, ff_dim=args.ff_dim, edge_dim=latent_dim)
         print("Initializing drift model")
@@ -400,12 +397,12 @@ class EquivariantMDGenWrapper(Wrapper):
                 "latents": latents.to(_TORCH_FLOAT_PRECISION),
                 'loss_mask': v_loss_mask.to(_TORCH_FLOAT_PRECISION),
                 'model_kwargs': {
+                    "cv": batch['cv'].to(_TORCH_FLOAT_PRECISION),
                     "aatype": species.to(_TORCH_FLOAT_PRECISION),
                     'x1': latents.to(_TORCH_FLOAT_PRECISION),
                     'v_mask': (v_loss_mask!=0).to(int),
                     "cell": batch['cell'].to(_TORCH_FLOAT_PRECISION),
                     "num_atoms": batch["num_atoms"],
-                    "fragments_idx": batch['fragments_idx'],
                     "conditions": None
                 },
                 'conditional_batch': conditional_batch
@@ -429,9 +426,8 @@ class EquivariantMDGenWrapper(Wrapper):
         )
         self.prefix_log('model_dur', time.time() - start)
         self.prefix_log('time', out_dict['t'])
-        self.prefix_log('conditional_batch', prep['conditional_batch'].to(torch.float32))
+        # self.prefix_log('conditional_batch', prep['conditional_batch'].to(torch.float32))
         loss_gen = out_dict['loss']
-        self.prefix_log('loss_gen', loss_gen)
         assert self.args.weight_loss_var_x0 == 0
         loss = loss_gen
         if self.score_model is not None:
@@ -446,6 +442,7 @@ class EquivariantMDGenWrapper(Wrapper):
             self.prefix_log('loss_l1', out_dict['loss_l1'])
 
         if self.args.potential_model:
+            self.prefix_log('loss_gen', loss_gen)
             B,T,L,_ = prep["latents"].shape
             t = torch.ones((B,), device=prep["latents"].device).to(_TORCH_FLOAT_PRECISION)
             energy = self.potential_model(prep['latents'], t, **prep["model_kwargs"])
@@ -563,10 +560,15 @@ class EquivariantMDGenWrapper(Wrapper):
 
         self.integration_step = 0
         if self.score_model is None:
-            with torch.no_grad(): sample_fn = self.transport_sampler.sample_ode(sampling_method=self.args.sampling_method, num_steps=self.args.inference_steps)  # default to ode
+            if self.args.likelihood:
+                sample_fn = self.transport_sampler.sample_ode_likelihood(sampling_method=self.args.sampling_method, num_steps=self.args.inference_steps)
+                sample_fn_reverse = self.transport_sampler.sample_ode_likelihood(sampling_method=self.args.sampling_method, num_steps=self.args.inference_steps, reverse=True)
+            else:
+                with torch.no_grad(): sample_fn = self.transport_sampler.sample_ode(sampling_method=self.args.sampling_method, num_steps=self.args.inference_steps)  # default to ode
         else:
+            if self.args.likelihood:
+                raise Exception("Not implemented")
             with torch.no_grad(): sample_fn = self.transport_sampler.sample_sde(num_steps=self.args.inference_steps, diffusion_form=self.args.diffusion_form, diffusion_norm=torch.tensor(self.args.diffusion_norm))
-
 
         if self.args.guided:
             with torch.no_grad(): samples = sample_fn(
@@ -574,20 +576,32 @@ class EquivariantMDGenWrapper(Wrapper):
                     partial(self.guided_velocity, **prep['model_kwargs'])
                 )[-1]
         else:
-            samples = sample_fn(
-                zs,
-                partial(self.model.forward_inference, **prep['model_kwargs'])
-            )[-1]
+            if self.args.likelihood:
+                zs = zs.detach().requires_grad_(True)
+                samples_logp, samples = sample_fn(
+                    zs,
+                    partial(self.model.forward_inference, **prep['model_kwargs'])
+                )
+            else:
+                samples = sample_fn(
+                    zs,
+                    partial(self.model.forward_inference, **prep['model_kwargs'])
+                )[-1]
         
         if self.args.design:
             # vector_out = samples[..., :-self.args.num_species]
             vector_out = prep["model_kwargs"]["x_now"]
             logits = samples[..., -self.args.num_species:]
         else:
-            print("WARNNING::")
-            print("Applying the following mask to the output vector:")
-            print(prep["model_kwargs"]['v_mask'])
+            # print("WARNNING::")
+            # print("Applying the following mask to the output vector:")
+            # print(prep["model_kwargs"]['v_mask'])
             vector_out = samples *prep["model_kwargs"]['v_mask'] + prep["latents"]*(1-prep["model_kwargs"]['v_mask'])
+            vector_out = vector_out.detach().requires_grad_(True)
+            reverse_samples_logp, samples_zs = sample_fn_reverse(
+                    vector_out,
+                    partial(self.model.forward_inference, **prep['model_kwargs'])
+                )
 
         if self.args.design:
             aa_out = torch.argmax(logits, -1)
@@ -596,5 +610,8 @@ class EquivariantMDGenWrapper(Wrapper):
             aa_out = torch.argmax(batch['species'], -1)
             # aa_out = batch['species']
         print('Time =', time.time()-s_time)
-        return vector_out, aa_out
+        if self.args.likelihood:
+            return samples_logp, vector_out, aa_out, reverse_samples_logp, samples_zs
+        else:
+            return vector_out, aa_out
     
