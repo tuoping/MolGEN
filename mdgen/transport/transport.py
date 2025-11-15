@@ -668,24 +668,23 @@ class Sampler:
         - atol: absolute error tolerance for the solver
         - rtol: relative error tolerance for the solver
         """
-
+        
         def _likelihood_drift(x, t, model, **model_kwargs):
             x, _ = x
-            eps = th.randint(2, x.size(), dtype=th.float, device=x.device, requires_grad=True) * 2 - 1
+            x = x.detach().requires_grad_(True)
+            eps = th.randint(2, x.size(), dtype=th.float, device=x.device) * 2 - 1
             if reverse:
                 t = th.ones_like(t) * (1 - t)
             with th.enable_grad():
                 # x.requires_grad = True
                 assert x.requires_grad
                 ### This way doesn't accumulate the gradient through the ODE steps
-                grad = th.autograd.grad(th.sum(self.drift(x, t, model, **model_kwargs) * eps), x)[0]
-                ### This way accumulates the gradient through the ODE steps
-                # l = th.sum(self.drift(x, t, model, **model_kwargs) * eps)
-                # l.backward(retain_graph=True)
-                # grad = x.grad.clone()
-                # x.grad.zero_()
+                if reverse:
+                    drift = -self.drift(x, t, model, **model_kwargs)
+                else:
+                    drift = self.drift(x, t, model, **model_kwargs)
+                grad = th.autograd.grad(th.sum(drift * eps), x)[0]
                 logp_grad = th.sum(grad * eps, dim=tuple(range(2, len(x.size()))))
-                drift = self.drift(x, t, model, **model_kwargs)
             return (drift, logp_grad)
 
         t0, t1 = self.transport.check_interval(
