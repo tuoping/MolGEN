@@ -329,8 +329,6 @@ class EquivariantTransformer_dpm(EquivariantTransformer):
             
             if self.tps_condition:
                 h, v, edge_attr = self.encoder(species, edge_index, torch.cat([edge_attr, edge_attr_cond_f, edge_attr_cond_r], dim=-1), edge_vec, t, sub_graph_mask)
-                if cv is not None:
-                    h = h + self.encoder.embed_cv(cv)
                 # h = h + self.mask_to_emb_f(cond_f_mask) + self.mask_to_emb_r(cond_r_mask)
             else:  # self.sim_condition
                 h, v, edge_attr = self.encoder(species, edge_index, torch.cat([edge_attr, edge_attr_cond_f], dim=-1), edge_vec, t, sub_graph_mask)
@@ -338,6 +336,8 @@ class EquivariantTransformer_dpm(EquivariantTransformer):
 
         else:
             h, v, edge_attr = self.encoder(species, edge_index, edge_attr, edge_vec, t, sub_graph_mask)
+        if cv is not None:
+            h = h + self.encoder.embed_cv(cv)
 
         def _filter_edges(_edge_index, _edge_attr, _edge_vec, _mask: torch.Tensor):
                 # mask: [E] in {0,1}
@@ -579,135 +579,3 @@ class EquivariantTransformer_dpm(EquivariantTransformer):
                 '''
                 if model_kwargs[k] is not None:
                     raise Exception("Shouldn't input condition")
-
-class TransformerDecoder(nn.Module):
-    def __init__(self, dim: int, num_scalar_out: int, num_vector_out: int, 
-                 num_species: int=5,
-                 nhead: int=4, 
-                 dim_feedforward: int=1024,
-                 activation: str='gelu',
-                 dropout: float=0.0,
-                 norm_first: bool = True,
-                 bias: bool = True,
-                 num_layers: int = 6,
-                 ) -> None:
-        super().__init__()
-        self.num_species = num_species
-        self.dim = dim
-        self.num_scalar_out = num_scalar_out
-        self.num_vector_out = num_vector_out
-
-        self.transformer = nn.TransformerEncoder(
-            nn.TransformerEncoderLayer(
-                d_model=dim,
-                nhead=nhead,
-                dim_feedforward=dim_feedforward,
-                activation=activation,
-                dropout=dropout,
-                batch_first=True,
-                norm_first=norm_first,
-                bias=bias,
-            ),
-            norm=nn.LayerNorm(dim),
-            num_layers=num_layers,
-        )
-
-        self.Oh = nn.Parameter(torch.randn(dim, num_scalar_out))
-        self.Ov = nn.Parameter(torch.randn(dim, num_vector_out))
-        self.Ov_frac = nn.Parameter(torch.randn(dim, num_vector_out))
-        self.Ol = nn.Parameter(torch.randn(dim, num_vector_out*3+1, 6))
-
-    def forward(self, h:Tensor, v: Tensor) -> Tensor:
-        B,T,N,_ = h.shape
-        h = h.reshape(B*T*N,-1)
-        v = v.reshape(B*T*N,-1,3)
-        h = h.unsqueeze(-1)
-        x = torch.concatenate([h, v], dim=-1).transpose(1, 2)
-        x = self.transformer.forward(x)
-        x = x.transpose(1, 2)
-        h = x[..., 0]
-        v = x[..., 1:]
-        h_ = h @ self.Oh
-        v_out = torch.einsum('ndi, df -> nfi', v, self.Ov)
-        v_frac_out = torch.einsum('ndi, df -> nfi', v, self.Ov_frac)
-        x = x.reshape(B*T,N,-1,4)
-        l_out = torch.einsum('ndi, dif -> nf', x.mean(1), self.Ol)
-        assert h_.shape[-1] == self.num_species
-        h_out = torch.nn.functional.softmax(h_[...,-self.num_species:], dim=-1)
-        return {
-            "aatype": h_out.reshape(B, T, N, -1), 
-            "pos": v_out.squeeze().reshape(B, T, N, -1), 
-            "frac_pos": v_frac_out.squeeze().reshape(B, T, N, -1), 
-            "cell": l_out.squeeze().reshape(B, T, -1)
-            }
-
-    def extra_repr(self) -> str:
-        return f'(Oh): tensor({list(self.Oh.shape)}, requires_grad={self.Oh.requires_grad}) \n' \
-             + f'(Ov): tensor({list(self.Ov.shape)}, requires_grad={self.Ov.requires_grad})'
-
-
-
-class TransformerProcessor(nn.Module):
-    def __init__(self, dim: int, num_scalar_out: int, num_vector_out: int,
-                 nhead: int=4, 
-                 dim_feedforward: int=1024,
-                 activation: str='gelu',
-                 dropout: float=0.0,
-                 norm_first: bool = True,
-                 bias: bool = True,
-                 num_layers: int = 6,
-                 node_dim: int = 4,
-                 edge_dim: int = 64,
-                 input_dim: int = 1,
-                 ) -> None:
-        super().__init__()
-        self.dim = dim
-        self.num_scalar_out = num_scalar_out
-        self.num_vector_out = num_vector_out
-
-        self.transformer = nn.TransformerEncoder(
-            nn.TransformerEncoderLayer(
-                d_model=dim,
-                nhead=nhead,
-                dim_feedforward=dim_feedforward,
-                activation=activation,
-                dropout=dropout,
-                batch_first=True,
-                norm_first=norm_first,
-                bias=bias,
-            ),
-            norm=nn.LayerNorm(dim),
-            num_layers=num_layers,
-        )
-
-        self.embed_time = nn.Sequential(
-            GaussianRandomFourierFeatures(node_dim, input_dim=input_dim),
-            MLP([node_dim, edge_dim, node_dim], act=nn.SiLU()),
-        )
-
-    def inference(self, x:Tensor) -> Tensor:
-        x = x.transpose(1, 2)
-        x = self.transformer.forward(x)
-        x = x.transpose(1, 2)
-        # h = x[..., 0]
-        # v = x[..., 1:]
-        return x
-    
-    def forward(self, x: Tensor, t: Tensor, x1=None, v_mask=None) -> Tensor:
-        B,T,N,D,_ = x.shape
-        # h = x[..., 0] 
-        # v = x[..., 1:]
-        x = x*v_mask+x1*(1-v_mask)
-        x = x + self.embed_time(t)[None,None,None,:,None]
-        x_out = self.inference(x.reshape(B*T*N,D,4))
-        return x_out.reshape(B,T,N,D,4)
-
-    
-    def forward_inference(self, x: Tensor, t: Tensor, x1=None, v_mask=None, conditions=None) -> Tensor:
-        B,T,N,D,_ = x.shape
-        # h = x[..., 0] 
-        # v = x[..., 1:]
-        x = x*v_mask+x1*(1-v_mask)
-        x = x + self.embed_time(t)[None,None,None,:,None]
-        x_out = self.inference(x.reshape(B*T*N,D,4))
-        return x_out.reshape(B,T,N,D,4)
