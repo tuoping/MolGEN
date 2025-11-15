@@ -82,7 +82,7 @@ def parse_train_args():
     group.add_argument('--beta_sample_t', type=float, default=0.8)
     group.add_argument("--loss-weight", type=str, default=None, choices=["None", "velocity", "likelihood"])
     group.add_argument('--weight_loss_var_x0', type=float, default=0)
-
+    group.add_argument("--likelihood", action="store_true")
 
     # ## Diffusion settings
     group = parser.add_argument_group("Diffusion settings")
@@ -111,7 +111,7 @@ def parse_train_args():
     
     ## nonequil. simulation settings
     group.add_argument('--potential_model', action='store_true')
-    group.add_argument("--pbc", action='store_true')
+    # group.add_argument("--pbc", action='store_true')
     group.add_argument("--guided", action='store_true')
 
     ## SDE bridge settings
@@ -121,7 +121,7 @@ def parse_train_args():
     os.environ["MODEL_DIR"] = os.path.join("workdir", args.run_name)
     if args.loss_weight == "None":
         args.loss_weight = None
-
+    args.pbc = True
     return args
 
 

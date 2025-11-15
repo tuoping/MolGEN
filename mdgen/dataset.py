@@ -802,3 +802,50 @@ class BucketBatchSampler(Sampler):
     def __len__(self):
         return len(self.batched_indices)
 
+
+
+class EquivariantTransformerDataset_Alanine_Dipeptide(torch.utils.data.Dataset):
+    def __init__(self, data_dirname, num_species=4, sim_condition=False, tps_condition=True, stage="train"):
+        temperature = 300
+        self.kT = temperature*8.617*10**-5
+        self.dataset = torch.load(os.path.join(data_dirname, f"{stage}.pt"), weights_only=False)
+
+        self.num_species = num_species
+        self.stage = stage
+        self.sim_condition = sim_condition
+        self.tps_condition = tps_condition
+    
+    def __len__(self):
+        return len(self.dataset)
+    
+    def __getitem__(self, idx):
+        idx = idx % len(self.dataset)
+        data = self.dataset[idx]
+        L = len(data.z)
+        # LSS_reward = [data.E_reactant, data.E_product, data.E_transition_state]
+        if self.tps_condition:
+            TKS_mask = torch.ones(1,L)
+            TKS_v_mask = TKS_mask.unsqueeze(-1).expand(-1,-1,3)
+            TKS_h_mask = TKS_mask.unsqueeze(-1).expand(-1,-1,self.num_species) # 1,L,num_species
+        # assert len(data.z_reactant)==len(data.z_product)
+        
+        mask = torch.ones([1,L]) # T,L
+        v_mask = mask.unsqueeze(-1).expand(-1,-1,3) # T,L,3
+        h_mask = mask.unsqueeze(-1).expand(-1,-1,self.num_species) # T,L,num_species
+
+        if self.sim_condition or self.tps_condition:
+            raise Exception("Not implemented")
+        else:
+            return {
+                "name": data.rxn,
+                "species": (data.z.unsqueeze(0)),
+                "x": (data.pos.unsqueeze(0)),
+                "num_atoms": torch.tensor([len(data.z)], dtype=torch.long),
+                'cell': (data.cell.unsqueeze(0)),
+                'cv': data.cv.unsqueeze(0), 
+                "FreeEnergy": torch.tensor([[0.0]]),
+                "mask": mask,
+                "v_mask": v_mask,
+                "h_mask": h_mask,
+
+            }
