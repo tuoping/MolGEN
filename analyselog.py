@@ -81,8 +81,8 @@ def plot_1losses(dir_dir_b1024, key="\'train_loss\'", c_key=None, after_epoch=No
         
         
     ### remove the loss value when restart training 
-    # stable_idx = np.arange(len(alltrainsteps_dir_b1024), dtype=int)
-    stable_idx = np.where((np.array(alltrainsteps_dir_b1024) > 0) & (np.array(alltrainlosses_dir_b1024) < 1) )[0]
+    stable_idx = np.arange(len(alltrainsteps_dir_b1024), dtype=int)
+    # stable_idx = np.where((np.abs(np.array(alltrainsteps_dir_b1024)) < 500) )[0]
     alltrainlosses_dir_b1024 = np.array(alltrainlosses_dir_b1024)[stable_idx]
     alltrainsteps_dir_b1024 = np.array(alltrainsteps_dir_b1024)[stable_idx]
     allcolor = np.array(allcolor)[stable_idx]
@@ -129,7 +129,7 @@ parser.add_argument("--ymin_val",  type=float, default=None)
 parser.add_argument("--ymax_val",  type=float, default=None)
 parser.add_argument("--ymin_train",  type=float, default=None)
 parser.add_argument("--ymax_train",  type=float, default=None)
-parser.add_argument("--key",  type=str, default="val_loss_gen")
+parser.add_argument("--key",  type=str, default="val_loss")
 args = parser.parse_args()
 
 dir = f"./"

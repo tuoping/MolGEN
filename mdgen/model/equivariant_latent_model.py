@@ -370,8 +370,10 @@ class EquivariantTransformer_dpm(EquivariantTransformer):
         assert t.shape == (B,)
 
         if self.otf_graph:
-            edge_index = None
-            to_jimages = None
+            # edge_index = None
+            # to_jimages = None
+            edge_index = []
+            to_jimages = []
             num_bonds = torch.zeros(B*T, device=x.device).to(int)
             for idx_config in range(B*T):
                 _edge_index, _, _to_jimages, _ = get_neighborhood(
@@ -380,26 +382,30 @@ class EquivariantTransformer_dpm(EquivariantTransformer):
                     pbc=[True, True, True],
                     cell=cell.view(B*T,3,3)[idx_config].detach().cpu().numpy()
                 )
-                if edge_index is not None:
-                    edge_index = torch.cat(
-                        [
-                            edge_index,
-                            torch.from_numpy(_edge_index).to(x.device).long()+idx_config*N
-                        ],
-                        dim=1
-                    )
+                # if edge_index is not None:
+                # edge_index = torch.cat(
+                #     [
+                #         edge_index,
+                #         torch.from_numpy(_edge_index).to(x.device).long()+idx_config*N
+                #     ],
+                #     dim=1
+                # )
+                edge_index.append(torch.from_numpy(_edge_index).to(x.device).long()+idx_config*N)
 
-                    to_jimages = torch.cat(
-                        [
-                            to_jimages, 
-                            torch.from_numpy(_to_jimages).to(x.device).long()
-                        ], 
-                        dim=0
-                    )
-                else:
-                    edge_index = torch.from_numpy(_edge_index).to(x.device).long()
-                    to_jimages = torch.from_numpy(_to_jimages).to(x.device).long()
+                # to_jimages = torch.cat(
+                #     [
+                #         to_jimages, 
+                #         torch.from_numpy(_to_jimages).to(x.device).long()
+                #     ], 
+                #     dim=0
+                # )
+                to_jimages.append(torch.from_numpy(_to_jimages).to(x.device).long())
+                # else:
+                #     edge_index = torch.from_numpy(_edge_index).to(x.device).long()
+                #     to_jimages = torch.from_numpy(_to_jimages).to(x.device).long()
                 num_bonds[idx_config] = _edge_index.shape[1]
+            edge_index = torch.cat(edge_index_list, dim=1)
+            to_jimages = torch.cat(to_jimages_list, dim=0)
             # remove inter-object edges here from edge_index
             if self.object_aware:
                 assert fragments_idx is not None
@@ -507,7 +513,8 @@ class EquivariantTransformer_dpm(EquivariantTransformer):
             assert cv is None
             scaler_out, vector_out = self._graph_forward(species.reshape(-1,self.num_species), edge_index, edge_attr, edge_vec, t.reshape(-1,1), out_cond, sub_graph_mask=sub_graph_mask)
         else:
-            cv = torch.repeat_interleave(cv.view(-1, cv.shape[-1]), torch.ones(B*T).to(int).to(x.device)*N, dim=0)
+            if cv is not None:
+                cv = torch.repeat_interleave(cv.view(-1, cv.shape[-1]), torch.ones(B*T).to(int).to(x.device)*N, dim=0)
             scaler_out, vector_out = self._graph_forward(species.reshape(-1,self.num_species), edge_index, edge_attr, edge_vec, t.reshape(-1,1), cv, out_cond)
         if self.design:
             # return torch.hstack([vector_out, scaler_out]).view(B, T, N, -1)

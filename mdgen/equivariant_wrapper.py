@@ -398,6 +398,7 @@ class EquivariantMDGenWrapper(Wrapper):
                 'loss_mask': v_loss_mask.to(_TORCH_FLOAT_PRECISION),
                 'model_kwargs': {
                     "cv": batch['cv'].to(_TORCH_FLOAT_PRECISION),
+                    # "cv": None,
                     "aatype": species.to(_TORCH_FLOAT_PRECISION),
                     'x1': latents.to(_TORCH_FLOAT_PRECISION),
                     'v_mask': (v_loss_mask!=0).to(int),
@@ -611,7 +612,7 @@ class EquivariantMDGenWrapper(Wrapper):
             # aa_out = batch['species']
         print('Time =', time.time()-s_time)
         if self.args.likelihood:
-            return samples_logp, vector_out, aa_out, reverse_samples_logp, samples_zs
+            return samples_logp, vector_out, aa_out, reverse_samples_logp, zs, samples_zs
         else:
             return vector_out, aa_out
     
