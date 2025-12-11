@@ -404,8 +404,8 @@ class EquivariantTransformer_dpm(EquivariantTransformer):
                 #     edge_index = torch.from_numpy(_edge_index).to(x.device).long()
                 #     to_jimages = torch.from_numpy(_to_jimages).to(x.device).long()
                 num_bonds[idx_config] = _edge_index.shape[1]
-            edge_index = torch.cat(edge_index_list, dim=1)
-            to_jimages = torch.cat(to_jimages_list, dim=0)
+            edge_index = torch.cat(edge_index, dim=1)
+            to_jimages = torch.cat(to_jimages, dim=0)
             # remove inter-object edges here from edge_index
             if self.object_aware:
                 assert fragments_idx is not None
