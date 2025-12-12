@@ -243,8 +243,8 @@ from .utils.data_utils import (
     get_pbc_distances,
 )
 
-from .utils.neighborhood import get_neighborhood
-
+# from .utils.neighborhood import get_neighborhood
+from .utils.neighborlist_torch import torch_neighbour_list
 
 
 
@@ -376,33 +376,29 @@ class EquivariantTransformer_dpm(EquivariantTransformer):
             to_jimages = []
             num_bonds = torch.zeros(B*T, device=x.device).to(int)
             for idx_config in range(B*T):
-                _edge_index, _, _to_jimages, _ = get_neighborhood(
-                    positions=x.view(B*T,N,3)[idx_config].detach().cpu().numpy(),
+                # _edge_index, _, _to_jimages, _ = get_neighborhood(
+                #     positions=x.view(B*T,N,3)[idx_config].detach().cpu().numpy(),
+                #     cutoff=self.cutoff,
+                #     pbc=[True, True, True],
+                #     cell=cell.view(B*T,3,3)[idx_config].detach().cpu().numpy()
+                # )
+                
+                _edge_index_i, _edge_index_j, _to_jimages = torch_neighbour_list(
+                    positions=x.view(B*T,N,3)[idx_config],
+                    cell=cell.view(B*T,3,3)[idx_config],
+                    pbc=torch.tensor([True, True, True]),
                     cutoff=self.cutoff,
-                    pbc=[True, True, True],
-                    cell=cell.view(B*T,3,3)[idx_config].detach().cpu().numpy()
+                    dtype = x.dtype
                 )
-                # if edge_index is not None:
-                # edge_index = torch.cat(
-                #     [
-                #         edge_index,
-                #         torch.from_numpy(_edge_index).to(x.device).long()+idx_config*N
-                #     ],
-                #     dim=1
-                # )
-                edge_index.append(torch.from_numpy(_edge_index).to(x.device).long()+idx_config*N)
 
-                # to_jimages = torch.cat(
-                #     [
-                #         to_jimages, 
-                #         torch.from_numpy(_to_jimages).to(x.device).long()
-                #     ], 
-                #     dim=0
-                # )
-                to_jimages.append(torch.from_numpy(_to_jimages).to(x.device).long())
-                # else:
-                #     edge_index = torch.from_numpy(_edge_index).to(x.device).long()
-                #     to_jimages = torch.from_numpy(_to_jimages).to(x.device).long()
+                # edge_index.append(torch.from_numpy(_edge_index).to(x.device).long()+idx_config*N)
+                _edge_index = torch.stack([_edge_index_i, _edge_index_j])
+                assert _edge_index.shape[0] == 2
+                edge_index.append(_edge_index + idx_config*N)
+
+                # to_jimages.append(torch.from_numpy(_to_jimages).to(x.device).long())
+                to_jimages.append(_to_jimages)
+
                 num_bonds[idx_config] = _edge_index.shape[1]
             edge_index = torch.cat(edge_index, dim=1)
             to_jimages = torch.cat(to_jimages, dim=0)
