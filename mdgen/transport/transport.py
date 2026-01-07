@@ -353,6 +353,7 @@ class Transport:
                     terms['loss_symmkl'] = mean_flat(0.5 * (kl_p_m + kl_q_m), mask.mean(dim=-1)) 
                     # terms['loss_entropy'] = mean_flat((logQ_.exp()*logQ_).sum(dim=-1), mask.mean(dim=-1)) 
                     terms['loss_l1'] = mean_flat((model_output - ut).abs(), mask)
+                    terms['loss_flow'] = terms['loss_symmkl']
                 elif self.args.KL == "reverse":
                     logQ_ = (-(t[:,None,None,None]*model_output)**2)/2
                     logP_ = (-(t[:,None,None,None]*ut)**2)/2
@@ -367,6 +368,7 @@ class Transport:
                     alpha_div = alpha_divergence(logP_, logQ_, self.pref_alpha_div, eps=1e-6)
                     terms['loss_alphadiv'] = mean_flat(alpha_div, mask.mean(dim=-1))
                     terms['loss_l1'] = mean_flat((model_output - ut).abs(), mask)
+                    terms['loss_flow'] = 0.1*terms['loss_alphadiv'] + terms['loss_l1']
                 elif self.args.KL == "L2":
                     terms['loss_flow'] = mean_flat((0.5*(model_output)**2 - (ut)*model_output), mask)
                 elif self.args.KL == "L1":
@@ -377,13 +379,7 @@ class Transport:
                     terms['loss_score'] = mean_flat((lambda_t[:,None,None,None] * score_model_output + eps)**2, mask)
                     terms['loss'] = terms['loss_flow']+terms['loss_score']
                 else:
-                    if self.args.KL == 'symm':
-                        # terms['loss'] = self.pref_symmkl*terms['loss_entropy'] + terms['loss_symmkl'] + terms['loss_l1']
-                        terms['loss'] = terms['loss_symmkl'] # + terms['loss_l1']
-                    elif self.args.KL == 'alpha':
-                        terms['loss'] = 0.1*terms['loss_alphadiv'] + terms['loss_l1']
-                    else:
-                        terms['loss'] = terms['loss_flow']
+                    terms['loss'] = terms['loss_flow']
             else:
                 _, drift_var = self.path_sampler.compute_drift(xt, t)
                 sigma_t, _ = self.path_sampler.compute_sigma_t(path.expand_t_like_x(t, xt))

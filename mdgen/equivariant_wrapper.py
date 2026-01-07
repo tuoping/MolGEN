@@ -199,7 +199,7 @@ class EquivariantMDGenWrapper(Wrapper):
             self.score_model = EquivariantTransformer_dpm(
                 encoder = encoder,
                 processor = processor,
-                decoder = Decoder(dim=latent_dim, num_scalar_out=num_scalar_out, num_vector_out=num_vector_out),
+                decoder = Decoder(dim=latent_dim, num_scalar_out=num_scalar_out, num_vector_out=num_vector_out, num_species=args.num_species),
                 cutoff=args.cutoff,
                 latent_dim=latent_dim,
                 design=args.design,
@@ -208,6 +208,7 @@ class EquivariantMDGenWrapper(Wrapper):
                 sim_condition=args.sim_condition,
                 pbc=args.pbc,
                 object_aware=args.object_aware,
+                num_species=args.num_species
             )
         else:
             self.score_model = None
