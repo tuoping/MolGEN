@@ -397,8 +397,8 @@ class EquivariantMDGenWrapper(Wrapper):
                 "latents": latents.to(_TORCH_FLOAT_PRECISION),
                 'loss_mask': v_loss_mask.to(_TORCH_FLOAT_PRECISION),
                 'model_kwargs': {
-                    "cv": batch['cv'].to(_TORCH_FLOAT_PRECISION),
-                    # "cv": None,
+                    # "cv": batch['cv'].to(_TORCH_FLOAT_PRECISION),
+                    "cv": None,
                     "aatype": species.to(_TORCH_FLOAT_PRECISION),
                     'x1': latents.to(_TORCH_FLOAT_PRECISION),
                     'v_mask': (v_loss_mask!=0).to(int),
@@ -426,35 +426,35 @@ class EquivariantMDGenWrapper(Wrapper):
             global_step = self.current_epoch
         )
         self.prefix_log('model_dur', time.time() - start)
-        self.prefix_log('time', out_dict['t'])
+        self.prefix_log('time', out_dict['t'].detach().cpu())
         # self.prefix_log('conditional_batch', prep['conditional_batch'].to(torch.float32))
         loss_gen = out_dict['loss']
         assert self.args.weight_loss_var_x0 == 0
         loss = loss_gen
         if self.score_model is not None:
-            self.prefix_log("loss_flow", out_dict['loss_flow'])
-            self.prefix_log("loss_score", out_dict['loss_score'])
+            self.prefix_log("loss_flow", out_dict['loss_flow'].detach().cpu())
+            self.prefix_log("loss_score", out_dict['loss_score'].detach().cpu())
         if self.args.KL == 'symm':
-            self.prefix_log('loss_symmkl', out_dict['loss_symmkl'])
+            self.prefix_log('loss_symmkl', out_dict['loss_symmkl'].detach().cpu())
             # self.prefix_log('loss_entropy', out_dict['loss_entropy'])
-            self.prefix_log('loss_l1', out_dict['loss_l1'])
+            self.prefix_log('loss_l1', out_dict['loss_l1'].detach().cpu())
         if self.args.KL == 'alpha':
-            self.prefix_log('loss_alphadiv', out_dict['loss_alphadiv'])
-            self.prefix_log('loss_l1', out_dict['loss_l1'])
+            self.prefix_log('loss_alphadiv', out_dict['loss_alphadiv'].detach().cpu())
+            self.prefix_log('loss_l1', out_dict['loss_l1'].detach().cpu())
 
         if self.args.potential_model:
-            self.prefix_log('loss_gen', loss_gen)
+            self.prefix_log('loss_gen', loss_gen.detach().cpu())
             B,T,L,_ = prep["latents"].shape
             t = torch.ones((B,), device=prep["latents"].device).to(_TORCH_FLOAT_PRECISION)
             energy = self.potential_model(prep['latents'], t, **prep["model_kwargs"])
             energy = energy.sum(dim=2).squeeze(-1)
             # forces = -torch.autograd.grad(energy, prep['latents'])[0]
             loss_energy = (((energy -prep["E"])**2)*prep['loss_mask_potential_model']).sum(-1)
-            self.prefix_log('loss_energy', loss_energy)        
+            self.prefix_log('loss_energy', loss_energy.detach().cpu())        
             loss += loss_energy * 0.1
 
         self.prefix_log('model_dur', time.time() - start)
-        self.prefix_log('loss', loss)
+        self.prefix_log('loss', loss.detach().cpu())
 
         self.prefix_log('dur', time.time() - self.last_log_time)
         if 'name' in batch:

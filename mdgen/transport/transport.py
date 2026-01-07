@@ -711,7 +711,7 @@ class Sampler:
             input = (x, init_logp)
             drift, delta_logp = _ode.sample(input, model, **model_kwargs)
             drift, delta_logp = drift[-1], delta_logp[-1]
-            prior_logp = self.transport.prior_logp(drift)
+            # prior_logp = self.transport.prior_logp(drift)
             if reverse:
                 logp =  delta_logp
             else:

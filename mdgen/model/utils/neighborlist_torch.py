@@ -1,7 +1,7 @@
 # %%
 import torch
 import numpy as np
-from mace.data import AtomicData
+# from mace.data import AtomicData
 from typing import List, Sequence, Iterable, Dict, Any
 
 
@@ -158,7 +158,7 @@ def torch_neighbour_list(
 # ======================================================================
 # Build cueq-compatible AtomicData using the GPU neighbour list
 # ======================================================================
-
+'''
 def build_atomic_data_gpu(
     configs: Sequence[Any],
     cutoff: float,
@@ -342,3 +342,4 @@ def build_atomic_data_gpu(
         data_list.append(item)
 
     return data_list
+'''

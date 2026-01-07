@@ -95,8 +95,8 @@ def plot_1losses(dir_dir_b1024, key="\'train_loss\'", c_key=None, after_epoch=No
     print("alltrainsteps_dir_b1024 = ", alltrainsteps_dir_b1024[after_idx:before_idx])
     print("alltrainlosses_dir_b1024 = ", alltrainlosses_dir_b1024[after_idx:before_idx])
     if len(positive_idx) > len(negative_idx):
-        plt.scatter(np.array(alltrainsteps_dir_b1024[after_idx:before_idx])[positive_idx], np.array(alltrainlosses_dir_b1024[after_idx:before_idx])[positive_idx], c=allcolor[positive_idx], label="$L>0$", marker="x")
-        # plt.scatter(np.arange(len(positive_idx)), np.array(alltrainlosses_dir_b1024[after_idx:before_idx])[positive_idx], c=allcolor[positive_idx], label="$L>0$", marker="x")
+        # plt.scatter(np.array(alltrainsteps_dir_b1024[after_idx:before_idx])[positive_idx], np.array(alltrainlosses_dir_b1024[after_idx:before_idx])[positive_idx], c=allcolor[positive_idx], label="$L>0$", marker="x")
+        plt.scatter(np.arange(len(positive_idx)), np.array(alltrainlosses_dir_b1024[after_idx:before_idx])[positive_idx], c=allcolor[positive_idx], label="$L>0$", marker="x")
         cbar = plt.colorbar()
     print("negative alltrainsteps_dir_b1024 = ", alltrainsteps_dir_b1024[after_idx:before_idx][negative_idx])
     print("negative alltrainlosses_dir_b1024 = ", alltrainlosses_dir_b1024[after_idx:before_idx][negative_idx])
