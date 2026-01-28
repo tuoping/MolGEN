@@ -181,6 +181,15 @@ def geodesic_distance(x_string):
         d += (x_string[0,i]-x_string[0, i-1])**2
     return d/2
 
+
+def grad_log_normal_iso_3d(x, mu=0, sigma=1):
+    """
+    ∇_x log N(x | mu, σ² I)
+    same shape as x
+    """
+    return -(x - mu) / (sigma**2)
+
+
 class Transport:
 
     def __init__(
@@ -272,6 +281,7 @@ class Transport:
             mask=None,
             num_species=5,
             model_kwargs=None,
+            forces = None,
             global_step = None
     ):
         """Loss for training the score model
@@ -315,6 +325,8 @@ class Transport:
                 assert self.args.weight_loss_var_x0 == 0
                 diffusion = self.path_sampler.compute_diffusion(x1, t, self.args.diffusion_form, self.args.diffusion_norm).view(-1)  # the input x here is not used
                 t, xt, ut, eps = self.path_sampler.plan_schrodinger_bridge(t, x0[0], x1, diffusion)
+                alpha_t, _ = self.path_sampler.compute_alpha_t(path.expand_t_like_x(t, xt))
+                sigma_t, _ = self.path_sampler.compute_sigma_t(path.expand_t_like_x(t, xt))
                 lambda_t = self.path_sampler.compute_lambda_schrodinger_bridge(t, diffusion)
 
         
@@ -376,8 +388,10 @@ class Transport:
                 else:
                     raise Exception(f"Wrong KL argument: {self.args.KL}")
                 if self.score_model is not None:
-                    terms['loss_score'] = mean_flat((lambda_t[:,None,None,None] * score_model_output + eps)**2, mask)
-                    terms['loss'] = terms['loss_flow']+terms['loss_score']
+                    terms['loss_dsm'] = mean_flat((lambda_t[:,None,None,None] * score_model_output + eps)**2, mask)
+                    terms['loss_tsm_0'] = mean_flat( (score_model_output - alpha_t*grad_log_normal_iso_3d(x0[0]))**2 * (t < 0.5).to(torch.int)[:,None,None,None], mask)
+                    terms['loss_tsm_1'] = mean_flat( (score_model_output - sigma_t*forces)**2 * (t >= 0.5).to(torch.int)[:,None,None,None], mask)
+                    terms['loss'] = terms['loss_flow'] + terms['loss_dsm'] + terms['loss_tsm_0'] + terms["loss_tsm_1"]
                 else:
                     terms['loss'] = terms['loss_flow']
             else:
@@ -599,6 +613,9 @@ class Sampler:
             return xs
 
         return _sample
+    
+    def sample_RND(self):
+        pass
 
     def sample_ode(
             self,
@@ -716,6 +733,50 @@ class Sampler:
 
         return _sample_fn
 
+    def sample_ode(
+            self,
+            *,
+            sampling_method="dopri5",
+            num_steps=50,
+            atol=1e-6,
+            rtol=1e-3,
+            reverse=False,
+    ):
+        """returns a sampling function with given ODE settings
+        Args:
+        - sampling_method: type of sampler used in solving the ODE; default to be Dopri5
+        - num_steps: 
+            - fixed solver (Euler, Heun): the actual number of integration steps performed
+            - adaptive solver (Dopri5): the number of datapoints saved during integration; produced by interpolation
+        - atol: absolute error tolerance for the solver
+        - rtol: relative error tolerance for the solver
+        - reverse: whether solving the ODE in reverse (data to noise); default to False
+        """
+        if reverse:
+            drift = lambda x, t, model, **kwargs: self.drift(x, th.ones_like(t) * (1 - t), model, **kwargs)
+        else:
+            drift = self.drift
+
+        t0, t1 = self.transport.check_interval(
+            self.transport.train_eps,
+            self.transport.sample_eps,
+            sde=False,
+            eval=True,
+            reverse=reverse,
+            last_step_size=0.0,
+        )
+
+        _ode = ode(
+            drift=drift,
+            t0=t0,
+            t1=t1,
+            sampler_type=sampling_method,
+            num_steps=num_steps,
+            atol=atol,
+            rtol=rtol,
+        )
+
+        return _ode.sample
 
 def create_transport(
         args,

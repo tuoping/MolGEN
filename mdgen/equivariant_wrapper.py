@@ -335,6 +335,8 @@ class EquivariantMDGenWrapper(Wrapper):
         else:
             conditional_batch = None
         if (self.args.tps_condition and conditional_batch):
+            if self.score_model is not None:
+                raise Exception("Stochastic path is not implemented for tps_condition=True")
             return {
                 "species": species.to(_TORCH_FLOAT_PRECISION),
                 "latents": latents.to(_TORCH_FLOAT_PRECISION),
@@ -364,6 +366,8 @@ class EquivariantMDGenWrapper(Wrapper):
                 'conditional_batch': conditional_batch
             }
         elif (self.args.sim_condition and conditional_batch):
+            if self.score_model is not None:
+                raise Exception("Stochastic path is not implemented for sim_condition=True")
             return {
                 "species": species.to(_TORCH_FLOAT_PRECISION),
                 "latents": latents.to(_TORCH_FLOAT_PRECISION),
@@ -393,22 +397,41 @@ class EquivariantMDGenWrapper(Wrapper):
                 'conditional_batch': conditional_batch
             }
         else:
-            return {
-                "species": species.to(_TORCH_FLOAT_PRECISION),
-                "latents": latents.to(_TORCH_FLOAT_PRECISION),
-                'loss_mask': v_loss_mask.to(_TORCH_FLOAT_PRECISION),
-                'model_kwargs': {
-                    # "cv": batch['cv'].to(_TORCH_FLOAT_PRECISION),
-                    "cv": None,
-                    "aatype": species.to(_TORCH_FLOAT_PRECISION),
-                    'x1': latents.to(_TORCH_FLOAT_PRECISION),
-                    'v_mask': (v_loss_mask!=0).to(int),
-                    "cell": batch['cell'].to(_TORCH_FLOAT_PRECISION),
-                    "num_atoms": batch["num_atoms"],
-                    "conditions": None
-                },
-                'conditional_batch': conditional_batch
-            }
+            if self.score_model is None:
+                return {
+                    "species": species.to(_TORCH_FLOAT_PRECISION),
+                    "latents": latents.to(_TORCH_FLOAT_PRECISION),
+                    'loss_mask': v_loss_mask.to(_TORCH_FLOAT_PRECISION),
+                    'model_kwargs': {
+                        # "cv": batch['cv'].to(_TORCH_FLOAT_PRECISION),
+                        "cv": None,
+                        "aatype": species.to(_TORCH_FLOAT_PRECISION),
+                        'x1': latents.to(_TORCH_FLOAT_PRECISION),
+                        'v_mask': (v_loss_mask!=0).to(int),
+                        "cell": batch['cell'].to(_TORCH_FLOAT_PRECISION),
+                        "num_atoms": batch["num_atoms"],
+                        "conditions": None
+                    },
+                    'conditional_batch': conditional_batch
+                }
+            else:
+                return {
+                    "species": species.to(_TORCH_FLOAT_PRECISION),
+                    "latents": latents.to(_TORCH_FLOAT_PRECISION),
+                    'loss_mask': v_loss_mask.to(_TORCH_FLOAT_PRECISION),
+                    'forces': batch['forces'].to(_TORCH_FLOAT_PRECISION),
+                    'model_kwargs': {
+                        # "cv": batch['cv'].to(_TORCH_FLOAT_PRECISION),
+                        "cv": None,
+                        "aatype": species.to(_TORCH_FLOAT_PRECISION),
+                        'x1': latents.to(_TORCH_FLOAT_PRECISION),
+                        'v_mask': (v_loss_mask!=0).to(int),
+                        "cell": batch['cell'].to(_TORCH_FLOAT_PRECISION),
+                        "num_atoms": batch["num_atoms"],
+                        "conditions": None
+                    },
+                    'conditional_batch': conditional_batch
+                }
     
     def general_step(self, batch, stage='train'):
         self.iter_step += 1
@@ -417,13 +440,18 @@ class EquivariantMDGenWrapper(Wrapper):
         prep = self.prep_batch(batch)
 
         start = time.time()
-
+        
+        if self.score_model is None:
+            forces = None
+        else:
+            forces = prep['forces']
         out_dict = self.transport.training_losses(
             model=self.model,
             x1=prep['latents'],
             aatype1=batch['species'],
             mask=prep['loss_mask'],
             model_kwargs=prep['model_kwargs'],
+            forces = forces,
             global_step = self.current_epoch
         )
         self.prefix_log('model_dur', time.time() - start)
@@ -434,7 +462,10 @@ class EquivariantMDGenWrapper(Wrapper):
         loss = loss_gen
         if self.score_model is not None:
             self.prefix_log("loss_flow", out_dict['loss_flow'].detach().cpu())
-            self.prefix_log("loss_score", out_dict['loss_score'].detach().cpu())
+            self.prefix_log("loss_dsm", out_dict['loss_dsm'].detach().cpu())
+            self.prefix_log("loss_tsm_0", out_dict['loss_tsm_0'].detach().cpu())
+            self.prefix_log("loss_tsm_1", out_dict['loss_tsm_1'].detach().cpu())
+
         if self.args.KL == 'symm':
             self.prefix_log('loss_symmkl', out_dict['loss_symmkl'].detach().cpu())
             # self.prefix_log('loss_entropy', out_dict['loss_entropy'])
@@ -562,33 +593,50 @@ class EquivariantMDGenWrapper(Wrapper):
 
         self.integration_step = 0
         if self.score_model is None:
-            if self.args.likelihood:
+            if self.args.likelihood == "EJE":
                 sample_fn = self.transport_sampler.sample_ode_likelihood(sampling_method=self.args.sampling_method, num_steps=self.args.inference_steps)
                 sample_fn_reverse = self.transport_sampler.sample_ode_likelihood(sampling_method=self.args.sampling_method, num_steps=self.args.inference_steps, reverse=True)
-            else:
+            elif self.args.likelihood is None:
                 with torch.no_grad(): sample_fn = self.transport_sampler.sample_ode(sampling_method=self.args.sampling_method, num_steps=self.args.inference_steps)  # default to ode
+            elif self.args.likelihood == "FND":
+                with torch.no_grad(): sample_fn = self.transport_sampler.sample_ode(sampling_method=self.args.sampling_method, num_steps=self.args.inference_steps)
+            else:
+                raise Exception("Wrong likelihood argument: "+self.args.likelihood)
         else:
-            if self.args.likelihood:
+            ### TODO: likelihood evaluation for SDE
+            if self.args.likelihood is not None:
                 raise Exception("Not implemented")
             with torch.no_grad(): sample_fn = self.transport_sampler.sample_sde(num_steps=self.args.inference_steps, diffusion_form=self.args.diffusion_form, diffusion_norm=torch.tensor(self.args.diffusion_norm))
 
         if self.args.guided:
+            ### TODO: likelihood evaluation for guided ODE
+            if self.args.likelihood is not None:
+                raise Exception("Not implemented")
             with torch.no_grad(): samples = sample_fn(
                     zs,
                     partial(self.guided_velocity, **prep['model_kwargs'])
                 )[-1]
         else:
-            if self.args.likelihood:
+            if self.args.likelihood == "EJE":
                 zs = zs.detach().requires_grad_(True)
                 samples_logp, samples = sample_fn(
                     zs,
                     partial(self.model.forward_inference, **prep['model_kwargs'])
                 )
-            else:
+            elif self.args.likelihood == "FND":
+                all_samples = sample_fn(
+                    zs,
+                    partial(self.model.forward_inference, **prep['model_kwargs'])
+                )
+                samples = all_samples[-1]
+
+            elif self.args.likelihood is None:
                 samples = sample_fn(
                     zs,
                     partial(self.model.forward_inference, **prep['model_kwargs'])
                 )[-1]
+            else:
+                raise Exception("Wrong likelihood argument: "+self.args.likelihood)
         
         if self.args.design:
             # vector_out = samples[..., :-self.args.num_species]
@@ -600,10 +648,11 @@ class EquivariantMDGenWrapper(Wrapper):
             # print(prep["model_kwargs"]['v_mask'])
             vector_out = samples *prep["model_kwargs"]['v_mask'] + prep["latents"]*(1-prep["model_kwargs"]['v_mask'])
             vector_out = vector_out.detach().requires_grad_(True)
-            reverse_samples_logp, samples_zs = sample_fn_reverse(
-                    vector_out,
-                    partial(self.model.forward_inference, **prep['model_kwargs'])
-                )
+            if self.args.likelihood == "EJE":
+                reverse_samples_logp, samples_zs = sample_fn_reverse(
+                        vector_out,
+                        partial(self.model.forward_inference, **prep['model_kwargs'])
+                    )
 
         if self.args.design:
             aa_out = torch.argmax(logits, -1)
@@ -612,8 +661,12 @@ class EquivariantMDGenWrapper(Wrapper):
             aa_out = torch.argmax(batch['species'], -1)
             # aa_out = batch['species']
         print('Time =', time.time()-s_time)
-        if self.args.likelihood:
+        if self.args.likelihood == "EJE":
             return samples_logp, vector_out, aa_out, reverse_samples_logp, zs, samples_zs
-        else:
+        elif self.args.likelihood == "FND":
+            return vector_out, aa_out, zs, all_samples
+        elif self.args.likelihood is None:
             return vector_out, aa_out
+        else:
+            raise Exception("Wrong likelihood argument: "+self.args.likelihood)
     
