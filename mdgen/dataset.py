@@ -573,7 +573,7 @@ import ase.io
 import spglib
 
 class EquivariantTransformerDataset_MaterialProject(torch.utils.data.Dataset):
-    def __init__(self, traj_dir, cutoff, num_species=5, localmask=False, sim_condition=False, stage="train", save_dir = None, save_filename = None, material_type="Ceramics"):
+    def __init__(self, traj_dir, cutoff, num_species=5, localmask=False, sim_condition=False, stage="train", save_dir = None, save_filename = None):
         temperature = 300
         self.kT = temperature*8.617*10**-5
         self.calculator = MACECalculator(

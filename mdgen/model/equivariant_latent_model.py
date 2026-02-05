@@ -31,6 +31,7 @@ class Encoder(nn.Module):
         self.phi_s = MLP([node_dim*2 + node_dim, edge_dim, node_dim], act=nn.SiLU())
         self.phi_h = MLP([node_dim*2,            edge_dim, node_dim], act=nn.SiLU())
         self.phi_v = MLP([node_dim*2 + node_dim, edge_dim, node_dim], act=nn.SiLU())
+        self.phi_l = MLP([node_dim*2 + node_dim, edge_dim, node_dim], act=nn.SiLU())
 
     def forward(self, species: Tensor, edge_index: Tensor, edge_attr: Tensor, edge_vec: Tensor) -> Tuple[Tensor, Tensor, Tensor]:
         num_nodes = len(species)
@@ -153,10 +154,11 @@ class Encoder_dpm(Encoder):
 
         # Initialize vector features
         v0 = scatter(edge_vec[:, None, :] * self.phi_v(e)[:, :, None], index=j, dim=0, dim_size=num_nodes)
-
+        norm_edge_vec = edge_vec / edge_vec.norm(dim=-1)[:, None]
+        l0 = scatter(norm_edge_vec[:, None, None, :] * self.phi_l(e)[:, :, None, None] * norm_edge_vec[:, None, :, None], index=j, dim=0, dim_size=num_nodes)
         # Add time embedding to node features
         h0 = h0 + self.embed_time(t)
-        return h0, v0, edge_attr
+        return h0, v0, edge_attr, l0
 
 
 class Processor(nn.Module):
@@ -170,10 +172,10 @@ class Processor(nn.Module):
             [copy.deepcopy(EquivariantTransformerLayer(node_dim, num_heads, ff_dim, edge_dim)) for _ in range(num_convs)]
         )
 
-    def forward(self, h: Tensor, v: Tensor, edge_index: Tensor, edge_attr: Tensor, edge_len: Tensor) -> Tuple[Tensor, Tensor]:
+    def forward(self, h: Tensor, v: Tensor, l: Tensor, edge_index: Tensor, edge_attr: Tensor, edge_len: Tensor) -> Tuple[Tensor, Tensor]:
         for conv in self.convs:
-            h, v = conv(h, v, edge_index, edge_attr, edge_len)
-        return h, v
+            h, v, l = conv(h, v, l, edge_index, edge_attr, edge_len)
+        return h, v, l
 
 
 class Decoder(nn.Module):
@@ -186,13 +188,15 @@ class Decoder(nn.Module):
         self.Oh = nn.Parameter(torch.empty(dim, num_scalar_out))
         # Vectors: channel mix shared across xyz (equivariant)
         self.Ov = nn.Parameter(torch.empty(dim, num_vector_out))
+        self.Ol = nn.Parameter(torch.empty(dim, 1))
 
         # Better init
         nn.init.kaiming_uniform_(self.Oh, a=5**0.5)
         nn.init.kaiming_uniform_(self.Ov, a=5**0.5)
+        nn.init.kaiming_uniform_(self.Ol, a=5**0.5)
         self.num_species = num_species
 
-    def forward(self, h: torch.Tensor, v: torch.Tensor):
+    def forward(self, h: torch.Tensor, v: torch.Tensor, l: torch.Tensor):
         """
         h: [N, D]
         v: [N, D, 3]  (last axis is xyz)
@@ -209,7 +213,7 @@ class Decoder(nn.Module):
         # Vectors: mix channels only; identical weights for x/y/z
         # (V @ Ov) commutes with rotation on the last axis → stays equivariant
         v_out = torch.einsum('ndk,df->nfk', v, self.Ov)  # [N, F, 3]
-
+        l_out = torch.einsum('ndkl,df->nfkl', l, self.Ol)  # [N, F, 3, 3]
         # Optional species softmax on scalars ONLY
         if h_out.shape[-1] >= self.num_species:
             head = h_out[..., :-self.num_species]
@@ -217,7 +221,7 @@ class Decoder(nn.Module):
             h_out = torch.hstack([head, species])
 
         # IMPORTANT: do NOT squeeze — preserve [N, F, 3] even when F==1 or N==1
-        return h_out, v_out
+        return h_out, v_out, l_out
         
 
     def extra_repr(self) -> str:
@@ -328,14 +332,14 @@ class EquivariantTransformer_dpm(EquivariantTransformer):
                     #     cond_r_mask = out_cond["cond_r"]['mask']
             
             if self.tps_condition:
-                h, v, edge_attr = self.encoder(species, edge_index, torch.cat([edge_attr, edge_attr_cond_f, edge_attr_cond_r], dim=-1), edge_vec, t, sub_graph_mask)
+                h, v, edge_attr, l = self.encoder(species, edge_index, torch.cat([edge_attr, edge_attr_cond_f, edge_attr_cond_r], dim=-1), edge_vec, t, sub_graph_mask)
                 # h = h + self.mask_to_emb_f(cond_f_mask) + self.mask_to_emb_r(cond_r_mask)
             else:  # self.sim_condition
-                h, v, edge_attr = self.encoder(species, edge_index, torch.cat([edge_attr, edge_attr_cond_f], dim=-1), edge_vec, t, sub_graph_mask)
+                h, v, edge_attr, l = self.encoder(species, edge_index, torch.cat([edge_attr, edge_attr_cond_f], dim=-1), edge_vec, t, sub_graph_mask)
                 # h = h + self.mask_to_emb_f(cond_f_mask)
 
         else:
-            h, v, edge_attr = self.encoder(species, edge_index, edge_attr, edge_vec, t, sub_graph_mask)
+            h, v, edge_attr, l = self.encoder(species, edge_index, edge_attr, edge_vec, t, sub_graph_mask)
         if cv is not None:
             h = h + self.encoder.embed_cv(cv)
 
@@ -350,14 +354,14 @@ class EquivariantTransformer_dpm(EquivariantTransformer):
         if self.object_aware:
             edge_index, edge_attr, edge_vec = _filter_edges(edge_index, edge_attr, edge_vec, sub_graph_mask)
 
-        h, v = self.processor(h, v, edge_index, edge_attr, edge_len=torch.linalg.norm(edge_vec, dim=1, keepdim=True))
+        h, v, l = self.processor(h, v, l, edge_index, edge_attr, edge_len=torch.linalg.norm(edge_vec, dim=1, keepdim=True))
         # print('processor--> h=', )
         # for i in range(h.shape[0]):
         #     print(h[i,:10])
         # print('processor--> v=', )
         # for i in range(v.shape[0]):
         #     print(v[i,:10])
-        return self.decoder(h, v)
+        return self.decoder(h, v, l)
 
 
     
@@ -511,14 +515,14 @@ class EquivariantTransformer_dpm(EquivariantTransformer):
         else:
             if cv is not None:
                 cv = torch.repeat_interleave(cv.view(-1, cv.shape[-1]), torch.ones(B*T).to(int).to(x.device)*N, dim=0)
-            scaler_out, vector_out = self._graph_forward(species.reshape(-1,self.num_species), edge_index, edge_attr, edge_vec, t.reshape(-1,1), cv, out_cond)
+            scaler_out, vector_out, lattice_tensor_out = self._graph_forward(species.reshape(-1,self.num_species), edge_index, edge_attr, edge_vec, t.reshape(-1,1), cv, out_cond)
         if self.design:
             # return torch.hstack([vector_out, scaler_out]).view(B, T, N, -1)
             return scaler_out.view(B, T, N, -1)
         elif self.potential_model:
             return scaler_out.reshape(B, T, N, -1)
         else:
-            return vector_out.reshape(B, T, N, -1)
+            return vector_out.reshape(B, T, N, -1), lattice_tensor_out.reshape(B, T, N, 3, 3).mean(dim=2)
         
     def forward(self, x: Tensor, t: Tensor, cv: Tensor=None,
                 cell=None, 
@@ -539,8 +543,8 @@ class EquivariantTransformer_dpm(EquivariantTransformer):
             return scaler_out
         else:
             if v_mask is not None: x = x*v_mask+x1*(1-v_mask)
-            vector_out = self.inference(x, t, cv, cell, num_atoms, conditions, aatype, fragments_idx=fragments_idx)
-            return vector_out*v_mask
+            vector_out, lattice_tensor_out = self.inference(x, t, cv, cell, num_atoms, conditions, aatype, fragments_idx=fragments_idx)
+            return vector_out*v_mask, lattice_tensor_out
 
     def forward_inference(self, x: Tensor, t: Tensor, cv: Tensor=None,
                 cell=None, 
@@ -561,8 +565,8 @@ class EquivariantTransformer_dpm(EquivariantTransformer):
             return scaler_out
         else:
             x = x*v_mask+x1*(1-v_mask)
-            vector_out = self.inference(x, t, cv, cell, num_atoms, conditions, aatype, fragments_idx=fragments_idx)
-            return vector_out*v_mask
+            vector_out, lattice_tensor_out = self.inference(x, t, cv, cell, num_atoms, conditions, aatype, fragments_idx=fragments_idx)
+            return vector_out*v_mask, lattice_tensor_out
 
 
     def rearrange_batch(self, idx, model_kwargs:dict):

@@ -22,18 +22,22 @@ class EquivariantAttention(nn.Module):
         self.W_K  = nn.Linear(dim, dim)
         self.W_Vh = nn.Linear(dim, dim)
         self.W_Vv = nn.Parameter(torch.empty(dim, dim))
+        self.W_Vl = nn.Parameter(torch.empty(dim, dim))
         self.W_Oh = nn.Parameter(torch.empty(dim, dim))
         self.W_Ov = nn.Parameter(torch.empty(dim, dim))
+        self.W_Ol = nn.Parameter(torch.empty(dim, dim))
         self.edge_bias = MLP([edge_dim, edge_dim, num_heads], act=nn.SiLU())
 
         self.reset_parameters()
 
     def reset_parameters(self) -> None:
         nn.init.kaiming_uniform_(self.W_Vv, a=math.sqrt(5))
+        nn.init.kaiming_uniform_(self.W_Vl, a=math.sqrt(5))
         nn.init.kaiming_uniform_(self.W_Oh, a=math.sqrt(5))
         nn.init.kaiming_uniform_(self.W_Ov, a=math.sqrt(5))
+        nn.init.kaiming_uniform_(self.W_Ol, a=math.sqrt(5))
 
-    def forward(self, h: Tensor, v: Tensor, edge_index: Tensor, edge_attr: Tensor, edge_len: Tensor) -> Tuple[Tensor, Tensor]:
+    def forward(self, h: Tensor, v: Tensor, l: Tensor, edge_index: Tensor, edge_attr: Tensor, edge_len: Tensor) -> Tuple[Tensor, Tensor]:
         num_nodes = h.size(0)
         i = edge_index[0]
         j = edge_index[1]
@@ -44,6 +48,7 @@ class EquivariantAttention(nn.Module):
         key     = self.W_K(h).view( -1, self.num_heads, d_k)[i]
         value_h = self.W_Vh(h).view(-1, self.num_heads, d_k)[i]
         value_v = torch.einsum('ndi, df -> nfi', v, self.W_Vv).view(-1, self.num_heads, d_k, 3)[i]
+        value_l = torch.einsum('ndij, df -> nfij', l, self.W_Vl).view(-1, self.num_heads, d_k, 3, 3)[i]
 
         # Multi-head attention
         scores = (query * key).sum(dim=-1) / math.sqrt(d_k) - edge_len + self.edge_bias(edge_attr)
@@ -55,9 +60,13 @@ class EquivariantAttention(nn.Module):
         v = (alpha[..., None, None] * value_v).view(-1, self.dim, 3)
         v = scatter(v, index=j, dim=0, dim_size=num_nodes)
 
+        l = (alpha[..., None, None, None] * value_l).view(-1, self.dim, 3, 3)
+        l = scatter(l, index=j, dim=0, dim_size=num_nodes)
+
         dh = h @ self.W_Oh
         dv = torch.einsum('ndi, df -> nfi', v, self.W_Ov)
-        return dh, dv
+        dl = torch.einsum('ndij, df -> nfij', l, self.W_Ol)
+        return dh, dv, dl
 
     def extra_repr(self) -> str:
         return f'(W_Vv): tensor({list(self.W_Vv.shape)}, requires_grad={self.W_Vv.requires_grad}) \n' \
@@ -72,8 +81,10 @@ class EquivariantFeedForward(nn.Module):
         self.ff_dim = ff_dim
         self.W1   = nn.Parameter(torch.empty(dim, dim))
         self.W2   = nn.Parameter(torch.empty(dim, dim))
+        self.W3   = nn.Parameter(torch.empty(dim, dim))
         self.ffn1 = MLP([dim*2, ff_dim, dim], act=nn.SiLU())
         self.ffn2 = MLP([dim*2, ff_dim, dim], act=nn.SiLU())
+        self.ffn3 = MLP([dim*2, ff_dim, dim], act=nn.SiLU())
         self.norm = nn.LayerNorm(dim)
 
         self.reset_parameters()
@@ -81,15 +92,18 @@ class EquivariantFeedForward(nn.Module):
     def reset_parameters(self) -> None:
         nn.init.kaiming_uniform_(self.W1, a=math.sqrt(5))
         nn.init.kaiming_uniform_(self.W2, a=math.sqrt(5))
+        nn.init.kaiming_uniform_(self.W3, a=math.sqrt(5))
 
-    def forward(self, h: Tensor, v: Tensor) -> Tuple[Tensor, Tensor]:
+    def forward(self, h: Tensor, v: Tensor, l: Tensor) -> Tuple[Tensor, Tensor]:
         v1 = torch.einsum('ndi, df -> nfi', v, self.W1)
         v2 = torch.einsum('ndi, df -> nfi', v, self.W2)
+        l1 = torch.einsum('ndij, df -> nfij', l, self.W3)
         v1_norm = torch.linalg.norm(v1, dim=-1)
         dh = self.ffn1(torch.cat([h, v1_norm], dim=-1))
         u  = self.ffn2(torch.cat([h, v1_norm], dim=-1))
         dv = self.norm(u)[..., None] * v2
-        return dh, dv
+        dl = self.norm(u)[...,None, None] * l1
+        return dh, dv, dl
 
     def extra_repr(self) -> str:
         return f'(W1): tensor({list(self.W1.shape)}, requires_grad={self.W1.requires_grad}) \n' \
@@ -108,14 +122,16 @@ class EquivariantTransformerLayer(nn.Module):
         self.norm1 = nn.LayerNorm(dim)
         self.norm2 = nn.LayerNorm(dim)
 
-    def forward(self, h: Tensor, v: Tensor, edge_index: Tensor, edge_attr: Tensor, edge_len: Tensor) -> Tuple[Tensor, Tensor]:
+    def forward(self, h: Tensor, v: Tensor, l: Tensor, edge_index: Tensor, edge_attr: Tensor, edge_len: Tensor) -> Tuple[Tensor, Tensor]:
         # Attention
-        dh, dv = self.attn(self.norm1(h), v, edge_index, edge_attr, edge_len)
+        dh, dv, dl = self.attn(self.norm1(h), v, l, edge_index, edge_attr, edge_len)
         h = h + dh
         v = v + dv
+        l = l + dl
 
         # Feedfoward
-        dh, dv = self.feedforward(self.norm2(h), v)
+        dh, dv, dl = self.feedforward(self.norm2(h), v, l)
         h = h + dh
         v = v + dv
-        return h, v
+        l = l + dl
+        return h, v, l

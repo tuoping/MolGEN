@@ -273,6 +273,18 @@ class Transport:
         t = t.to(x1)
         return t, x0, x1
 
+
+    def sample_latt(self, x1):
+        """Sampling x0 & t based on shape of x1 (if needed)
+          Args:
+            x1 - data point; [batch, *dim]
+        """
+        mu = torch.zeros(6)
+        mu[-1] = 1.
+        sigma = 0.1
+        cell = torch.normal(mu, sigma).to(x1.device)
+        return cell
+
     def training_losses(
             self,
             model,
@@ -332,10 +344,10 @@ class Transport:
         
         B = x1.shape[0]
         assert t.shape == (B,)
-        model_output = model(xt, t, **model_kwargs)
+        model_output, lattflow_output = model(xt, t, **model_kwargs)
         assert self.args.weight_loss_var_x0 == 0
         if self.score_model is not None:
-            score_model_output = self.score_model(xt, t, **model_kwargs)
+            score_model_output, lattscore_output = self.score_model(xt, t, **model_kwargs)
 
             
         B, *_, C = xt.shape
