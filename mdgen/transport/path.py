@@ -134,6 +134,15 @@ class ICPlan:
         ut = self.compute_ut(t, x0, x1, xt)
         return t, xt, ut
     
+    def plan_latt(self, t, latt0, latt1):
+        t = expand_t_like_x(t, latt1)
+        alpha_t, d_alpha_t = self.compute_alpha_t(t)
+        sigma_t, d_sigma_t = self.compute_sigma_t(t)
+        latt = alpha_t * latt1 + sigma_t * latt0
+
+        ulatt = d_alpha_t * latt1 + d_sigma_t * latt0
+        return t, latt, ulatt
+    
     def compute_marginal_std(self, t, diffusion):
         """Compute the marginal standard deviation of the time-dependent density p_t"""
         return th.sqrt(2*diffusion) * th.sqrt(t*(1-t))

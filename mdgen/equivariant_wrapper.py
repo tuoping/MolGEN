@@ -134,6 +134,38 @@ def batch_rmsd_sb(
     return rmsds
 
 
+
+@torch.no_grad()
+def lattice_polar_build_torch(k):
+    assert k.dim() == 2, "input must be batched k of shape (B,6)"
+    S0 = torch.stack([k[:, 3] + k[:, 4] + k[:, 5], k[:, 0], k[:, 1]], dim=1)  # (B, 3)
+    S1 = torch.stack([k[:, 0], -k[:, 3] + k[:, 4] + k[:, 5], k[:, 2]], dim=1)  # (B, 3)
+    S2 = torch.stack([k[:, 1], k[:, 2], -2 * k[:, 4] + k[:, 5]], dim=1)  # (B, 3)
+    S = torch.stack([S0, S1, S2], dim=1)  # (B, 3, 3)
+    expS = torch.matrix_exp(S)  # (B, 3, 3)
+    return expS
+
+
+def decompose_symmetric_matrix(S: torch.Tensor):
+    k0 = S[:, 0, 1]
+    k1 = S[:, 0, 2]
+    k2 = S[:, 1, 2]
+    k3 = (S[:, 0, 0] - S[:, 1, 1]) / 2
+    k4 = (S[:, 0, 0] + S[:, 1, 1] - 2 * S[:, 2, 2]) / 6
+    k5 = (S[:, 0, 0] + S[:, 1, 1] + S[:, 2, 2]) / 3
+    k = torch.vstack([k0, k1, k2, k3, k4, k5]).transpose(-1, -2)
+    return k
+
+@torch.no_grad()
+def lattice_polar_decompose_torch(lattices: torch.Tensor):
+    assert lattices.dim() == 3, "input must be batched lattices of shape (B,3,3)"
+    A, U = torch.linalg.eigh(lattices @ lattices.transpose(-1,-2))  # J = L^T @ L
+    # S = 1/2 U log(A) U^T
+    A = torch.diag_embed(A.log()) / 2
+    S = U @ A @ U.transpose(-1, -2)
+    k = decompose_symmetric_matrix(S)
+    return k
+
 class EquivariantMDGenWrapper(Wrapper):
     def __init__(self, args):
         super().__init__(args)
@@ -219,7 +251,8 @@ class EquivariantMDGenWrapper(Wrapper):
             args.prediction,
             train_eps=1e-5,
             sample_eps=1e-5,
-            score_model=self.score_model
+            score_model=self.score_model,
+            latt_path = True
         )
         self.transport_sampler = Sampler(self.transport)
 
@@ -256,7 +289,6 @@ class EquivariantMDGenWrapper(Wrapper):
         species = batch["species"]
         latents = batch["species"]
         x_now = batch["x"]
-        
     
         B, T, L, num_elem = species.shape
 
@@ -461,7 +493,6 @@ class EquivariantMDGenWrapper(Wrapper):
         assert self.args.weight_loss_var_x0 == 0
         loss = loss_gen
         if self.score_model is not None:
-            self.prefix_log("loss_flow", out_dict['loss_flow'].detach().cpu())
             self.prefix_log("loss_dsm", out_dict['loss_dsm'].detach().cpu())
             self.prefix_log("loss_tsm_0", out_dict['loss_tsm_0'].detach().cpu())
             self.prefix_log("loss_tsm_1", out_dict['loss_tsm_1'].detach().cpu())
@@ -487,6 +518,9 @@ class EquivariantMDGenWrapper(Wrapper):
 
         self.prefix_log('model_dur', time.time() - start)
         self.prefix_log('loss', loss.detach().cpu())
+        self.prefix_log("loss_flow", out_dict['loss_flow'].detach().cpu())
+        if self.transport.latt_path:
+            self.prefix_log('loss_lattflow', out_dict['loss_lattflow'].detach().cpu())
 
         self.prefix_log('dur', time.time() - self.last_log_time)
         if 'name' in batch:

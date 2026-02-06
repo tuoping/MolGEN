@@ -572,15 +572,43 @@ class LatentDataset(torch.utils.data.Dataset):
 import ase.io
 import spglib
 
+
+@torch.no_grad()
+def lattice_polar_build_torch(k):
+    assert k.dim() == 2, "input must be batched k of shape (B,6)"
+    S0 = torch.stack([k[:, 3] + k[:, 4] + k[:, 5], k[:, 0], k[:, 1]], dim=1)  # (B, 3)
+    S1 = torch.stack([k[:, 0], -k[:, 3] + k[:, 4] + k[:, 5], k[:, 2]], dim=1)  # (B, 3)
+    S2 = torch.stack([k[:, 1], k[:, 2], -2 * k[:, 4] + k[:, 5]], dim=1)  # (B, 3)
+    S = torch.stack([S0, S1, S2], dim=1)  # (B, 3, 3)
+    expS = torch.matrix_exp(S)  # (B, 3, 3)
+    return expS
+
+
+def decompose_symmetric_matrix(S: torch.Tensor):
+    k0 = S[:, 0, 1]
+    k1 = S[:, 0, 2]
+    k2 = S[:, 1, 2]
+    k3 = (S[:, 0, 0] - S[:, 1, 1]) / 2
+    k4 = (S[:, 0, 0] + S[:, 1, 1] - 2 * S[:, 2, 2]) / 6
+    k5 = (S[:, 0, 0] + S[:, 1, 1] + S[:, 2, 2]) / 3
+    k = torch.vstack([k0, k1, k2, k3, k4, k5]).transpose(-1, -2)
+    return k
+
+@torch.no_grad()
+def lattice_polar_decompose_torch(lattices: torch.Tensor):
+    assert lattices.dim() == 3, "input must be batched lattices of shape (B,3,3)"
+    A, U = torch.linalg.eigh(lattices @ lattices.transpose(-1,-2))  # J = L^T @ L
+    # S = 1/2 U log(A) U^T
+    A = torch.diag_embed(A.log()) / 2
+    S = U @ A @ U.transpose(-1, -2)
+    k = decompose_symmetric_matrix(S)
+    return k
+
 class EquivariantTransformerDataset_MaterialProject(torch.utils.data.Dataset):
     def __init__(self, traj_dir, cutoff, num_species=5, localmask=False, sim_condition=False, stage="train", save_dir = None, save_filename = None):
         temperature = 300
         self.kT = temperature*8.617*10**-5
-        self.calculator = MACECalculator(
-            model_path="./MACE-matpes-r2scan-omat-ft.model",
-            device="cuda",
-            default_dtype="float32",
-        )
+
         self.num_species = num_species
         self.cutoff = cutoff
 
@@ -589,7 +617,13 @@ class EquivariantTransformerDataset_MaterialProject(torch.utils.data.Dataset):
         self.localmask = localmask
         self.sim_condition = sim_condition
 
-        if self.stage == "save":
+        if self.stage == "save":    
+            self.calculator = MACECalculator(
+                model_path="./MACE-matpes-r2scan-omat-ft.model",
+                device="cuda",
+                default_dtype="float32",
+            )
+        
             traj_filename = os.path.join(traj_dir, "all_structures.extxyz")
             atoms_list = ase.io.read(traj_filename, index=":")
             # import json
@@ -650,8 +684,9 @@ class EquivariantTransformerDataset_MaterialProject(torch.utils.data.Dataset):
             torch.save(dataset, f'{save_dir}/{save_filename}.pt')
         else:
             self.all_dataset = torch.load(os.path.join(traj_dir, f"{stage}.pt"), weights_only=False)
-
-    
+            for data in self.all_dataset:
+                data.cell = lattice_polar_build_torch(lattice_polar_decompose_torch(data.cell.reshape(-1,3,3))).reshape(3,3)
+                data.z = data.z[:,:num_species]
     def __len__(self):
         return len(self.all_dataset)
     

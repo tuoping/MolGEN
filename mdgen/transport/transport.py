@@ -190,6 +190,37 @@ def grad_log_normal_iso_3d(x, mu=0, sigma=1):
     return -(x - mu) / (sigma**2)
 
 
+@torch.no_grad()
+def lattice_polar_build_torch(k):
+    assert k.dim() == 2, "input must be batched k of shape (B,6)"
+    S0 = torch.stack([k[:, 3] + k[:, 4] + k[:, 5], k[:, 0], k[:, 1]], dim=1)  # (B, 3)
+    S1 = torch.stack([k[:, 0], -k[:, 3] + k[:, 4] + k[:, 5], k[:, 2]], dim=1)  # (B, 3)
+    S2 = torch.stack([k[:, 1], k[:, 2], -2 * k[:, 4] + k[:, 5]], dim=1)  # (B, 3)
+    S = torch.stack([S0, S1, S2], dim=1)  # (B, 3, 3)
+    expS = torch.matrix_exp(S)  # (B, 3, 3)
+    return expS
+
+
+def decompose_symmetric_matrix(S: torch.Tensor):
+    k0 = S[:, 0, 1]
+    k1 = S[:, 0, 2]
+    k2 = S[:, 1, 2]
+    k3 = (S[:, 0, 0] - S[:, 1, 1]) / 2
+    k4 = (S[:, 0, 0] + S[:, 1, 1] - 2 * S[:, 2, 2]) / 6
+    k5 = (S[:, 0, 0] + S[:, 1, 1] + S[:, 2, 2]) / 3
+    k = torch.vstack([k0, k1, k2, k3, k4, k5]).transpose(-1, -2)
+    return k
+
+@torch.no_grad()
+def lattice_polar_decompose_torch(lattices: torch.Tensor):
+    assert lattices.dim() == 3, "input must be batched lattices of shape (B,3,3)"
+    A, U = torch.linalg.eigh(lattices @ lattices.transpose(-1,-2))  # J = L^T @ L
+    # S = 1/2 U log(A) U^T
+    A = torch.diag_embed(A.log()) / 2
+    S = U @ A @ U.transpose(-1, -2)
+    k = decompose_symmetric_matrix(S)
+    return k
+
 class Transport:
 
     def __init__(
@@ -201,7 +232,8 @@ class Transport:
             loss_type,
             train_eps,
             sample_eps,
-            score_model = None
+            score_model = None,
+            latt_path = False
     ):
         path_options = {
             PathType.LINEAR: path.ICPlan,
@@ -216,6 +248,7 @@ class Transport:
         self.train_eps = train_eps
         self.sample_eps = sample_eps
         self.score_model = score_model
+        self.latt_path = latt_path
 
     def prior_logp(self, z):
         '''
@@ -279,10 +312,11 @@ class Transport:
           Args:
             x1 - data point; [batch, *dim]
         """
-        mu = torch.zeros(6)
-        mu[-1] = 1.
+        mu = torch.zeros(*x1.shape[:2], 6)
+        mu[:,:,-1] = 1.
         sigma = 0.1
-        cell = torch.normal(mu, sigma).to(x1.device)
+        k = torch.normal(mu, sigma).to(x1.device)
+        cell = lattice_polar_build_torch(k.reshape(-1, 6)).reshape(*x1.shape[:2], 3, 3)
         return cell
 
     def training_losses(
@@ -317,6 +351,7 @@ class Transport:
         
         ### normal sampler of t
         t, x0, x1 = self.sample(x1)
+        latt0 = self.sample_latt(x1)
         if self.args.design:  # alterations made to the original SIT code to include dirichlet flow matching for design
             assert self.model_type == ModelType.VELOCITY
             seq_one_hot = aatype1
@@ -332,6 +367,8 @@ class Transport:
         else:
             if self.score_model is None:
                 t, xt, ut = self.path_sampler.plan(t, x0[0], x1)
+                if self.latt_path:
+                    _, latt, ulatt = self.path_sampler.plan_latt(t, latt0, model_kwargs['cell'])
                 assert self.args.weight_loss_var_x0 == 0
             else:
                 assert self.args.weight_loss_var_x0 == 0
@@ -363,7 +400,7 @@ class Transport:
         terms['x0'] = x0
         if not (self.args.design):
             if self.model_type == ModelType.VELOCITY:
-                terms["loss_continuous"]=((0.5*(model_output)**2 - (ut)*model_output))
+                # terms["loss_continuous"]=((0.5*(model_output)**2 - (ut)*model_output))
 
                 # s_est = self.path_sampler.get_score_from_velocity(model_output, xt, t)
                 # div_v = divergence(model, xt, t, model_kwargs).unsqueeze(-1)
@@ -406,6 +443,11 @@ class Transport:
                     terms['loss'] = terms['loss_flow'] + terms['loss_dsm'] + terms['loss_tsm_0'] + terms["loss_tsm_1"]
                 else:
                     terms['loss'] = terms['loss_flow']
+                    if self.latt_path:
+                        lowertrigflow_output = torch.stack([lattflow_output[:,:,0,0], lattflow_output[:,:,1,0], lattflow_output[:,:,1,1], lattflow_output[:,:,2,0], lattflow_output[:,:,2,1], lattflow_output[:,:,2,2]], dim=-1)
+                        lowertrigulatt = torch.stack([ulatt[:,:,0,0], ulatt[:,:,1,0], ulatt[:,:,1,1], ulatt[:,:,2,0], ulatt[:,:,2,1], ulatt[:,:,2,2] ], dim=-1)
+                        terms['loss_lattflow'] = mean_flat((lowertrigflow_output - lowertrigulatt).abs(), torch.ones_like(lowertrigflow_output, device=lowertrigflow_output.device))
+                        terms['loss'] += terms['loss_lattflow']
             else:
                 _, drift_var = self.path_sampler.compute_drift(xt, t)
                 sigma_t, _ = self.path_sampler.compute_sigma_t(path.expand_t_like_x(t, xt))
@@ -421,13 +463,13 @@ class Transport:
                 if self.model_type == ModelType.NOISE:
                     terms['loss'] = mean_flat(weight * ((model_output - x0[0]) ** 2), mask)
                 else:
-                    terms["loss_continuous"]=(weight * ((model_output * sigma_t + x0[0]) ** 2)*mask)
+                    # terms["loss_continuous"]=(weight * ((model_output * sigma_t + x0[0]) ** 2)*mask)
                     terms['loss'] = mean_flat(weight * ((model_output * sigma_t + x0[0]) ** 2), mask) # loss by comparing the x_0
 
         # more changes for dirichlet flow matching
 
         if self.args.design:
-            terms['loss_continuous'] = torch.tensor(torch.nan, device=xt.device)
+            # terms['loss_continuous'] = torch.tensor(torch.nan, device=xt.device)
             loss_d = th.nn.functional.cross_entropy(logits.reshape(-1,num_species), aatype1.reshape(-1,num_species).argmax(dim=-1), reduction="none").reshape(x1.shape[:-1])
             terms['loss'] = mean_flat(loss_d, mask)
             terms['loss_discrete'] = loss_d
@@ -798,6 +840,7 @@ def create_transport(
         train_eps=None,
         sample_eps=None,
         score_model=None,
+        latt_path = False
 ):
     """function for creating Transport object
     **Note**: model prediction defaults to velocity
@@ -852,7 +895,8 @@ def create_transport(
         loss_type=loss_type,
         train_eps=train_eps,
         sample_eps=sample_eps,
-        score_model=score_model
+        score_model=score_model,
+        latt_path=latt_path
     )
 
     return state
