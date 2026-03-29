@@ -28,12 +28,12 @@ torch.set_float32_matmul_precision('medium')
 # from torch.utils.data import ConcatDataset
 # from torch.utils.data import Subset
 
-train_dataset = EquivariantTransformerDataset_MaterialProject(args.data_dir, args.cutoff, num_species=args.num_species, sim_condition=False, stage="train")
+train_dataset = EquivariantTransformerDataset_MaterialProject(args.data_dir, args.cutoff, species=[6], sim_condition=False, stage="train")
 
 if args.overfit:
     val_dataset = train_dataset
 else:
-    val_dataset = EquivariantTransformerDataset_MaterialProject(args.data_dir, args.cutoff, num_species=args.num_species, sim_condition=False, stage="val")
+    val_dataset = EquivariantTransformerDataset_MaterialProject(args.data_dir, args.cutoff, species=[6], sim_condition=False, stage="val")
 
 train_loader = torch.utils.data.DataLoader(
     train_dataset,
@@ -53,6 +53,7 @@ model = EquivariantMDGenWrapper(args).to(device)
 if args.ckpt is not None:
     checkpoint = torch.load(args.ckpt, weights_only=False, map_location=torch.device(device))
     model.load_state_dict(checkpoint["state_dict"], strict=False )
+# assert model.transport.latt_path
 
 callbacks_fn = [
     ModelCheckpoint(

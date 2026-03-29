@@ -92,13 +92,10 @@ class Encoder_dpm(Encoder):
             self.phi_fuse = MLP([node_dim*2, edge_dim, node_dim], act=nn.SiLU())
         self.object_aware = object_aware
 
-    def forward(self, species: Tensor, edge_index: Tensor, edge_attr: Tensor, edge_vec: Tensor, t: Tensor, sub_graph_mask=None) -> Tuple[Tensor, Tensor, Tensor, Tensor]:
-        if not self.object_aware:
-            assert sub_graph_mask is None
-            return self.forward_generic(species, edge_index, edge_attr, edge_vec, t)
-        else:
-            assert sub_graph_mask is not None
-            return self.forward_object_aware(species, edge_index, edge_attr, edge_vec, t, sub_graph_mask)
+    def forward(self, species: Tensor, edge_index: Tensor, edge_attr: Tensor, edge_vec: Tensor, fracedge_vec: Tensor, t: Tensor, sub_graph_mask=None) -> Tuple[Tensor, Tensor, Tensor, Tensor]:
+        assert not self.object_aware
+        assert sub_graph_mask is None
+        return self.forward_generic(species, edge_index, edge_attr, edge_vec, fracedge_vec, t)
 
 
     def forward_object_aware(self, species: Tensor, edge_index: Tensor, edge_attr: Tensor, edge_vec: Tensor, t: Tensor, sub_graph_mask=None) -> Tuple[Tensor, Tensor, Tensor, Tensor]:
@@ -136,7 +133,7 @@ class Encoder_dpm(Encoder):
         return h_out, v0, edge_attr
 
 
-    def forward_generic(self, species: Tensor, edge_index: Tensor, edge_attr: Tensor, edge_vec: Tensor, t: Tensor) -> Tuple[Tensor, Tensor, Tensor, Tensor]:
+    def forward_generic(self, species: Tensor, edge_index: Tensor, edge_attr: Tensor, edge_vec: Tensor, fracedge_vec: Tensor, t: Tensor) -> Tuple[Tensor, Tensor, Tensor, Tensor]:
         num_nodes = len(species)
         i = edge_index[0]
         j = edge_index[1]
@@ -152,10 +149,10 @@ class Encoder_dpm(Encoder):
             f, scatter(self.phi_s(e) * f[i], index=j, dim=0, dim_size=num_nodes)
         ], dim=-1))
 
+        fracedge_norm = fracedge_vec.norm(dim=-1)
         # Initialize vector features
         v0 = scatter(edge_vec[:, None, :] * self.phi_v(e)[:, :, None], index=j, dim=0, dim_size=num_nodes)
-        norm_edge_vec = edge_vec / edge_vec.norm(dim=-1)[:, None]
-        l0 = scatter(norm_edge_vec[:, None, None, :] * self.phi_l(e)[:, :, None, None] * norm_edge_vec[:, None, :, None], index=j, dim=0, dim_size=num_nodes)
+        l0 = scatter(edge_vec[:, None, None, :] * self.phi_l(e)[:, :, None, None] / fracedge_norm[:,None,None,None] / fracedge_norm[:,None,None,None] * edge_vec[:, None, :, None], index=j, dim=0, dim_size=num_nodes)
         # Add time embedding to node features
         h0 = h0 + self.embed_time(t)
         return h0, v0, edge_attr, l0
@@ -311,7 +308,7 @@ class EquivariantTransformer_dpm(EquivariantTransformer):
             print("WARNING:: tps_condition not implemented for when species of the TS is different from the R or P")
 
 
-    def _graph_forward(self, species: Tensor, edge_index: Tensor, edge_attr: Tensor, edge_vec: Tensor, t: Tensor, cv: Tensor=None, out_cond=None, sub_graph_mask=None) -> Tuple[Tensor, Tensor]:
+    def _graph_forward(self, species: Tensor, edge_index: Tensor, edge_attr: Tensor, edge_vec: Tensor, fracedge_vec: Tensor, t: Tensor, cv: Tensor=None, out_cond=None, sub_graph_mask=None) -> Tuple[Tensor, Tensor]:
         num_edges = edge_index.shape[1]
         if (self.tps_condition or self.sim_condition) and out_cond is not None:
             if self.pbc:
@@ -332,14 +329,14 @@ class EquivariantTransformer_dpm(EquivariantTransformer):
                     #     cond_r_mask = out_cond["cond_r"]['mask']
             
             if self.tps_condition:
-                h, v, edge_attr, l = self.encoder(species, edge_index, torch.cat([edge_attr, edge_attr_cond_f, edge_attr_cond_r], dim=-1), edge_vec, t, sub_graph_mask)
+                h, v, edge_attr, l = self.encoder(species, edge_index, torch.cat([edge_attr, edge_attr_cond_f, edge_attr_cond_r], dim=-1), edge_vec, fracedge_vec, t, sub_graph_mask)
                 # h = h + self.mask_to_emb_f(cond_f_mask) + self.mask_to_emb_r(cond_r_mask)
             else:  # self.sim_condition
-                h, v, edge_attr, l = self.encoder(species, edge_index, torch.cat([edge_attr, edge_attr_cond_f], dim=-1), edge_vec, t, sub_graph_mask)
+                h, v, edge_attr, l = self.encoder(species, edge_index, torch.cat([edge_attr, edge_attr_cond_f], dim=-1), edge_vec, fracedge_vec, t, sub_graph_mask)
                 # h = h + self.mask_to_emb_f(cond_f_mask)
 
         else:
-            h, v, edge_attr, l = self.encoder(species, edge_index, edge_attr, edge_vec, t, sub_graph_mask)
+            h, v, edge_attr, l = self.encoder(species, edge_index, edge_attr, edge_vec, fracedge_vec, t, sub_graph_mask)
         if cv is not None:
             h = h + self.encoder.embed_cv(cv)
 
@@ -388,7 +385,7 @@ class EquivariantTransformer_dpm(EquivariantTransformer):
                 # )
                 
                 _edge_index_i, _edge_index_j, _to_jimages = torch_neighbour_list(
-                    positions=x.view(B*T,N,3)[idx_config],
+                    positions=x.view(B*T,N,3)[idx_config]@cell.view(B*T,3,3)[idx_config],
                     cell=cell.view(B*T,3,3)[idx_config],
                     pbc=torch.tensor([True, True, True]),
                     cutoff=self.cutoff,
@@ -435,7 +432,7 @@ class EquivariantTransformer_dpm(EquivariantTransformer):
             to_jimages,
             num_atoms.view(-1),
             num_bonds,
-            coord_is_cart=True,
+            coord_is_cart=False,
             return_offsets=True,
             return_distance_vec=True,
         )
@@ -451,7 +448,7 @@ class EquivariantTransformer_dpm(EquivariantTransformer):
                             to_jimages,
                             num_atoms.view(-1),
                             num_bonds,
-                            coord_is_cart=True,
+                            coord_is_cart=False,
                             return_offsets=True,
                             return_distance_vec=True,
                             recalculate_offsets=True
@@ -476,7 +473,7 @@ class EquivariantTransformer_dpm(EquivariantTransformer):
                             to_jimages,
                             num_atoms.view(-1),
                             num_bonds,
-                            coord_is_cart=True,
+                            coord_is_cart=False,
                             return_offsets=True,
                             return_distance_vec=True,
                             recalculate_offsets=True
@@ -498,6 +495,7 @@ class EquivariantTransformer_dpm(EquivariantTransformer):
         edge_index = out["edge_index"]
         edge_len = out["distances"]
         edge_vec = out["distance_vec"]
+        fracedge_vec = out['frac_distance_vec']
 
         if aatype is not None:
             species = aatype
@@ -509,20 +507,21 @@ class EquivariantTransformer_dpm(EquivariantTransformer):
         edge_attr = msg_to_invariants_from_irreps(edge_attr, self.edge_block.msg_irreps)
 
         t = t.unsqueeze(-1).unsqueeze(1).expand(-1,T,-1).unsqueeze(2).expand(-1,-1,N,-1)
-        if self.object_aware:
-            assert cv is None
-            scaler_out, vector_out = self._graph_forward(species.reshape(-1,self.num_species), edge_index, edge_attr, edge_vec, t.reshape(-1,1), out_cond, sub_graph_mask=sub_graph_mask)
-        else:
-            if cv is not None:
-                cv = torch.repeat_interleave(cv.view(-1, cv.shape[-1]), torch.ones(B*T).to(int).to(x.device)*N, dim=0)
-            scaler_out, vector_out, lattice_tensor_out = self._graph_forward(species.reshape(-1,self.num_species), edge_index, edge_attr, edge_vec, t.reshape(-1,1), cv, out_cond)
+        # if self.object_aware:
+        #     assert cv is None
+        #     scaler_out, vector_out = self._graph_forward(species.reshape(-1,self.num_species), edge_index, edge_attr, edge_vec, t.reshape(-1,1), out_cond, sub_graph_mask=sub_graph_mask)
+        # else:
+        assert not self.object_aware
+        if cv is not None:
+            cv = torch.repeat_interleave(cv.view(-1, cv.shape[-1]), torch.ones(B*T).to(int).to(x.device)*N, dim=0)
+        scaler_out, vector_out, _lattice_tensor_out = self._graph_forward(species.reshape(-1,self.num_species), edge_index, edge_attr, edge_vec, fracedge_vec, t.reshape(-1,1), cv, out_cond)
         if self.design:
             # return torch.hstack([vector_out, scaler_out]).view(B, T, N, -1)
             return scaler_out.view(B, T, N, -1)
         elif self.potential_model:
             return scaler_out.reshape(B, T, N, -1)
         else:
-            return vector_out.reshape(B, T, N, -1), lattice_tensor_out.reshape(B, T, N, 3, 3).mean(dim=2)
+            return vector_out.reshape(B, T, N, -1), _lattice_tensor_out.reshape(B, T, N, 3, 3).mean(dim=2)
         
     def forward(self, x: Tensor, t: Tensor, cv: Tensor=None,
                 cell=None, 

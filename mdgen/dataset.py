@@ -605,10 +605,10 @@ def lattice_polar_decompose_torch(lattices: torch.Tensor):
     return k
 
 class EquivariantTransformerDataset_MaterialProject(torch.utils.data.Dataset):
-    def __init__(self, traj_dir, cutoff, num_species=5, localmask=False, sim_condition=False, stage="train", save_dir = None, save_filename = None):
+    def __init__(self, traj_dir, cutoff, species, localmask=False, sim_condition=False, stage="train", save_dir = None, save_filename = None, sel_idx = None):
         temperature = 300
         self.kT = temperature*8.617*10**-5
-
+        num_species = len(species)
         self.num_species = num_species
         self.cutoff = cutoff
 
@@ -618,11 +618,11 @@ class EquivariantTransformerDataset_MaterialProject(torch.utils.data.Dataset):
         self.sim_condition = sim_condition
 
         if self.stage == "save":    
-            self.calculator = MACECalculator(
-                model_path="./MACE-matpes-r2scan-omat-ft.model",
-                device="cuda",
-                default_dtype="float32",
-            )
+            # self.calculator = MACECalculator(
+            #     model_path="./MACE-matpes-r2scan-omat-ft.model",
+            #     device="cuda",
+            #     default_dtype="float32",
+            # )
         
             traj_filename = os.path.join(traj_dir, "all_structures.extxyz")
             atoms_list = ase.io.read(traj_filename, index=":")
@@ -634,12 +634,13 @@ class EquivariantTransformerDataset_MaterialProject(torch.utils.data.Dataset):
             # Onehot encoder for atom type
             # unique_numbers = np.concatenate([np.unique(atoms.numbers) for atoms in atoms_list])        
             atom_encoder = OneHotEncoder(sparse_output=False)
-            atom_encoder.fit(np.arange(1, num_species+1)[:,np.newaxis])
+            atom_encoder.fit(np.array(species).reshape(-1,1))
             
             dataset = []
             os.makedirs(save_dir, exist_ok=True)
             if os.path.exists(f'{save_dir}/conventional.extxyz'): os.remove(f'{save_dir}/conventional.extxyz')
             for i_atoms, _atoms in enumerate(atoms_list):
+
                 lattice   = _atoms.get_cell().array
                 positions = _atoms.get_scaled_positions()
                 numbers   = _atoms.get_atomic_numbers()
@@ -653,9 +654,15 @@ class EquivariantTransformerDataset_MaterialProject(torch.utils.data.Dataset):
                     cell=conv_lattice,
                     pbc=True
                 )
+                if atoms.get_number_of_atoms() < 8:
+                    from ase.build.supercells import make_supercell
+                    atoms = make_supercell(atoms, np.eye(3,3)*2)
                 ase.io.write(f'{save_dir}/conventional.extxyz', atoms, append=True)
-                atoms.calc = self.calculator
-                mace_energy = atoms.get_potential_energy()
+                if sel_idx is not None and i_atoms not in sel_idx:
+                    continue
+                print(i_atoms, sel_idx)
+                # atoms.calc = self.calculator
+                # mace_energy = atoms.get_potential_energy()
                 num_atoms = len(atoms)
                 atoms.wrap()   
                 # masses = atoms.get_masses()
@@ -674,7 +681,6 @@ class EquivariantTransformerDataset_MaterialProject(torch.utils.data.Dataset):
                     cell       = torch.tensor(np.array(atoms.cell), dtype=torch.float32),
                     E_formation = None,
                     E_above_hull = None,
-                    E = torch.tensor(mace_energy, dtype=torch.float32),
                     num_atoms = torch.tensor(num_atoms, dtype=torch.long),
                     # stiffness = torch.tensor(stiffness, dtype=torch.float32),
                     # masses = torch.tensor(masses)
@@ -687,6 +693,8 @@ class EquivariantTransformerDataset_MaterialProject(torch.utils.data.Dataset):
             for data in self.all_dataset:
                 data.cell = lattice_polar_build_torch(lattice_polar_decompose_torch(data.cell.reshape(-1,3,3))).reshape(3,3)
                 data.z = data.z[:,:num_species]
+                inv_cell = torch.linalg.inv(data.cell)
+                data.pos = data.pos@inv_cell
     def __len__(self):
         return len(self.all_dataset)
     
@@ -718,7 +726,6 @@ class EquivariantTransformerDataset_MaterialProject(torch.utils.data.Dataset):
             "x": torch.stack([data.pos for data in dataset]),
             "cell": torch.stack([data.cell for data in dataset]),
             "num_atoms": torch.stack([data.num_atoms for data in dataset]),
-            'e_mace': torch.stack([data.E for data in dataset]),
             "mask": mask,
             "v_mask": v_mask,
             "h_mask": h_mask,

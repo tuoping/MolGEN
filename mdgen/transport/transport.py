@@ -369,6 +369,7 @@ class Transport:
                 t, xt, ut = self.path_sampler.plan(t, x0[0], x1)
                 if self.latt_path:
                     _, latt, ulatt = self.path_sampler.plan_latt(t, latt0, model_kwargs['cell'])
+                    model_kwargs['cell'] = latt
                 assert self.args.weight_loss_var_x0 == 0
             else:
                 assert self.args.weight_loss_var_x0 == 0
@@ -447,7 +448,7 @@ class Transport:
                         lowertrigflow_output = torch.stack([lattflow_output[:,:,0,0], lattflow_output[:,:,1,0], lattflow_output[:,:,1,1], lattflow_output[:,:,2,0], lattflow_output[:,:,2,1], lattflow_output[:,:,2,2]], dim=-1)
                         lowertrigulatt = torch.stack([ulatt[:,:,0,0], ulatt[:,:,1,0], ulatt[:,:,1,1], ulatt[:,:,2,0], ulatt[:,:,2,1], ulatt[:,:,2,2] ], dim=-1)
                         terms['loss_lattflow'] = mean_flat((lowertrigflow_output - lowertrigulatt).abs(), torch.ones_like(lowertrigflow_output, device=lowertrigflow_output.device))
-                        terms['loss'] += terms['loss_lattflow']
+                        terms['loss'] = terms['loss_flow'] + terms['loss_lattflow']
             else:
                 _, drift_var = self.path_sampler.compute_drift(xt, t)
                 sigma_t, _ = self.path_sampler.compute_sigma_t(path.expand_t_like_x(t, xt))
@@ -508,7 +509,8 @@ class Transport:
 
         def body_fn(x, t, model, **model_kwargs):
             model_output = drift_fn(x, t, model, **model_kwargs)
-            assert model_output.shape == x.shape, "Output shape from ODE solver must match input shape"
+            # assert model_output.shape == x.shape, "Output shape from ODE solver must match input shape"
+            assert model_output[0].shape == x.shape if isinstance(model_output, tuple) else model_output.shape == x.shape, "Output shape from ODE solver must match input shape"
             return model_output
 
         return body_fn
