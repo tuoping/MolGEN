@@ -1,18 +1,6 @@
-# TS-GEN
+# MOLGEN
 
 Implementation of [Flow matching for reaction pathway generation](https://arxiv.org/abs/2507.10530) by Ping Tuo*, Jiale Chen, Ju Li*.
-
-A flow matching model learns a transformation from an initial distribution, typically a standard Gaussian, to a target distribution. This transformation is defined by an optimal transport path connecting the source and target distributions. A neural network is trained to approximate the corresponding velocity field that governs the evolution of the interpolant along this path.
-
-MolGEN extends this framework by introducing a conditioning mechanism that steers the generation process toward specific target distributions. MolGEN employs a message passing neural network (MPNN) architecture. For the task of TS generation, we modify the MPNN by concatenating the messages of the transition state (TS) interpolant and the reaction-product pair (RP) to form a reaction message, as illustrated in the Figure bellow. This process integrates the bond information of all three states into the reaction messages. Analogously, for the task of reaction product generation, we concatenate the messages of the reactant and the product interpolant to form the reaction message.
-Subsequently, the model passes these reaction messages through message passing layers to predict the velocity field that evolves the distribution. 
-
-MolGEN initiates with a standard Gaussian distribution. Therefore, it also incorporates stochasticity while performing a deterministic forward pass. The probability path simulated by MolGEN resembles that of a diffusion model, in the sense that both follow a transformation from a standard Gaussian distribution to a jagged target distribution. Consequently, MolGEN is capable of exploring the free energy surface as effectively as diffusion-based models, while using 100 times less inference time.
-
-Please feel free to reach out to us at tuoping@berkeley.edu, liju@mit.edu with any questions.
-
-
-![algo.png](algo_schematic.png)
 
 ## Installation
 
@@ -31,53 +19,48 @@ pip install pyg_lib torch_scatter torch_sparse torch_cluster torch_spline_conv t
 ```
 
 ## Datasets
-- We encourage interested users to download our preprocessed data here: https://drive.google.com/file/d/1k5Nb1j7BCzUspRtXnbVR8tyhNhrv1YDy/view?usp=drive_link
 
-  Steps to download and preprocess the original data:
+I have written a dataset class `mdgen/dataset.py`: `EquivariantTransformerDataset_MaterialProject` for periodic systems.
+One can read a xyz file and write to torch dataset by 
 
-  1. Download the Transition1x datasets:
-  ```
-  git clone https://gitlab.com/matschreiner/Transition1x
-  cd Transition1x
-  pip install .
-  ```
-  2. Preprocess the Transition1x datasets by `./scripts/Transition1x/prep_data.ipynb`
-  3. Download the [RGD1](https://github.com/zhaoqy1996/RGD1) database here: https://figshare.com/articles/dataset/model_reaction_database/21066901
-  4. Preprocess the RGD1 datasets by `./scripts/RGD1/prep_data.ipynb`
+```python
+import torch, os
+from mdgen.dataset import EquivariantTransformerDataset_MaterialProject
 
-- All the configurations generated for the KHP decomposition network is in `results-KHP`.
+torch.set_float32_matmul_precision('medium')
+
+idx_test = [32, 34, 2]
+idx_train = [x for x in range(64) if x not in idx_test]
+trainset = EquivariantTransformerDataset_MaterialProject("data/MP_C_sims", 6, species=[6], localmask=False, sim_condition=False, stage="save", save_dir="data/MP_C_data", save_filename="train", sel_idx=idx_train)
+testset = EquivariantTransformerDataset_MaterialProject("data/MP_C_sims", 6, species=[6], localmask=False, sim_condition=False, stage="save", save_dir="data/MP_C_data", save_filename="test", sel_idx=idx_test)
+```
+
 
 ## Training
 
-Commands similar to these were used to train the models presented in the paper.
+Training command for a periodic system:
 ```
 
-python train-Transition1x-equivariant.py --tps_condition  --data_dir data/Transition1x/  --ckpt_freq 1  --epochs 2000 --run_name $workdir_name --cutoff 12 --val_epoch_freq 5 --x0std 1.0  --batch_size 64 --ratio_conditonal 1.0 --weight_loss_var_x0 0.0 --pbc --object_aware --path-type Linear  --KL symm --lr_decay 
+python train.py --data_dir data/MC_C_data/  --ckpt_freq 1  --epochs 2000 --run_name $workdir_name --cutoff 12 --val_epoch_freq 5 --x0std 1.0  --batch_size 64 --pbc --path-type Linear  --KL L1 --lr_decay 
 
 ```
-
-## Model weights
-
-The model weights used in the paper may be downloaded here:
-https://drive.google.com/drive/folders/1RdJShzr2hjqJpU4ZsnNRBSiJ84Wk3ASC?usp=drive_link
-
-
 
 ## Inference
 
-Inference by 
-```
-python Transition1x-inference.py $ckpt_path $output_dir
-```
+**Inference is not enabled yet.** For details about how to enable inference, please refer to the next section.
 
-## Analysis
-- For static energy evaluation using pySCF, use `scripts/pydft-scripts/calculate_err_pyscf.py` (For the installation of PySCF, refer to: https://pyscf.org/user/install.html)
-- For error evaluation of test set, use `scripts/calculate_err_pyscf_alltrials.ipynb`. 
-- For transition state optimization using Psi4, use `scripts/pydft-scripts/ts_opt_psi4.py` (For the installation of Psi4, refer to: https://psicode.org/psi4manual/master/build_obtaining.html#faq-binarypackage. Tip: To use "wb97x-d3", one need to install an additional DFTD3 package by: `conda install dftd3 -c psi4  
-`)
-- For IRC calculations using Psi4, use `scripts/pydft-scripts/irc_*` 
-- `scripts/calculate_err_pyscf_alltrials.py` is the script for full postprocessing including the IRC calculations.
+## Overview of code updates relative to the main branch
 
+- The lattice flow is enabled by
+    - The training workflow in `mdgen/transport/transport.py`: `def training_losses`, where we enabled loss function: 
+    ```python
+    terms['loss_lattflow'] = mean_flat((lowertrigflow_output - lowertrigulatt).abs(), torch.ones_like(lowertrigflow_output, device=lowertrigflow_output.device))
+    ```
+    - The lattice path is written in `class ICPlan`: `def plan_latt`. (For path-type other than `Linear`, the lattice path is not enabled.)
+
+- Lattice flow prediction is enabled in `mdgen/model/equivariant_latent_model.py`.
+
+- **Inference is not enabled yet.** To enable inference, one need to follow the workflow in `mdgen/equivariant_wrapper.py`: `def inference`, and modify the ODE process in `mdgen/transport/transport.py`: `def sample_ode`.
 
 ## License
 
