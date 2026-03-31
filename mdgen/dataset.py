@@ -695,6 +695,8 @@ class EquivariantTransformerDataset_MaterialProject(torch.utils.data.Dataset):
                 data.z = data.z[:,:num_species]
                 inv_cell = torch.linalg.inv(data.cell)
                 data.pos = data.pos@inv_cell
+    
+    
     def __len__(self):
         return len(self.all_dataset)
     

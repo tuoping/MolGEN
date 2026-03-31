@@ -101,7 +101,7 @@ def parse_train_args():
     group.add_argument('--cond_interval', type=int, default=None) # for superresolution
     
     ## Equivariant Transformer settings
-    group.add_argument('--num_species', type=int, default=4)
+    group.add_argument('--num_species', type=int, default=1)
     group.add_argument('--embed_dim', type=int, default=128)
     group.add_argument('--edge_dim', type=int, default=128)
     group.add_argument('--num_convs', type=int, default=5)

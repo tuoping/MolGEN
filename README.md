@@ -41,7 +41,7 @@ testset = EquivariantTransformerDataset_MaterialProject("data/MP_C_sims", 6, spe
 Training command for a periodic system:
 ```
 
-python train.py --data_dir data/MC_C_data/  --ckpt_freq 1  --epochs 2000 --run_name $workdir_name --cutoff 12 --val_epoch_freq 5 --x0std 1.0  --batch_size 64 --pbc --path-type Linear  --KL L1 --lr_decay 
+python train.py --data_dir data/MP_C_data/  --ckpt_freq 1  --epochs 10000 --cutoff 12 --val_epoch_freq 5 --x0std 1.0  --batch_size 1 --path-type Linear  --KL L1 --lr_decay --overfit 
 
 ```
 
