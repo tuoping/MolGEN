@@ -99,7 +99,8 @@ class ode:
         device = x[0].device if isinstance(x, tuple) else x.device
         def _fn(t, x):
             t = th.ones(x[0].size(0)).to(device) * t if isinstance(x, tuple) else th.ones(x.size(0)).to(device) * t
-            model_output = self.drift(x, t, model, **model_kwargs)
+            model_kwargs['cell'] = x[1]
+            model_output = self.drift(x[0], t, model, **model_kwargs)
             return model_output
 
         t = self.t.to(device)

@@ -624,25 +624,16 @@ class EquivariantMDGenWrapper(Wrapper):
             return vector_out, aa_out
         else:
             zs = torch.randn(B, T, N, D, device=self.device)*self.args.x0std
-
+            cell0 = self.transport.sample_latt(zs)
         self.integration_step = 0
         assert self.score_model is None
         assert self.args.likelihood is None
         with torch.no_grad(): sample_fn = self.transport_sampler.sample_ode(sampling_method=self.args.sampling_method, num_steps=self.args.inference_steps)  # default to ode
 
-        if self.args.guided:
-            ### TODO: likelihood evaluation for guided ODE
-            if self.args.likelihood is not None:
-                raise Exception("Not implemented")
-            with torch.no_grad(): samples = sample_fn(
-                    zs,
-                    partial(self.guided_velocity, **prep['model_kwargs'])
-                )[-1]
-        else:
-            samples = sample_fn(
-                zs,
-                partial(self.model.forward_inference, **prep['model_kwargs'])
-            )[-1]
+        samples = sample_fn(
+            (zs, cell0),
+            partial(self.model.forward_inference, **prep['model_kwargs'])
+        )
 
         
         if self.args.design:
@@ -653,8 +644,10 @@ class EquivariantMDGenWrapper(Wrapper):
             # print("WARNNING::")
             # print("Applying the following mask to the output vector:")
             # print(prep["model_kwargs"]['v_mask'])
-            vector_out = samples *prep["model_kwargs"]['v_mask'] + prep["latents"]*(1-prep["model_kwargs"]['v_mask'])
+            vector_out = samples[0][-1] *prep["model_kwargs"]['v_mask'] + prep["latents"]*(1-prep["model_kwargs"]['v_mask'])
             vector_out = vector_out.detach().requires_grad_(True)
+            cell_out = samples[1][-1]
+            cell_out = cell_out.detach().requires_grad_(True)
 
         if self.args.design:
             aa_out = torch.argmax(logits, -1)
@@ -664,6 +657,6 @@ class EquivariantMDGenWrapper(Wrapper):
             # aa_out = batch['species']
         print('Time =', time.time()-s_time)
 
-        return vector_out, aa_out
+        return vector_out, aa_out, cell_out
 
     
