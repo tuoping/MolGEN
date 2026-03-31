@@ -47,7 +47,7 @@ python train.py --data_dir data/MC_C_data/  --ckpt_freq 1  --epochs 2000 --run_n
 
 ## Inference
 
-**Inference is not enabled yet.** For details about how to enable inference, please refer to the next section.
+Inference can be run using `notebooks/checkgraph-inference.ipynb`.
 
 ## Overview of code updates relative to the main branch
 

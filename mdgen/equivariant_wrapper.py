@@ -645,9 +645,9 @@ class EquivariantMDGenWrapper(Wrapper):
             # print("Applying the following mask to the output vector:")
             # print(prep["model_kwargs"]['v_mask'])
             vector_out = samples[0][-1] *prep["model_kwargs"]['v_mask'] + prep["latents"]*(1-prep["model_kwargs"]['v_mask'])
-            vector_out = vector_out.detach().requires_grad_(True)
+            vector_out = vector_out.detach().requires_grad_(False)
             cell_out = samples[1][-1]
-            cell_out = cell_out.detach().requires_grad_(True)
+            cell_out = cell_out.detach().requires_grad_(False)
 
         if self.args.design:
             aa_out = torch.argmax(logits, -1)
