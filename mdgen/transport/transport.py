@@ -382,10 +382,16 @@ class Transport:
         
         B = x1.shape[0]
         assert t.shape == (B,)
-        model_output, lattflow_output = model(xt, t, **model_kwargs)
+        if self.latt_path:
+            model_output, lattflow_output = model(xt, t, **model_kwargs)
+        else:
+            model_output = model(xt, t, **model_kwargs)
         assert self.args.weight_loss_var_x0 == 0
         if self.score_model is not None:
-            score_model_output, lattscore_output = self.score_model(xt, t, **model_kwargs)
+            if self.latt_path:
+                score_model_output, lattscore_output = self.score_model(xt, t, **model_kwargs)
+            else:
+                score_model_output = self.score_model(xt, t, **model_kwargs)
 
             
         B, *_, C = xt.shape
@@ -501,8 +507,12 @@ class Transport:
             return model_output
 
         if self.model_type == ModelType.NOISE:
+            if self.latt_path:
+                raise Exception("ModelType.NOISE is not implemented for variable lattice")
             drift_fn = noise_ode
         elif self.model_type == ModelType.SCORE:
+            if self.latt_path:
+                raise Exception("ModelType.SCORE is not implemented for variable lattice")
             drift_fn = score_ode
         else:
             drift_fn = velocity_ode

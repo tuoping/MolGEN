@@ -626,21 +626,9 @@ class EquivariantMDGenWrapper(Wrapper):
             zs = torch.randn(B, T, N, D, device=self.device)*self.args.x0std
 
         self.integration_step = 0
-        if self.score_model is None:
-            if self.args.likelihood == "EJE":
-                sample_fn = self.transport_sampler.sample_ode_likelihood(sampling_method=self.args.sampling_method, num_steps=self.args.inference_steps)
-                sample_fn_reverse = self.transport_sampler.sample_ode_likelihood(sampling_method=self.args.sampling_method, num_steps=self.args.inference_steps, reverse=True)
-            elif self.args.likelihood is None:
-                with torch.no_grad(): sample_fn = self.transport_sampler.sample_ode(sampling_method=self.args.sampling_method, num_steps=self.args.inference_steps)  # default to ode
-            elif self.args.likelihood == "FND":
-                with torch.no_grad(): sample_fn = self.transport_sampler.sample_ode(sampling_method=self.args.sampling_method, num_steps=self.args.inference_steps)
-            else:
-                raise Exception("Wrong likelihood argument: "+self.args.likelihood)
-        else:
-            ### TODO: likelihood evaluation for SDE
-            if self.args.likelihood is not None:
-                raise Exception("Not implemented")
-            with torch.no_grad(): sample_fn = self.transport_sampler.sample_sde(num_steps=self.args.inference_steps, diffusion_form=self.args.diffusion_form, diffusion_norm=torch.tensor(self.args.diffusion_norm))
+        assert self.score_model is None
+        assert self.args.likelihood is None
+        with torch.no_grad(): sample_fn = self.transport_sampler.sample_ode(sampling_method=self.args.sampling_method, num_steps=self.args.inference_steps)  # default to ode
 
         if self.args.guided:
             ### TODO: likelihood evaluation for guided ODE
@@ -651,26 +639,11 @@ class EquivariantMDGenWrapper(Wrapper):
                     partial(self.guided_velocity, **prep['model_kwargs'])
                 )[-1]
         else:
-            if self.args.likelihood == "EJE":
-                zs = zs.detach().requires_grad_(True)
-                samples_logp, samples = sample_fn(
-                    zs,
-                    partial(self.model.forward_inference, **prep['model_kwargs'])
-                )
-            elif self.args.likelihood == "FND":
-                all_samples = sample_fn(
-                    zs,
-                    partial(self.model.forward_inference, **prep['model_kwargs'])
-                )
-                samples = all_samples[-1]
+            samples = sample_fn(
+                zs,
+                partial(self.model.forward_inference, **prep['model_kwargs'])
+            )[-1]
 
-            elif self.args.likelihood is None:
-                samples = sample_fn(
-                    zs,
-                    partial(self.model.forward_inference, **prep['model_kwargs'])
-                )[-1]
-            else:
-                raise Exception("Wrong likelihood argument: "+self.args.likelihood)
         
         if self.args.design:
             # vector_out = samples[..., :-self.args.num_species]
@@ -682,11 +655,6 @@ class EquivariantMDGenWrapper(Wrapper):
             # print(prep["model_kwargs"]['v_mask'])
             vector_out = samples *prep["model_kwargs"]['v_mask'] + prep["latents"]*(1-prep["model_kwargs"]['v_mask'])
             vector_out = vector_out.detach().requires_grad_(True)
-            if self.args.likelihood == "EJE":
-                reverse_samples_logp, samples_zs = sample_fn_reverse(
-                        vector_out,
-                        partial(self.model.forward_inference, **prep['model_kwargs'])
-                    )
 
         if self.args.design:
             aa_out = torch.argmax(logits, -1)
@@ -695,12 +663,7 @@ class EquivariantMDGenWrapper(Wrapper):
             aa_out = torch.argmax(batch['species'], -1)
             # aa_out = batch['species']
         print('Time =', time.time()-s_time)
-        if self.args.likelihood == "EJE":
-            return samples_logp, vector_out, aa_out, reverse_samples_logp, zs, samples_zs
-        elif self.args.likelihood == "FND":
-            return vector_out, aa_out, zs, all_samples
-        elif self.args.likelihood is None:
-            return vector_out, aa_out
-        else:
-            raise Exception("Wrong likelihood argument: "+self.args.likelihood)
+
+        return vector_out, aa_out
+
     
