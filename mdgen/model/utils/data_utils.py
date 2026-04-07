@@ -286,9 +286,6 @@ def get_pbc_distances(
 
     if return_distance_vec:
         out["distance_vec"] = distance_vectors
-        if not coord_is_cart:
-            inv_lattice = torch.linalg.inv(lattice_edges)
-            out['frac_distance_vec'] = torch.einsum('bi,bij->bj', distance_vectors, inv_lattice)
 
     if return_offsets:
         out["offsets"] = offsets

@@ -194,6 +194,7 @@ class EquivariantMDGenWrapper(Wrapper):
 
         processor = Processor(num_convs=5, node_dim=latent_dim, num_heads=8, ff_dim=args.ff_dim, edge_dim=latent_dim)
         print("Initializing drift model")
+        latt_path = False
         self.model = EquivariantTransformer_dpm(
             encoder = encoder,
             processor = processor,
@@ -208,6 +209,7 @@ class EquivariantMDGenWrapper(Wrapper):
             num_species=args.num_species,
             pbc=args.pbc,
             object_aware=args.object_aware,
+            latt_path = latt_path
         )
         if args.potential_model:
             num_scalar_out = 1
@@ -240,7 +242,8 @@ class EquivariantMDGenWrapper(Wrapper):
                 sim_condition=args.sim_condition,
                 pbc=args.pbc,
                 object_aware=args.object_aware,
-                num_species=args.num_species
+                num_species=args.num_species,
+                latt_path = latt_path
             )
         else:
             self.score_model = None
@@ -252,8 +255,10 @@ class EquivariantMDGenWrapper(Wrapper):
             train_eps=1e-5,
             sample_eps=1e-5,
             score_model=self.score_model,
-            latt_path = True
+            latt_path = latt_path
         )
+        if self.transport.latt_path:
+            self.transport.mean_atomic_volume = args.mean_atomic_volume
         self.transport_sampler = Sampler(self.transport)
 
         if not hasattr(args, 'ema'):
@@ -623,17 +628,24 @@ class EquivariantMDGenWrapper(Wrapper):
             vector_out = prep["model_kwargs"]["x_latt"]
             return vector_out, aa_out
         else:
-            zs = torch.randn(B, T, N, D, device=self.device)*self.args.x0std
-            cell0 = self.transport.sample_latt(zs)
+            # zs = torch.randn(B, T, N, D, device=self.device)*self.args.x0std
+            zs = torch.rand(B,T,N,D, device=self.device)
+            if self.transport.latt_path:
+                cell0 = self.transport.sample_latt(zs)
         self.integration_step = 0
         assert self.score_model is None
         assert self.args.likelihood is None
         with torch.no_grad(): sample_fn = self.transport_sampler.sample_ode(sampling_method=self.args.sampling_method, num_steps=self.args.inference_steps)  # default to ode
-
-        samples = sample_fn(
-            (zs, cell0),
-            partial(self.model.forward_inference, **prep['model_kwargs'])
-        )
+        if self.transport.latt_path:
+            samples = sample_fn(
+                (zs, cell0),
+                partial(self.model.forward_inference, **prep['model_kwargs'])
+            )
+        else:
+            samples = sample_fn(
+                zs,
+                partial(self.model.forward_inference, **prep['model_kwargs'])
+            )
 
         
         if self.args.design:
@@ -646,8 +658,9 @@ class EquivariantMDGenWrapper(Wrapper):
             # print(prep["model_kwargs"]['v_mask'])
             vector_out = samples[0][-1] *prep["model_kwargs"]['v_mask'] + prep["latents"]*(1-prep["model_kwargs"]['v_mask'])
             vector_out = vector_out.detach().requires_grad_(False)
-            cell_out = samples[1][-1]
-            cell_out = cell_out.detach().requires_grad_(False)
+            if self.transport.latt_path:
+                cell_out = samples[1][-1]
+                cell_out = cell_out.detach().requires_grad_(False)
 
         if self.args.design:
             aa_out = torch.argmax(logits, -1)
@@ -657,6 +670,9 @@ class EquivariantMDGenWrapper(Wrapper):
             # aa_out = batch['species']
         print('Time =', time.time()-s_time)
 
-        return vector_out, aa_out, cell_out
+        if self.transport.latt_path:
+            return samples[0], aa_out, samples[1]
+        else:
+            return samples, aa_out
 
     

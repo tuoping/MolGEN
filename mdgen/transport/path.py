@@ -11,6 +11,8 @@ def expand_t_like_x(t, x):
     t = t.view(t.size(0), *dims)
     return t
 
+def wrap_frac_pos(F):
+    return th.remainder(F, 1.0)
 
 #################### Coupling Plans ####################
 
@@ -132,7 +134,15 @@ class ICPlan:
     def plan(self, t, x0, x1):
         xt = self.compute_xt(t, x0, x1)
         ut = self.compute_ut(t, x0, x1, xt)
-        return t, xt, ut
+        return xt, ut
+    
+    def plan_fractional(self, t, x0, x1):
+        t = expand_t_like_x(t, x1)
+        alpha_t, d_alpha_t = self.compute_alpha_t(t)
+        sigma_t, d_sigma_t = self.compute_sigma_t(t)
+        xt = x0 + t*(wrap_frac_pos(x1 - x0 - 0.5) - 0.5)
+        ut = wrap_frac_pos(x1 - x0 - 0.5) - 0.5
+        return xt, ut
     
     def plan_latt(self, t, latt0, latt1):
         t = expand_t_like_x(t, latt1)
@@ -141,7 +151,7 @@ class ICPlan:
         latt = alpha_t * latt1 + sigma_t * latt0
 
         ulatt = d_alpha_t * latt1 + d_sigma_t * latt0
-        return t, latt, ulatt
+        return latt, ulatt
     
     def compute_marginal_std(self, t, diffusion):
         """Compute the marginal standard deviation of the time-dependent density p_t"""
@@ -219,7 +229,7 @@ class ICPlan:
         epsilon = th.randn_like(x0)
         xt = self.sample_xt_schrodinger_bridge(x0, x1, t, epsilon, diffusion)
         ut = self.compute_ut_schrodinger_bridge(t, x0, x1, xt)
-        return t, xt, ut, epsilon
+        return xt, ut, epsilon
     
     def compute_lambda_schrodinger_bridge(self, t, diffusion):
         '''

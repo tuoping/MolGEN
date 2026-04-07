@@ -660,7 +660,7 @@ class EquivariantTransformerDataset_MaterialProject(torch.utils.data.Dataset):
                 ase.io.write(f'{save_dir}/conventional.extxyz', atoms, append=True)
                 if sel_idx is not None and i_atoms not in sel_idx:
                     continue
-                print(i_atoms, sel_idx)
+                # print(i_atoms, sel_idx)
                 # atoms.calc = self.calculator
                 # mace_energy = atoms.get_potential_energy()
                 num_atoms = len(atoms)
@@ -686,15 +686,21 @@ class EquivariantTransformerDataset_MaterialProject(torch.utils.data.Dataset):
                     # masses = torch.tensor(masses)
                 )
                 dataset.append(data.clone())
-            
+                volume = atoms.get_volume()
+
             torch.save(dataset, f'{save_dir}/{save_filename}.pt')
         else:
             self.all_dataset = torch.load(os.path.join(traj_dir, f"{stage}.pt"), weights_only=False)
+            atomic_volumes = []
             for data in self.all_dataset:
                 data.cell = lattice_polar_build_torch(lattice_polar_decompose_torch(data.cell.reshape(-1,3,3))).reshape(3,3)
                 data.z = data.z[:,:num_species]
                 inv_cell = torch.linalg.inv(data.cell)
                 data.pos = data.pos@inv_cell
+                num_atoms = data.pos.shape[0]
+                atomic_volumes.append(torch.dot(data.cell[0], torch.cross(data.cell[1], data.cell[2], dim=0))/num_atoms)
+            
+            self.mean_atomic_volume = torch.tensor(atomic_volumes).mean()
     
     
     def __len__(self):
@@ -704,7 +710,9 @@ class EquivariantTransformerDataset_MaterialProject(torch.utils.data.Dataset):
         idx = idx % len(self.all_dataset)
         dataset = [self.all_dataset[idx]]
 
-        x = torch.stack([data.pos for data in dataset])
+        x = torch.stack([data.pos for data in dataset]) % 1
+        assert torch.all(x>=0)
+        assert torch.all(x<=1)
         T,L,_ = x.shape
             
         _mask = torch.ones([T,L]) # T,L
@@ -725,7 +733,7 @@ class EquivariantTransformerDataset_MaterialProject(torch.utils.data.Dataset):
         return {
             "name": "Material Project",
             "species": torch.stack([data.z for data in dataset]),
-            "x": torch.stack([data.pos for data in dataset]),
+            "x": x,
             "cell": torch.stack([data.cell for data in dataset]),
             "num_atoms": torch.stack([data.num_atoms for data in dataset]),
             "mask": mask,

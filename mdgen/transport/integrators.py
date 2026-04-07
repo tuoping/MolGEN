@@ -90,7 +90,8 @@ class ode:
         assert t0 < t1, "ODE sampler has to be in forward time"
 
         self.drift = drift
-        self.t = th.linspace(t0, t1, num_steps)
+        # self.t = th.linspace(t0, t1, num_steps)
+        self.t = t0 + (t1 - t0) * (1 - (1 - th.linspace(0, 1, num_steps))**2)
         self.atol = atol
         self.rtol = rtol
         self.sampler_type = sampler_type
@@ -99,8 +100,11 @@ class ode:
         device = x[0].device if isinstance(x, tuple) else x.device
         def _fn(t, x):
             t = th.ones(x[0].size(0)).to(device) * t if isinstance(x, tuple) else th.ones(x.size(0)).to(device) * t
-            model_kwargs['cell'] = x[1]
-            model_output = self.drift(x[0], t, model, **model_kwargs)
+            if isinstance(x, tuple):
+                model_kwargs['cell'] = x[1]
+                model_output = self.drift(x[0], t, model, **model_kwargs)
+            else:
+                model_output = self.drift(x, t, model, **model_kwargs)
             return model_output
 
         t = self.t.to(device)

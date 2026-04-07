@@ -221,6 +221,10 @@ def lattice_polar_decompose_torch(lattices: torch.Tensor):
     k = decompose_symmetric_matrix(S)
     return k
 
+
+def wrap_frac_pos(F):
+    return th.remainder(F, 1.0)
+
 class Transport:
 
     def __init__(
@@ -296,9 +300,11 @@ class Transport:
           Args:
             x1 - data point; [batch, *dim]
         """
+        num_atoms = x1.shape[2]
         x0 = []
         for i in range(1):
-            x0.append(th.randn_like(x1)*self.args.x0std)
+            # x0.append(th.randn_like(x1)*self.args.x0std/(num_atoms)**(1./3.))
+            x0.append(th.rand(x1.shape, device=x1.device))
         t0, t1 = self.check_interval(self.train_eps, self.sample_eps)
         # t = th.rand((x1.shape[0],)) * (t1 - t0) + t0
         t, _ = sample_t_u_shaped(x1.shape[0], self.args.beta_sample_t)
@@ -312,11 +318,17 @@ class Transport:
           Args:
             x1 - data point; [batch, *dim]
         """
+        num_atoms = x1.shape[2]
         mu = torch.zeros(*x1.shape[:2], 6)
         mu[:,:,-1] = 1.
         sigma = 0.1
         k = torch.normal(mu, sigma).to(x1.device)
-        cell = lattice_polar_build_torch(k.reshape(-1, 6)).reshape(*x1.shape[:2], 3, 3)
+        cell = lattice_polar_build_torch(k.reshape(-1, 6)).reshape(-1, 3, 3)
+        volume = (cell[:,0] * torch.cross(cell[:,1], cell[:,2], dim=1)).sum(dim=-1)
+        target_volume = num_atoms * self.mean_atomic_volume * torch.ones_like(volume)
+        # residual_k = (torch.log(target_volume) - torch.log(volume))/3
+        # return k.reshape(-1, 6) + residual_k[:,None]
+        cell = lattice_polar_build_torch(k.reshape(-1, 6)).reshape(*x1.shape[:2], 3, 3) * (target_volume/volume)**(1./3.)
         return cell
 
     def training_losses(
@@ -348,10 +360,15 @@ class Transport:
 
         if model_kwargs == None:
             model_kwargs = {}
-        
+        B, T, N, C = x1.shape
         ### normal sampler of t
         t, x0, x1 = self.sample(x1)
-        latt0 = self.sample_latt(x1)
+        ### OT in the atom number dimension
+        # x0[0] = x0[0].view(B*T, N, C)
+        # idx_perm_L = sinkhorn_match_along_L(x0[0], x1.view(B*T, N, C))
+        # for b in range(B*T):
+        #     x0[0][b] = x0[0][b][idx_perm_L[b]]
+        # x0[0] = x0[0].view(B, T, N, C)
         if self.args.design:  # alterations made to the original SIT code to include dirichlet flow matching for design
             assert self.model_type == ModelType.VELOCITY
             seq_one_hot = aatype1
@@ -366,21 +383,27 @@ class Transport:
             # model_output = model(xt, t, cell=model_kwargs["cell"], num_atoms=model_kwargs["num_atoms"], x_cond=model_kwargs["x_cond"], x_cond_mask=model_kwargs["x_cond_mask"])
         else:
             if self.score_model is None:
-                t, xt, ut = self.path_sampler.plan(t, x0[0], x1)
+                xt, ut = self.path_sampler.plan_fractional(t, x0[0], x1)
+
                 if self.latt_path:
-                    _, latt, ulatt = self.path_sampler.plan_latt(t, latt0, model_kwargs['cell'])
+                    latt0 = self.sample_latt(x1)
+                    B,T,_,_ = model_kwargs['cell'].shape
+                    # latt1 = lattice_polar_decompose_torch(model_kwargs['cell'].reshape([B*T,3,3])).reshape(B*T,6)
+                    latt1 = model_kwargs['cell']
+                    latt, ulatt = self.path_sampler.plan_latt(t, latt0, latt1)
                     model_kwargs['cell'] = latt
+                    # model_kwargs['cell'] = lattice_polar_build_torch(latt.reshape([B*T,6])).reshape([B,T,3,3])
+                    # ulatt_L = lattice_polar_build_torch(ulatt.reshape([B*T,6])).reshape([B,T,3,3])
                 assert self.args.weight_loss_var_x0 == 0
             else:
                 assert self.args.weight_loss_var_x0 == 0
                 diffusion = self.path_sampler.compute_diffusion(x1, t, self.args.diffusion_form, self.args.diffusion_norm).view(-1)  # the input x here is not used
-                t, xt, ut, eps = self.path_sampler.plan_schrodinger_bridge(t, x0[0], x1, diffusion)
+                xt, ut, eps = self.path_sampler.plan_schrodinger_bridge(t, x0[0], x1, diffusion)
                 alpha_t, _ = self.path_sampler.compute_alpha_t(path.expand_t_like_x(t, xt))
                 sigma_t, _ = self.path_sampler.compute_sigma_t(path.expand_t_like_x(t, xt))
                 lambda_t = self.path_sampler.compute_lambda_schrodinger_bridge(t, diffusion)
 
         
-        B = x1.shape[0]
         assert t.shape == (B,)
         if self.latt_path:
             model_output, lattflow_output = model(xt, t, **model_kwargs)
@@ -393,8 +416,6 @@ class Transport:
             else:
                 score_model_output = self.score_model(xt, t, **model_kwargs)
 
-            
-        B, *_, C = xt.shape
         assert model_output.size() == (B, *xt.size()[1:-1], C)
 
         if self.args.design:
@@ -413,6 +434,7 @@ class Transport:
                 # div_v = divergence(model, xt, t, model_kwargs).unsqueeze(-1)
                 # terms["loss_fisherreg"] = mean_flat((div_v + (model_output*s_est).sum(dim=-1).unsqueeze(-1))**2, mask)
                 if self.args.KL == 'symm':
+                    raise Exception("Symm. KL need to be rewritten for fractional coordinates of a periodic system")
                     logQ_ = (-(t[:,None,None,None]*model_output)**2)/2
                     logP_ = (-(t[:,None,None,None]*ut)**2)/2
                     logm = torch.logaddexp(logP_, logQ_) - torch.ones_like(ut)*torch.log(torch.tensor(2.0))
@@ -421,7 +443,7 @@ class Transport:
                     terms['loss_symmkl'] = mean_flat(0.5 * (kl_p_m + kl_q_m), mask.mean(dim=-1)) 
                     # terms['loss_entropy'] = mean_flat((logQ_.exp()*logQ_).sum(dim=-1), mask.mean(dim=-1)) 
                     terms['loss_l1'] = mean_flat((model_output - ut).abs(), mask)
-                    terms['loss_flow'] = terms['loss_symmkl']
+                    terms['loss_flow'] = terms['loss_symmkl'] + terms['loss_l1'] 
                 elif self.args.KL == "reverse":
                     logQ_ = (-(t[:,None,None,None]*model_output)**2)/2
                     logP_ = (-(t[:,None,None,None]*ut)**2)/2
@@ -440,7 +462,8 @@ class Transport:
                 elif self.args.KL == "L2":
                     terms['loss_flow'] = mean_flat((0.5*(model_output)**2 - (ut)*model_output), mask)
                 elif self.args.KL == "L1":
-                    terms['loss_flow'] = mean_flat((model_output - ut).abs(), mask)
+                    cell = model_kwargs['cell'].view(B*T,3,3)
+                    terms['loss_flow'] = mean_flat((model_output.view(B*T,N,3)@cell - ut.view(B*T,N,3)@cell).abs(), mask.view(B*T,N,3))
                 else:
                     raise Exception(f"Wrong KL argument: {self.args.KL}")
                 if self.score_model is not None:
@@ -454,7 +477,7 @@ class Transport:
                         lowertrigflow_output = torch.stack([lattflow_output[:,:,0,0], lattflow_output[:,:,1,0], lattflow_output[:,:,1,1], lattflow_output[:,:,2,0], lattflow_output[:,:,2,1], lattflow_output[:,:,2,2]], dim=-1)
                         lowertrigulatt = torch.stack([ulatt[:,:,0,0], ulatt[:,:,1,0], ulatt[:,:,1,1], ulatt[:,:,2,0], ulatt[:,:,2,1], ulatt[:,:,2,2] ], dim=-1)
                         terms['loss_lattflow'] = mean_flat((lowertrigflow_output - lowertrigulatt).abs(), torch.ones_like(lowertrigflow_output, device=lowertrigflow_output.device))
-                        terms['loss'] = terms['loss_flow'] + terms['loss_lattflow']*10
+                        terms['loss'] = terms['loss_flow'] + terms['loss_lattflow']
             else:
                 _, drift_var = self.path_sampler.compute_drift(xt, t)
                 sigma_t, _ = self.path_sampler.compute_sigma_t(path.expand_t_like_x(t, xt))
