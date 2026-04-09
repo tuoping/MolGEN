@@ -69,6 +69,10 @@ python Latt-inference.py
   - The current version is based on a fixed variance through the Gaussian flow matching path; The version with a chaning variance is underway;
   - The variance of the fractional coordinates is divided by $N^{1/3}$, where N is the number of atoms, to ensure that the variance of the cartisian coordinates is $\approx$ args.x0std.
 
+Note:
+
+- In `dataset.py:EquivariantTransformerDataset_MaterialProject`, the current version only reads one structure and adds random noise to it to make 1024 different data samples.
+
 ## License
 
 MIT. Additional licenses may apply for third-party source code noted in file headers.
