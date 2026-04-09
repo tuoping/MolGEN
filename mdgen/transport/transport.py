@@ -1,7 +1,6 @@
 # https://github.com/willisma/SiT/
 import copy
 
-import torch
 import torch as th
 import numpy as np
 
@@ -66,78 +65,13 @@ def divergence(v_func, x, t, model_kwarg):
     v = v_func(x, t, **model_kwarg)
     div = 0.0
     for i in range(x.shape[-1]):  # iterate over dimensions
-        div += torch.autograd.grad(v[..., i].sum(), x, create_graph=True)[0][..., i]
+        div += th.autograd.grad(v[..., i].sum(), x, create_graph=True)[0][..., i]
     return div 
 
-def batch_ot_match(x0, x1, epsilon=0.05, iters=100):
-    """
-    Return a permutation/index map that matches x0 -> x1 using entropic OT (Sinkhorn).
-    For speed, keep it batch-local and do NOT backprop through the solver.
-    """
-    with torch.no_grad():
-        # cost matrix (squared Euclidean)
-        C = torch.cdist(x0, x1, p=2.0)**2                      # [B, B]
-        # Sinkhorn in log domain (very small, stable implementation)
-        log_K = -C / epsilon
-        u = torch.zeros_like(log_K[:, 0])
-        v = torch.zeros_like(log_K[0, :])
 
-        for _ in range(iters):
-            u = -torch.logsumexp(log_K + v[None, :], dim=1)    # row scaling
-            v = -torch.logsumexp(log_K + u[:, None], dim=0)    # col scaling
-
-        log_P = log_K + u[:, None] + v[None, :]
-        P = torch.exp(log_P)                                   # transport plan
-        # Convert soft plan to hard matching (argmax over columns)
-        idx = P.argmax(dim=1)                                  # [B]
-    return idx
-
-import torch
-
-def sinkhorn_match_along_L(x0, x1, epsilon=0.05, iters=100):
-    """
-    Match x0 -> x1 along the sequence (L) dimension using entropic OT (Sinkhorn),
-    independently for each batch.
-
-    Args:
-        x0: Tensor [B, L, D]  (e.g., D=3)
-        x1: Tensor [B, L, D]
-        epsilon: entropic regularization strength
-        iters: number of Sinkhorn iterations
-
-    Returns:
-        idx: LongTensor [B, L], where idx[b, i] is the matched j in x1[b] for x0[b, i]
-    """
-    assert x0.shape == x1.shape and x0.dim() == 3, "x0 and x1 must be [B, L, D] and equal shape"
-    B, L, D = x0.shape
-
-    with torch.no_grad():
-        # Cost matrices per batch: [B, L, L] (squared Euclidean)
-        C = torch.cdist(x0, x1, p=2.0) ** 2
-
-        # Log kernel
-        log_K = -C / epsilon  # [B, L, L]
-
-        # Dual scalings (log-domain Sinkhorn)
-        u = torch.zeros(B, L, device=log_K.device, dtype=log_K.dtype)  # [B, L]
-        v = torch.zeros(B, L, device=log_K.device, dtype=log_K.dtype)  # [B, L]
-
-        # Iterate Sinkhorn updates (log-domain, batched)
-        for _ in range(iters):
-            # Row scaling: u[b, i] = -logsumexp_j (log_K[b, i, j] + v[b, j])
-            u = -torch.logsumexp(log_K + v.unsqueeze(1), dim=2)
-            # Col scaling: v[b, j] = -logsumexp_i (log_K[b, i, j] + u[b, i])
-            v = -torch.logsumexp(log_K + u.unsqueeze(2), dim=1)
-
-        # Transport plan in log-domain then exp
-        log_P = log_K + u.unsqueeze(2) + v.unsqueeze(1)  # [B, L, L]
-        P = torch.exp(log_P)
-
-        # Hard matching per batch: argmax over columns
-        idx = P.argmax(dim=2)  # [B, L]
-
-    return idx
-
+from torch_linear_assignment import batch_linear_assignment
+def hungarian_over_L(cost_matrix: th.Tensor, **kwargs) -> th.Tensor:
+    return batch_linear_assignment(cost_matrix)   # stays on GPU, CUDA kernel
 
 import torch.distributions as D
 
@@ -149,11 +83,11 @@ def sample_t_u_shaped(n, alpha=0.8, reweight=True, eps=1e-6):
     if reweight:
         # target p(t) = Uniform[0,1] => p(t)=1 on [0,1]
         # importance weight w(t) = p(t)/q(t) = 1 / q(t)
-        q = torch.exp(dist.log_prob(t))
+        q = th.exp(dist.log_prob(t))
         w = (1.0 / q)
         w = w / w.mean()          # stabilize; keeps expected weight = 1
     else:
-        w = torch.ones_like(t)
+        w = th.ones_like(t)
 
     return t, w
 
@@ -163,20 +97,20 @@ def alpha_divergence(log_p, log_q, alpha, eps=1e-6):
     assert alpha >=0 and alpha <= 1, alpha
     p = log_p.exp()
     q = log_q.exp()
-    assert torch.all(torch.isfinite(p))
-    assert torch.all(torch.isfinite(q))
+    assert th.all(th.isfinite(p))
+    assert th.all(th.isfinite(q))
     if abs(alpha-1.0) < 1e-6:
         return (p * (log_p - log_q)).sum(dim=-1)  # forward KL
     if abs(alpha) < 1e-6:
         return (q * (log_q - log_p)).sum(dim=-1)  # reverse KL
     # s = (p.pow(alpha) * q.pow(1.0 - alpha)).sum(dim=-1)
     s = (alpha*log_p + (1-alpha)*log_q ).exp().sum(dim=-1)
-    assert torch.all(torch.isfinite(s)), "  ".join([str((alpha*log_p + (1-alpha)*log_q ).max()), str(log_p.max()), str(log_q.max()), str(alpha)])
+    assert th.all(th.isfinite(s)), "  ".join([str((alpha*log_p + (1-alpha)*log_q ).max()), str(log_p.max()), str(log_q.max()), str(alpha)])
     return (1.0 / (alpha * (alpha - 1.0))) * (1.0 - s)
 
 def geodesic_distance(x_string):
     B,T,L,_ = x_string.shape
-    d = torch.zeros_like(x_string)
+    d = th.zeros_like(x_string)
     for i in range(1, T):
         d += (x_string[0,i]-x_string[0, i-1])**2
     return d/2
@@ -190,41 +124,40 @@ def grad_log_normal_iso_3d(x, mu=0, sigma=1):
     return -(x - mu) / (sigma**2)
 
 
-@torch.no_grad()
+@th.no_grad()
 def lattice_polar_build_torch(k):
     assert k.dim() == 2, "input must be batched k of shape (B,6)"
-    S0 = torch.stack([k[:, 3] + k[:, 4] + k[:, 5], k[:, 0], k[:, 1]], dim=1)  # (B, 3)
-    S1 = torch.stack([k[:, 0], -k[:, 3] + k[:, 4] + k[:, 5], k[:, 2]], dim=1)  # (B, 3)
-    S2 = torch.stack([k[:, 1], k[:, 2], -2 * k[:, 4] + k[:, 5]], dim=1)  # (B, 3)
-    S = torch.stack([S0, S1, S2], dim=1)  # (B, 3, 3)
-    expS = torch.matrix_exp(S)  # (B, 3, 3)
+    S0 = th.stack([k[:, 3] + k[:, 4] + k[:, 5], k[:, 0], k[:, 1]], dim=1)  # (B, 3)
+    S1 = th.stack([k[:, 0], -k[:, 3] + k[:, 4] + k[:, 5], k[:, 2]], dim=1)  # (B, 3)
+    S2 = th.stack([k[:, 1], k[:, 2], -2 * k[:, 4] + k[:, 5]], dim=1)  # (B, 3)
+    S = th.stack([S0, S1, S2], dim=1)  # (B, 3, 3)
+    expS = th.matrix_exp(S)  # (B, 3, 3)
     return expS
 
 
-def decompose_symmetric_matrix(S: torch.Tensor):
+def decompose_symmetric_matrix(S: th.Tensor):
     k0 = S[:, 0, 1]
     k1 = S[:, 0, 2]
     k2 = S[:, 1, 2]
     k3 = (S[:, 0, 0] - S[:, 1, 1]) / 2
     k4 = (S[:, 0, 0] + S[:, 1, 1] - 2 * S[:, 2, 2]) / 6
     k5 = (S[:, 0, 0] + S[:, 1, 1] + S[:, 2, 2]) / 3
-    k = torch.vstack([k0, k1, k2, k3, k4, k5]).transpose(-1, -2)
+    k = th.vstack([k0, k1, k2, k3, k4, k5]).transpose(-1, -2)
     return k
 
-@torch.no_grad()
-def lattice_polar_decompose_torch(lattices: torch.Tensor):
+@th.no_grad()
+def lattice_polar_decompose_torch(lattices: th.Tensor):
     assert lattices.dim() == 3, "input must be batched lattices of shape (B,3,3)"
-    A, U = torch.linalg.eigh(lattices @ lattices.transpose(-1,-2))  # J = L^T @ L
+    A, U = th.linalg.eigh(lattices @ lattices.transpose(-1,-2))  # J = L^T @ L
     # S = 1/2 U log(A) U^T
-    A = torch.diag_embed(A.log()) / 2
+    A = th.diag_embed(A.log()) / 2
     S = U @ A @ U.transpose(-1, -2)
     k = decompose_symmetric_matrix(S)
     return k
 
 
-def wrap_frac_pos(F):
-    return th.remainder(F, 1.0)
-
+from .path import wrap_frac_pos
+import math
 class Transport:
 
     def __init__(
@@ -282,9 +215,7 @@ class Transport:
 
             t1 = 1 - eps if (not sde or last_step_size == 0) else 1 - last_step_size
 
-        elif (type(self.path_sampler) in [path.ICPlan, path.GVPCPlan]) \
-                and (
-                self.model_type != ModelType.VELOCITY or sde):  # avoid numerical issue by taking a first
+        elif (type(self.path_sampler) in [path.ICPlan, path.GVPCPlan]) and (self.model_type != ModelType.VELOCITY or sde):  # avoid numerical issue by taking a first
             # semi-implicit step
 
             t0 = eps if (diffusion_form == "SBDM" and sde) or self.model_type != ModelType.VELOCITY else 0
@@ -295,40 +226,48 @@ class Transport:
 
         return t0, t1
 
-    def sample(self, x1):
+    def sample(self, shape, device):
         """Sampling x0 & t based on shape of x1 (if needed)
           Args:
             x1 - data point; [batch, *dim]
         """
-        num_atoms = x1.shape[2]
+        B,T,N,C = shape
         x0 = []
         for i in range(1):
-            # x0.append(th.randn_like(x1)*self.args.x0std/(num_atoms)**(1./3.))
-            x0.append(th.rand(x1.shape, device=x1.device))
+            # x0.append(wrap_frac_pos(th.rand(shape)*self.args.x0std/(N)**(1./3.)))
+            # x0.append(th.rand(x1.shape, device=x1.device))
+            ### Even sample
+            m = math.ceil(N ** (1/3))
+            g = (th.arange(m, device=device) + 0.5) / m
+            X, Y, Z = th.meshgrid(g, g, g, indexing='ij')
+            _x0_mean = th.stack([X.reshape(-1), Y.reshape(-1), Z.reshape(-1)], dim=1)[:N].unsqueeze(0).expand(T, -1, -1).unsqueeze(0).expand(B, -1, -1, -1)
+            x0.append(wrap_frac_pos(th.rand(shape, device=device)*self.args.x0std/(N)**(1./3.) + _x0_mean))
+        
         t0, t1 = self.check_interval(self.train_eps, self.sample_eps)
-        # t = th.rand((x1.shape[0],)) * (t1 - t0) + t0
-        t, _ = sample_t_u_shaped(x1.shape[0], self.args.beta_sample_t)
+        # t = th.rand((x1.shape[0],))
+        t, _ = sample_t_u_shaped(shape[0], self.args.beta_sample_t, eps=0)
+        # t = th.zeros(shape[0])
         t = t*(t1-t0) + t0
-        t = t.to(x1)
-        return t, x0, x1
+        t = t.to(device)
+        return t, x0
 
 
-    def sample_latt(self, x1):
+    def sample_latt(self, shape, device):
         """Sampling x0 & t based on shape of x1 (if needed)
           Args:
             x1 - data point; [batch, *dim]
         """
-        num_atoms = x1.shape[2]
-        mu = torch.zeros(*x1.shape[:2], 6)
+        num_atoms = shape[2]
+        mu = th.zeros(*shape[:2], 6)
         mu[:,:,-1] = 1.
         sigma = 0.1
-        k = torch.normal(mu, sigma).to(x1.device)
+        k = th.normal(mu, sigma).to(device)
         cell = lattice_polar_build_torch(k.reshape(-1, 6)).reshape(-1, 3, 3)
-        volume = (cell[:,0] * torch.cross(cell[:,1], cell[:,2], dim=1)).sum(dim=-1)
-        target_volume = num_atoms * self.mean_atomic_volume * torch.ones_like(volume)
-        # residual_k = (torch.log(target_volume) - torch.log(volume))/3
+        volume = (cell[:,0] * th.cross(cell[:,1], cell[:,2], dim=1)).sum(dim=-1)
+        target_volume = num_atoms * self.mean_atomic_volume * th.ones_like(volume)
+        # residual_k = (th.log(target_volume) - th.log(volume))/3
         # return k.reshape(-1, 6) + residual_k[:,None]
-        cell = lattice_polar_build_torch(k.reshape(-1, 6)).reshape(*x1.shape[:2], 3, 3) * (target_volume/volume)**(1./3.)
+        cell = lattice_polar_build_torch(k.reshape(-1, 6)).reshape(*shape[:2], 3, 3) * (target_volume/volume)**(1./3.)
         return cell
 
     def training_losses(
@@ -337,7 +276,6 @@ class Transport:
             x1,           # target tokens
             aatype1=None, # target aatype
             mask=None,
-            num_species=5,
             model_kwargs=None,
             forces = None,
             global_step = None
@@ -362,21 +300,23 @@ class Transport:
             model_kwargs = {}
         B, T, N, C = x1.shape
         ### normal sampler of t
-        t, x0, x1 = self.sample(x1)
+        t, x0 = self.sample(x1.shape, x1.device)
         ### OT in the atom number dimension
-        # x0[0] = x0[0].view(B*T, N, C)
-        # idx_perm_L = sinkhorn_match_along_L(x0[0], x1.view(B*T, N, C))
-        # for b in range(B*T):
-        #     x0[0][b] = x0[0][b][idx_perm_L[b]]
-        # x0[0] = x0[0].view(B, T, N, C)
+        x1 = x1.view(B*T, N, C)
+        model_kwargs['x1'] = model_kwargs['x1'].view(B*T, N, C)
+        assignment = hungarian_over_L(th.cdist(x0[0].view(B*T, N, C), x1))
+        x1 = x1[th.arange(B).unsqueeze(1).expand(B, N), assignment]
+        model_kwargs['x1'] = model_kwargs['x1'][th.arange(B).unsqueeze(1).expand(B, N), assignment]
+        x1 = x1.view(B, T, N, C)
+        model_kwargs['x1'] = model_kwargs['x1'].view(B, T, N, C)
         if self.args.design:  # alterations made to the original SIT code to include dirichlet flow matching for design
             assert self.model_type == ModelType.VELOCITY
             seq_one_hot = aatype1
             ### exponential sampler of t
-            # exponential_dist = torch.distributions.Exponential(1.0)
+            # exponential_dist = th.distributions.Exponential(1.0)
             # t = exponential_dist.sample((seq_one_hot.shape[0],)).to(seq_one_hot.device).float()
             alphas, _ = t_to_alpha(t, self.args)
-            alphas = torch.ones_like(seq_one_hot) + seq_one_hot * (alphas[:, None, None, None] - torch.ones_like(seq_one_hot))
+            alphas = th.ones_like(seq_one_hot) + seq_one_hot * (alphas[:, None, None, None] - th.ones_like(seq_one_hot))
             x_d = th.distributions.Dirichlet(alphas).sample()
             xt = x_d
 
@@ -386,7 +326,7 @@ class Transport:
                 xt, ut = self.path_sampler.plan_fractional(t, x0[0], x1)
 
                 if self.latt_path:
-                    latt0 = self.sample_latt(x1)
+                    latt0 = self.sample_latt(x1.shape, x1.device)
                     B,T,_,_ = model_kwargs['cell'].shape
                     # latt1 = lattice_polar_decompose_torch(model_kwargs['cell'].reshape([B*T,3,3])).reshape(B*T,6)
                     latt1 = model_kwargs['cell']
@@ -419,8 +359,8 @@ class Transport:
         assert model_output.size() == (B, *xt.size()[1:-1], C)
 
         if self.args.design:
-            logits = model_output[:, :, :, -num_species:]
-            model_output = model_output[:, :, :, :-num_species]
+            logits = model_output[:, :, :, -self.args.num_species:]
+            model_output = model_output[:, :, :, :-self.args.num_species]
 
         terms = {}
         terms['t'] = t
@@ -437,7 +377,7 @@ class Transport:
                     raise Exception("Symm. KL need to be rewritten for fractional coordinates of a periodic system")
                     logQ_ = (-(t[:,None,None,None]*model_output)**2)/2
                     logP_ = (-(t[:,None,None,None]*ut)**2)/2
-                    logm = torch.logaddexp(logP_, logQ_) - torch.ones_like(ut)*torch.log(torch.tensor(2.0))
+                    logm = th.logaddexp(logP_, logQ_) - th.ones_like(ut)*th.log(th.tensor(2.0))
                     kl_p_m = (logP_.exp() * (logP_ - logm)).sum(dim=-1)
                     kl_q_m = (logQ_.exp() * (logQ_ - logm)).sum(dim=-1)
                     terms['loss_symmkl'] = mean_flat(0.5 * (kl_p_m + kl_q_m), mask.mean(dim=-1)) 
@@ -468,15 +408,15 @@ class Transport:
                     raise Exception(f"Wrong KL argument: {self.args.KL}")
                 if self.score_model is not None:
                     terms['loss_dsm'] = mean_flat((lambda_t[:,None,None,None] * score_model_output + eps)**2, mask)
-                    terms['loss_tsm_0'] = mean_flat( (score_model_output - alpha_t*grad_log_normal_iso_3d(x0[0]))**2 * (t < 0.5).to(torch.int)[:,None,None,None], mask)
-                    terms['loss_tsm_1'] = mean_flat( (score_model_output - sigma_t*forces)**2 * (t >= 0.5).to(torch.int)[:,None,None,None], mask)
+                    terms['loss_tsm_0'] = mean_flat( (score_model_output - alpha_t*grad_log_normal_iso_3d(x0[0]))**2 * (t < 0.5).to(th.int)[:,None,None,None], mask)
+                    terms['loss_tsm_1'] = mean_flat( (score_model_output - sigma_t*forces)**2 * (t >= 0.5).to(th.int)[:,None,None,None], mask)
                     terms['loss'] = terms['loss_flow'] + terms['loss_dsm'] + terms['loss_tsm_0'] + terms["loss_tsm_1"]
                 else:
                     terms['loss'] = terms['loss_flow']
                     if self.latt_path:
-                        lowertrigflow_output = torch.stack([lattflow_output[:,:,0,0], lattflow_output[:,:,1,0], lattflow_output[:,:,1,1], lattflow_output[:,:,2,0], lattflow_output[:,:,2,1], lattflow_output[:,:,2,2]], dim=-1)
-                        lowertrigulatt = torch.stack([ulatt[:,:,0,0], ulatt[:,:,1,0], ulatt[:,:,1,1], ulatt[:,:,2,0], ulatt[:,:,2,1], ulatt[:,:,2,2] ], dim=-1)
-                        terms['loss_lattflow'] = mean_flat((lowertrigflow_output - lowertrigulatt).abs(), torch.ones_like(lowertrigflow_output, device=lowertrigflow_output.device))
+                        lowertrigflow_output = th.stack([lattflow_output[:,:,0,0], lattflow_output[:,:,1,0], lattflow_output[:,:,1,1], lattflow_output[:,:,2,0], lattflow_output[:,:,2,1], lattflow_output[:,:,2,2]], dim=-1)
+                        lowertrigulatt = th.stack([ulatt[:,:,0,0], ulatt[:,:,1,0], ulatt[:,:,1,1], ulatt[:,:,2,0], ulatt[:,:,2,1], ulatt[:,:,2,2] ], dim=-1)
+                        terms['loss_lattflow'] = mean_flat((lowertrigflow_output - lowertrigulatt).abs(), th.ones_like(lowertrigflow_output, device=lowertrigflow_output.device))
                         terms['loss'] = terms['loss_flow'] + terms['loss_lattflow']
             else:
                 _, drift_var = self.path_sampler.compute_drift(xt, t)
@@ -499,8 +439,8 @@ class Transport:
         # more changes for dirichlet flow matching
 
         if self.args.design:
-            # terms['loss_continuous'] = torch.tensor(torch.nan, device=xt.device)
-            loss_d = th.nn.functional.cross_entropy(logits.reshape(-1,num_species), aatype1.reshape(-1,num_species).argmax(dim=-1), reduction="none").reshape(x1.shape[:-1])
+            # terms['loss_continuous'] = th.tensor(th.nan, device=xt.device)
+            loss_d = th.nn.functional.cross_entropy(logits.reshape(-1,self.args.num_species), aatype1.reshape(-1,self.args.num_species).argmax(dim=-1), reduction="none").reshape(x1.shape[:-1])
             terms['loss'] = mean_flat(loss_d, mask)
             terms['loss_discrete'] = loss_d
             terms['logits'] = logits

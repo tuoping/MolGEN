@@ -2,21 +2,23 @@
 # args = parse_train_args()
 
 import glob
-ckpt_tag = "3799"
-inference_steps = 100
-sampling_method = "dopri5"
-sim_ckpt = glob.glob(f"workdir/lr0.0001//epoch={ckpt_tag}-step=00*.ckpt")[0]
+ckpt_tag = 1499
+inference_steps = 50
+sampling_method = "euler"
+sim_ckpt = glob.glob(f"workdir/default/bests/epoch={ckpt_tag}-step=00*.ckpt")[0]
 device = "cuda"
 
 import os, torch, tqdm, time
 import numpy as np
 from mdgen.equivariant_wrapper import EquivariantMDGenWrapper
 
-out_dir = f"experiments/MP_C1/e{ckpt_tag}_{sampling_method}_step{inference_steps}_schedule2/"
+out_dir = f"experiments/MP_C1/e{ckpt_tag}_{sampling_method}_step{inference_steps}_evenGaussianprior/"
 os.makedirs(out_dir, exist_ok=True)
 with open(f"{out_dir}/README.md", "w") as fp:
     fp.write(sim_ckpt)
 
+
+torch.set_float32_matmul_precision('medium')
 
 ckpt = torch.load(sim_ckpt, weights_only=False)
 hparams = ckpt["hyper_parameters"]
@@ -28,12 +30,12 @@ args.data_dir = "data/MP_C_data/"
 
 
 from mdgen.dataset import EquivariantTransformerDataset_MaterialProject
-dataset = EquivariantTransformerDataset_MaterialProject(args.data_dir, args.cutoff, species=[6], sim_condition=False, stage="train")
+dataset = EquivariantTransformerDataset_MaterialProject(args, species=[6], sim_condition=False, stage="train")
 
 
 model = EquivariantMDGenWrapper(**hparams)
 print(model.model)
-model.load_state_dict(ckpt["state_dict"], strict=False)
+model.load_state_dict(ckpt["state_dict"], strict=True)
 model.eval().to(device)
 
 print(model.args)
@@ -76,8 +78,8 @@ all_rollout_atoms = []
 all_rollout_atoms_ref = []
 start = time.time()
 all_logp = []
-for i_rollout in range(0, 50):
-    idx = idx_rollouts[0]
+for i_rollout in range(1):
+    idx = idx_rollouts[i_rollout]
     print(i_rollout, idx)
     if i_rollout == 0:
         filename = os.path.join(out_dir, f"gentraj_{idx}.xyz")
@@ -104,7 +106,7 @@ for i_rollout in range(0, 50):
         formula = "".join(symbols[t])
         with torch.no_grad():
             all_pred_frac_pos, _,  = model.inference(batch)
-        for idx_traj in [-1]:
+        for idx_traj in range(len(all_pred_frac_pos)):
             pred_frac_pos = all_pred_frac_pos[idx_traj][0]
             # cell_out = all_cell_out[idx_traj]
             # pred_pos = pred_frac_pos[0][0] @ cell_out[0][0]

@@ -604,8 +604,12 @@ def lattice_polar_decompose_torch(lattices: torch.Tensor):
     k = decompose_symmetric_matrix(S)
     return k
 
+from .transport.path import wrap_frac_pos
+
 class EquivariantTransformerDataset_MaterialProject(torch.utils.data.Dataset):
-    def __init__(self, traj_dir, cutoff, species, localmask=False, sim_condition=False, stage="train", save_dir = None, save_filename = None, sel_idx = None):
+    def __init__(self, args, species, localmask=False, sim_condition=False, stage="train", save_dir = None, save_filename = None, sel_idx = None):
+        traj_dir = args.data_dir
+        cutoff = args.cutoff
         temperature = 300
         self.kT = temperature*8.617*10**-5
         num_species = len(species)
@@ -690,9 +694,9 @@ class EquivariantTransformerDataset_MaterialProject(torch.utils.data.Dataset):
 
             torch.save(dataset, f'{save_dir}/{save_filename}.pt')
         else:
-            self.all_dataset = torch.load(os.path.join(traj_dir, f"{stage}.pt"), weights_only=False)
+            _all_dataset = torch.load(os.path.join(traj_dir, f"{stage}.pt"), weights_only=False)[1:2]
             atomic_volumes = []
-            for data in self.all_dataset:
+            for data in _all_dataset:
                 data.cell = lattice_polar_build_torch(lattice_polar_decompose_torch(data.cell.reshape(-1,3,3))).reshape(3,3)
                 data.z = data.z[:,:num_species]
                 inv_cell = torch.linalg.inv(data.cell)
@@ -701,7 +705,14 @@ class EquivariantTransformerDataset_MaterialProject(torch.utils.data.Dataset):
                 atomic_volumes.append(torch.dot(data.cell[0], torch.cross(data.cell[1], data.cell[2], dim=0))/num_atoms)
             
             self.mean_atomic_volume = torch.tensor(atomic_volumes).mean()
-    
+            self.all_dataset = []
+            for i in range(1024):
+                data = _all_dataset[0].clone()
+                N = data.pos.shape[0]
+                assert data.pos.shape == (N,3)
+                data.pos = wrap_frac_pos(data.pos + torch.rand_like(data.pos)* args.x0std/(N)**(1./3.))
+
+                self.all_dataset.append(data)
     
     def __len__(self):
         return len(self.all_dataset)

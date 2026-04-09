@@ -28,8 +28,8 @@ torch.set_float32_matmul_precision('medium')
 # from torch.utils.data import ConcatDataset
 # from torch.utils.data import Subset
 
-train_dataset = EquivariantTransformerDataset_MaterialProject(args.data_dir, args.cutoff, species=[6], sim_condition=False, stage="train")
-
+train_dataset = EquivariantTransformerDataset_MaterialProject(args, species=[6], sim_condition=False, stage="train")
+args.mean_atomic_volume = train_dataset.mean_atomic_volume
 if args.overfit:
     val_dataset = train_dataset
 else:

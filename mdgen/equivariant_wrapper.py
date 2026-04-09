@@ -7,6 +7,7 @@ import torch, time
 from torch import nn
 import copy
 import numpy as np
+import math
 from functools import partial
 
 from .model.equivariant_latent_model import EquivariantTransformer_dpm, Encoder_dpm, Processor, Decoder
@@ -628,8 +629,16 @@ class EquivariantMDGenWrapper(Wrapper):
             vector_out = prep["model_kwargs"]["x_latt"]
             return vector_out, aa_out
         else:
-            # zs = torch.randn(B, T, N, D, device=self.device)*self.args.x0std
-            zs = torch.rand(B,T,N,D, device=self.device)
+            # from .transport.path import wrap_frac_pos
+            # zs = wrap_frac_pos(torch.randn(B, T, N, D, device=self.device)*self.args.x0std/(N)**(1./3.))
+            # zs = torch.rand(B,T,N,D, device=self.device)
+
+            # m = math.ceil(N ** (1/3))
+            # g = (torch.arange(m, device=self.device) + 0.5) / m
+            # X, Y, Z = torch.meshgrid(g, g, g, indexing='ij')
+            # zs =  torch.stack([X.reshape(-1), Y.reshape(-1), Z.reshape(-1)], dim=1)[:N].unsqueeze(0).expand(T, -1, -1).unsqueeze(0).expand(B, -1, -1, -1)
+            _, zs = self.transport.sample(latents.shape, self.device)
+            zs = zs[0]
             if self.transport.latt_path:
                 cell0 = self.transport.sample_latt(zs)
         self.integration_step = 0
@@ -643,7 +652,7 @@ class EquivariantMDGenWrapper(Wrapper):
             )
         else:
             samples = sample_fn(
-                zs,
+                zs, latents,
                 partial(self.model.forward_inference, **prep['model_kwargs'])
             )
 
