@@ -38,16 +38,20 @@ testset = EquivariantTransformerDataset_MaterialProject("data/MP_C_sims", 6, spe
 
 ## Training
 
+**Change the latt_path parameter in `equivariant_wrapper.py` to turn on/off variable cell**
+
 Training command for a periodic system:
 ```
 
-python train.py --data_dir data/MP_C_data/  --ckpt_freq 1  --epochs 10000 --cutoff 12 --val_epoch_freq 5 --x0std 1.0  --batch_size 1 --path-type Linear  --KL L1 --lr_decay --overfit 
+python train.py --data_dir data/MP_C_data/ --num_species 1 --epochs 600 --cutoff 12 --path-type Linear --embed_dim 128 --val_epoch_freq 100 --batch_size 1024 --overfit --x0std 0.2
 
 ```
 
 ## Inference
 
-Inference can be run using `notebooks/checkgraph-inference.ipynb`.
+```
+python Latt-inference.py 
+```
 
 ## Overview of code updates relative to the main branch
 
@@ -60,7 +64,10 @@ Inference can be run using `notebooks/checkgraph-inference.ipynb`.
 
 - Lattice flow prediction is enabled in `mdgen/model/equivariant_latent_model.py`.
 
-- **Inference is not enabled yet.** To enable inference, one need to follow the workflow in `mdgen/equivariant_wrapper.py`: `def inference`, and modify the ODE process in `mdgen/transport/transport.py`: `def sample_ode`.
+- Key insights:
+  - For stable prediction, need to add noise to the target structure;
+  - The current version is based on a fixed variance through the Gaussian flow matching path; The version with a chaning variance is underway;
+  - The variance of the fractional coordinates is divided by $N^{1/3}$, where N is the number of atoms, to ensure that the variance of the cartisian coordinates is $\approx$ args.x0std.
 
 ## License
 
