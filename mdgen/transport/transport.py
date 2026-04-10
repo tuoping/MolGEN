@@ -267,8 +267,8 @@ class Transport:
         target_volume = num_atoms * self.mean_atomic_volume * th.ones_like(volume)
         # residual_k = (th.log(target_volume) - th.log(volume))/3
         # return k.reshape(-1, 6) + residual_k[:,None]
-        cell = lattice_polar_build_torch(k.reshape(-1, 6)).reshape(*shape[:2], 3, 3) * (target_volume/volume)**(1./3.)
-        return cell
+        _cell = cell * ((target_volume/volume)**(1./3.))[:,None,None]
+        return _cell.view(*shape[:2], 3, 3)
 
     def training_losses(
             self,
@@ -309,6 +309,7 @@ class Transport:
         model_kwargs['x1'] = model_kwargs['x1'][th.arange(B).unsqueeze(1).expand(B, N), assignment]
         x1 = x1.view(B, T, N, C)
         model_kwargs['x1'] = model_kwargs['x1'].view(B, T, N, C)
+        
         if self.args.design:  # alterations made to the original SIT code to include dirichlet flow matching for design
             assert self.model_type == ModelType.VELOCITY
             seq_one_hot = aatype1
@@ -330,7 +331,7 @@ class Transport:
                     B,T,_,_ = model_kwargs['cell'].shape
                     # latt1 = lattice_polar_decompose_torch(model_kwargs['cell'].reshape([B*T,3,3])).reshape(B*T,6)
                     latt1 = model_kwargs['cell']
-                    latt, ulatt = self.path_sampler.plan_latt(t, latt0, latt1)
+                    latt, ulatt = self.path_sampler.plan_latt_riemann(t, latt0, latt1)
                     model_kwargs['cell'] = latt
                     # model_kwargs['cell'] = lattice_polar_build_torch(latt.reshape([B*T,6])).reshape([B,T,3,3])
                     # ulatt_L = lattice_polar_build_torch(ulatt.reshape([B*T,6])).reshape([B,T,3,3])
@@ -418,6 +419,7 @@ class Transport:
                         lowertrigulatt = th.stack([ulatt[:,:,0,0], ulatt[:,:,1,0], ulatt[:,:,1,1], ulatt[:,:,2,0], ulatt[:,:,2,1], ulatt[:,:,2,2] ], dim=-1)
                         terms['loss_lattflow'] = mean_flat((lowertrigflow_output - lowertrigulatt).abs(), th.ones_like(lowertrigflow_output, device=lowertrigflow_output.device))
                         terms['loss'] = terms['loss_flow'] + terms['loss_lattflow']
+                        # terms['loss'] = terms['loss_lattflow']
             else:
                 _, drift_var = self.path_sampler.compute_drift(xt, t)
                 sigma_t, _ = self.path_sampler.compute_sigma_t(path.expand_t_like_x(t, xt))

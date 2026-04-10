@@ -195,7 +195,7 @@ class EquivariantMDGenWrapper(Wrapper):
 
         processor = Processor(num_convs=5, node_dim=latent_dim, num_heads=8, ff_dim=args.ff_dim, edge_dim=latent_dim)
         print("Initializing drift model")
-        latt_path = False
+        latt_path = True
         self.model = EquivariantTransformer_dpm(
             encoder = encoder,
             processor = processor,
@@ -640,7 +640,7 @@ class EquivariantMDGenWrapper(Wrapper):
             _, zs = self.transport.sample(latents.shape, self.device)
             zs = zs[0]
             if self.transport.latt_path:
-                cell0 = self.transport.sample_latt(zs)
+                cell0 = self.transport.sample_latt(zs.shape, self.device)
         self.integration_step = 0
         assert self.score_model is None
         assert self.args.likelihood is None
@@ -652,7 +652,7 @@ class EquivariantMDGenWrapper(Wrapper):
             )
         else:
             samples = sample_fn(
-                zs, latents,
+                zs,
                 partial(self.model.forward_inference, **prep['model_kwargs'])
             )
 
@@ -665,8 +665,9 @@ class EquivariantMDGenWrapper(Wrapper):
             # print("WARNNING::")
             # print("Applying the following mask to the output vector:")
             # print(prep["model_kwargs"]['v_mask'])
-            vector_out = samples[0][-1] *prep["model_kwargs"]['v_mask'] + prep["latents"]*(1-prep["model_kwargs"]['v_mask'])
-            vector_out = vector_out.detach().requires_grad_(False)
+            for i in range(len(samples[0])):
+                samples[0][i] = samples[0][i] *prep["model_kwargs"]['v_mask'] + prep["latents"]*(1-prep["model_kwargs"]['v_mask'])
+            vector_out = samples[0][-1].detach().requires_grad_(False)
             if self.transport.latt_path:
                 cell_out = samples[1][-1]
                 cell_out = cell_out.detach().requires_grad_(False)

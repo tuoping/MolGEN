@@ -14,6 +14,43 @@ def expand_t_like_x(t, x):
 def wrap_frac_pos(F):
     return th.remainder(F, 1.0)
 
+
+
+def matrix_log_eig(A: th.Tensor) -> th.Tensor:
+    """Matrix log via eigendecomposition. Works for any diagonalizable matrix."""
+    eigenvalues, V = th.linalg.eig(A)  # complex
+    log_diag = th.diag_embed(th.log(eigenvalues))
+    result = V @ log_diag @ th.linalg.inv(V)
+    return result.real  # discard numerical imaginary noise
+
+def geodesic_gl3(L0: th.Tensor, L1: th.Tensor, t: th.Tensor) -> th.Tensor:
+    """
+    Geodesic on GL+(3) with left-invariant metric.
+    L_t = L0 @ expm(t * logm(L0^{-1} @ L1))
+    Args:
+        L0: (batch, 3, 3) source matrices
+        L1: (batch, 3, 3) target matrices
+        t:  (batch, 1, 1) or scalar, time in [0, 1]
+    Returns:
+        Lt: (batch, 3, 3)
+    """
+    L0_inv = th.linalg.inv(L0)
+    V = matrix_log_eig(L0_inv @ L1)
+    Lt = L0 @ th.linalg.matrix_exp(t * V)
+    return Lt
+    
+def velocity_gl3(L0: th.Tensor, L1: th.Tensor, t: th.Tensor) -> th.Tensor:
+    """
+    Conditional vector field: u_t = L_t @ V where V = logm(L0^{-1} @ L1)
+    Returns:
+        u_Lt: (batch, 3, 3) velocity in ambient R^{3x3}
+    """
+    L0_inv = th.linalg.inv(L0)
+    V = matrix_log_eig(L0_inv @ L1)
+    Lt = L0 @ th.linalg.matrix_exp(t * V)
+    u_Lt = Lt @ V
+    return u_Lt   
+
 #################### Coupling Plans ####################
 
 class ICPlan:
@@ -142,15 +179,22 @@ class ICPlan:
         sigma_t, d_sigma_t = self.compute_sigma_t(t)
         xt = x0 + t*(wrap_frac_pos(x1 - x0 - 0.5) - 0.5)
         ut = wrap_frac_pos(x1 - x0 - 0.5) - 0.5
-        return xt, ut
-    
+        return xt, ut 
+
     def plan_latt(self, t, latt0, latt1):
         t = expand_t_like_x(t, latt1)
         alpha_t, d_alpha_t = self.compute_alpha_t(t)
         sigma_t, d_sigma_t = self.compute_sigma_t(t)
-        latt = alpha_t * latt1 + sigma_t * latt0
-
+        latt = latt1 * alpha_t + latt0 * sigma_t
         ulatt = d_alpha_t * latt1 + d_sigma_t * latt0
+        return latt, ulatt
+    
+    def plan_latt_riemann(self, t, latt0, latt1):
+        t = expand_t_like_x(t, latt1)
+        # alpha_t, d_alpha_t = self.compute_alpha_t(t)
+        # sigma_t, d_sigma_t = self.compute_sigma_t(t)
+        latt = geodesic_gl3(latt0, latt1, t)
+        ulatt = velocity_gl3(latt0, latt1, t)
         return latt, ulatt
     
     def compute_marginal_std(self, t, diffusion):

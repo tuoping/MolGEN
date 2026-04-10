@@ -100,9 +100,7 @@ class ode:
 
         self.path_sampler = path.ICPlan()
 
-    def sample(self, x, x1, model, **model_kwargs):
-        zs = x
-        B,T,N,C = x1.shape
+    def sample(self, x, model, **model_kwargs):
         device = x[0].device if isinstance(x, tuple) else x.device
         def _fn(t, x):
             t = th.ones(x[0].size(0)).to(device) * t if isinstance(x, tuple) else th.ones(x.size(0)).to(device) * t

@@ -732,10 +732,7 @@ class EquivariantTransformerDataset_MaterialProject(torch.utils.data.Dataset):
 
 
         if self.localmask:
-            # disp_mask = (torch.stack([data.disp for data in dataset]).norm(dim=-1)>1).unsqueeze(-1)
-            mask = torch.ones([T,L])
-            v_mask = torch.ones([T,L,3])
-            h_mask = torch.ones([T,L,self.num_species])
+            raise Exception("Yet to implement localmask")
         else:
             mask = _mask
             v_mask = _v_mask
