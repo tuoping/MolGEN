@@ -72,6 +72,7 @@ python Latt-inference.py
 Note:
 
 - In `dataset.py:EquivariantTransformerDataset_MaterialProject`, the current version only reads one structure and adds random noise to it to make 1024 different data samples.
+- The current default version of lattice flow is Riemann flow, but euclidean flow is also implemented, and can be switched by changing from calling `self.path_sampler.path_latt_riemann` to `self.path_sampler.path_latt` in `transport/transport.py: def training_losses`.
 
 ## License
 
