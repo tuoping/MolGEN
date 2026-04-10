@@ -66,7 +66,7 @@ python Latt-inference.py
 
 - Key insights:
   - For stable prediction, need to add noise to the target structure;
-  - The current version is based on a fixed variance through the Gaussian flow matching path; The version with a chaning variance is underway;
+  - The current version of fractional coordinate flow is based on a fixed variance through the Gaussian flow matching path; The version with a changing variance is underway;
   - The variance of the fractional coordinates is divided by $N^{1/3}$, where N is the number of atoms, to ensure that the variance of the cartisian coordinates is $\approx$ args.x0std.
 
 Note:
