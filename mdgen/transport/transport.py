@@ -158,6 +158,51 @@ def lattice_polar_decompose_torch(lattices: th.Tensor):
 
 from .path import wrap_frac_pos
 import math
+
+def compute_jsd_loss(mu_t_x1, sigma_F, mu_theta, k_max):
+    """
+    Monte Carlo estimate of the full JSD:
+    JSD(p || q) = 0.5 * E_p[log(p/m)] + 0.5 * E_q[log(q/m)]
+
+    Args:
+        mu_t_x1: (B, N, 3) - means for the wrapped Gaussian
+        sigma_F: scalar or (B,) - standard deviation
+        v_theta: (B, N, 3) - predicted velocity
+        t: scalar or (B,) - time
+        k_max: int - number of periodic images per dimension
+    """
+    x = 0.0
+    variance = sigma_F ** 2  # scalar or (B,)
+
+    ks = th.arange(-k_max, k_max + 1, device=mu_t_x1.device)
+    kx, ky, kz = th.meshgrid(ks, ks, ks, indexing='ij')
+    k_vecs = th.stack([kx.ravel(), ky.ravel(), kz.ravel()], dim=-1).float()  # (K, 3)
+
+    # Broadcast: mu_t_x1 is (B, N, 3), k_vecs is (K, 3)
+    # diff: (B, N, K, 3)
+    diff = (x - mu_t_x1[:, :, None, :] + k_vecs[None, None, :, :])   # @cell[:, None, :, :]
+    sq_norms = th.sum(diff ** 2, dim=-1)  # (B, N, K)
+
+    log_weights = -sq_norms / (2 * variance)  # (B, N, K)
+    log_weights = log_weights - log_weights.max(dim=-1, keepdim=True).values
+    weights = th.exp(log_weights)
+    Z = weights.sum(dim=-1)  # (B, N, 1)
+
+    logP_ = th.logsumexp(-sq_norms / (2 * variance), dim=-1) - th.log(Z)  # (B, N)
+    # subtract normalization (2*pi*var)^{3/2} cancels in ratio, keep for correctness
+    # but original code also drops the prefactor, so we follow suit
+
+    pred_diff = (x - mu_theta)   # @cell  # (B, N, 3)
+    logQ_ = -th.sum(pred_diff ** 2, dim=-1) / (2 * variance)  # (B, N)
+
+    logm = th.logaddexp(logP_, logQ_) - th.log(th.tensor(2.0, device=mu_t_x1.device))
+
+    kl_p_m = (th.exp(logP_) * (logP_ - logm)).sum(dim=-1)  # (B,)
+    kl_q_m = (th.exp(logQ_) * (logQ_ - logm)).sum(dim=-1)  # (B,)
+
+    jsd = 0.5 * kl_p_m + 0.5 * kl_q_m  # (B,)
+    return jsd
+
 class Transport:
 
     def __init__(
@@ -310,6 +355,21 @@ class Transport:
         x1 = x1.view(B, T, N, C)
         model_kwargs['x1'] = model_kwargs['x1'].view(B, T, N, C)
         
+        ### OT in the batch dimension
+        # Flatten each sample's atom features into a single vector: (B*T, N*C)
+        x0_flat = x0[0].view(B*T, N, C).reshape(B*T, N*C)
+        x1_flat = x1.reshape(B*T, N*C)
+        # Cost matrix is (1, B*T, B*T) — pairwise distances between batch elements
+        cost_matrix = th.cdist(x0_flat.unsqueeze(0), x1_flat.unsqueeze(0))  # (1, B*T, B*T)
+        # Hungarian assignment over the batch dimension
+        assignment = hungarian_over_L(cost_matrix)  # (1, B*T)
+        assignment = assignment.squeeze(0)          # (B*T,)
+        # Permute x1 along the batch dimension
+        x1 = x1[assignment]  # (B*T, N, C)
+        model_kwargs['x1'] = model_kwargs['x1'][assignment]
+        x1 = x1.view(B, T, N, C)
+        model_kwargs['x1'] = model_kwargs['x1'].view(B, T, N, C)
+
         if self.args.design:  # alterations made to the original SIT code to include dirichlet flow matching for design
             assert self.model_type == ModelType.VELOCITY
             seq_one_hot = aatype1
@@ -369,39 +429,13 @@ class Transport:
         terms['x0'] = x0
         if not (self.args.design):
             if self.model_type == ModelType.VELOCITY:
-                # terms["loss_continuous"]=((0.5*(model_output)**2 - (ut)*model_output))
-
-                # s_est = self.path_sampler.get_score_from_velocity(model_output, xt, t)
-                # div_v = divergence(model, xt, t, model_kwargs).unsqueeze(-1)
-                # terms["loss_fisherreg"] = mean_flat((div_v + (model_output*s_est).sum(dim=-1).unsqueeze(-1))**2, mask)
                 if self.args.KL == 'symm':
-                    raise Exception("Symm. KL need to be rewritten for fractional coordinates of a periodic system")
-                    logQ_ = (-(t[:,None,None,None]*model_output)**2)/2
-                    logP_ = (-(t[:,None,None,None]*ut)**2)/2
-                    logm = th.logaddexp(logP_, logQ_) - th.ones_like(ut)*th.log(th.tensor(2.0))
-                    kl_p_m = (logP_.exp() * (logP_ - logm)).sum(dim=-1)
-                    kl_q_m = (logQ_.exp() * (logQ_ - logm)).sum(dim=-1)
-                    terms['loss_symmkl'] = mean_flat(0.5 * (kl_p_m + kl_q_m), mask.mean(dim=-1)) 
-                    # terms['loss_entropy'] = mean_flat((logQ_.exp()*logQ_).sum(dim=-1), mask.mean(dim=-1)) 
-                    terms['loss_l1'] = mean_flat((model_output - ut).abs(), mask)
+                    cell = model_kwargs['cell'].view(B*T,3,3)
+                    terms['loss_l1'] = mean_flat((model_output.view(B*T,N,3)@cell - ut.view(B*T,N,3)@cell).abs(), mask.view(B*T,N,3))
+                    volume = th.abs(th.det(cell))
+                    jsd = compute_jsd_loss(xt.view(B*T,N,3), self.args.x0std/(N)**(1./3.), (x0[0]+model_output*t[:,None,None,None]).view(B*T,N,3), 3) * (volume) ** (2./3.)
+                    terms['loss_symmkl'] = mean_flat(jsd, mask.view(B*T,N*3).mean(dim=-1)) 
                     terms['loss_flow'] = terms['loss_symmkl'] + terms['loss_l1'] 
-                elif self.args.KL == "reverse":
-                    logQ_ = (-(t[:,None,None,None]*model_output)**2)/2
-                    logP_ = (-(t[:,None,None,None]*ut)**2)/2
-                    terms['loss_flow'] = self.pref_reversekl*mean_flat(logQ_.exp()*(logQ_ - logP_), mask) + mean_flat((model_output - ut).abs(), mask)
-                elif self.args.KL == "forward":
-                    logQ_ = (-(t[:,None,None,None]*model_output)**2)/2
-                    logP_ = (-(t[:,None,None,None]*ut)**2)/2
-                    terms['loss_flow'] = mean_flat(logP_.exp()*(logP_ - logQ_), mask) + mean_flat((model_output - ut).abs(), mask)
-                elif self.args.KL == 'alpha':
-                    logQ_ = (-(t[:,None,None,None]*model_output)**2)/2
-                    logP_ = (-(t[:,None,None,None]*ut)**2)/2
-                    alpha_div = alpha_divergence(logP_, logQ_, self.pref_alpha_div, eps=1e-6)
-                    terms['loss_alphadiv'] = mean_flat(alpha_div, mask.mean(dim=-1))
-                    terms['loss_l1'] = mean_flat((model_output - ut).abs(), mask)
-                    terms['loss_flow'] = 0.1*terms['loss_alphadiv'] + terms['loss_l1']
-                elif self.args.KL == "L2":
-                    terms['loss_flow'] = mean_flat((0.5*(model_output)**2 - (ut)*model_output), mask)
                 elif self.args.KL == "L1":
                     cell = model_kwargs['cell'].view(B*T,3,3)
                     terms['loss_flow'] = mean_flat((model_output.view(B*T,N,3)@cell - ut.view(B*T,N,3)@cell).abs(), mask.view(B*T,N,3))

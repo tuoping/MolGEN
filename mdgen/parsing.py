@@ -8,7 +8,7 @@ def parse_train_args():
     ## Trainer settings
     parser.add_argument("--ckpt", type=str, default=None)
     parser.add_argument("--validate", action='store_true', default=False)
-    parser.add_argument("--num_workers", type=int, default=4)
+    parser.add_argument("--num_workers", type=int, default=0)
     
     ## Epoch settings
     group = parser.add_argument_group("Epoch settings")
@@ -41,7 +41,7 @@ def parse_train_args():
     group.add_argument('--adamW', action='store_true')
     group.add_argument('--ema', action='store_true')
     group.add_argument('--ema_decay', type=float, default=0.999)
-    group.add_argument("--lr", type=float, default=1e-4)
+    group.add_argument("--lr", type=float, default=1e-3)
     group.add_argument("--lr_decay", action='store_true')
     group.add_argument('--precision', type=str, default='32-true')
     
@@ -113,8 +113,8 @@ def parse_train_args():
     group.add_argument('--potential_model', action='store_true')
     # group.add_argument("--pbc", action='store_true')
     group.add_argument("--guided", action='store_true')
+    group.add_argument("--latt_path", action="store_true")
 
-    ## SDE bridge settings
     group.add_argument("--inference_steps", type=int, default=20)
 
     args = parser.parse_args()

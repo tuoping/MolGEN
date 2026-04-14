@@ -195,7 +195,7 @@ class EquivariantMDGenWrapper(Wrapper):
 
         processor = Processor(num_convs=5, node_dim=latent_dim, num_heads=8, ff_dim=args.ff_dim, edge_dim=latent_dim)
         print("Initializing drift model")
-        latt_path = True
+        latt_path = args.latt_path
         self.model = EquivariantTransformer_dpm(
             encoder = encoder,
             processor = processor,
@@ -272,6 +272,9 @@ class EquivariantMDGenWrapper(Wrapper):
 
         if self.args.precision == '32-true':
             _TORCH_FLOAT_PRECISION = torch.float32
+
+    def load_state_dict(self, state_dict, strict=True):
+        return super().load_state_dict(state_dict, strict=False)
 
     def on_validation_epoch_end(self):
         if self.args.ema:

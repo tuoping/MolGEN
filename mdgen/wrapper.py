@@ -119,10 +119,9 @@ class Wrapper(pl.LightningModule):
                     logger.warning(f"Param {name} has no grad")
 
     def on_load_checkpoint(self, checkpoint):
-        logger.info('Loading EMA state dict')
-        if self.args.ema:
-            ema = checkpoint["ema"]
-            self.ema.load_state_dict(ema)
+        if self.args.ema and "ema" in checkpoint:
+            logger.info('Loading EMA state dict')
+            self.ema.load_state_dict(checkpoint["ema"])
 
     def on_save_checkpoint(self, checkpoint):
         if self.args.ema:
@@ -167,14 +166,14 @@ class Wrapper(pl.LightningModule):
 
     def configure_optimizers(self):
         if not self.args.lr_decay:
-            opt = torch.optim.AdamW(self.parameters(), lr=1e-3)
+            opt = torch.optim.AdamW(self.parameters(), lr=self.args.lr)
             return opt
         else:
             # linear warmup to 1e-4 over W epochs, then cosine back to 3e-5
-            W = 10  # warmup epochs
+            W = 0  # warmup epochs
             max_lr = 1e-3
             T = 200 + W  # cosine length (adjust)
-            base, min_lr = 5e-4, 3e-5
+            base, min_lr = self.args.lr, 3e-5
             '''
             W = 0  # warmup epochs
             max_lr = 0.5e-4

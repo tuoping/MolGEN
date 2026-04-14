@@ -5,6 +5,8 @@ logger = get_logger(__name__)
 
 import torch, os
 from mdgen.dataset import EquivariantTransformerDataset_MaterialProject
+from mdgen.dataset import BucketBatchSampler
+
 from mdgen.equivariant_wrapper import EquivariantMDGenWrapper
 from pytorch_lightning.callbacks import ModelCheckpoint, ModelSummary
 import pytorch_lightning as pl
@@ -30,24 +32,40 @@ torch.set_float32_matmul_precision('medium')
 
 train_dataset = EquivariantTransformerDataset_MaterialProject(args, species=[6], sim_condition=False, stage="train")
 args.mean_atomic_volume = train_dataset.mean_atomic_volume
+num_atoms_list = [int(max(train_dataset[i]["num_atoms"])) for i in range(len(train_dataset))]
+trainsampler = BucketBatchSampler(train_dataset, num_atoms_list, batch_size=args.batch_size)
+
 if args.overfit:
     val_dataset = train_dataset
+    valsampler = trainsampler
 else:
     val_dataset = EquivariantTransformerDataset_MaterialProject(args.data_dir, args.cutoff, species=[6], sim_condition=False, stage="val")
 
 train_loader = torch.utils.data.DataLoader(
     train_dataset,
-    batch_size=args.batch_size,
+    batch_sampler=trainsampler, 
     num_workers=args.num_workers,
-    shuffle=True,
 )
 
 val_loader = torch.utils.data.DataLoader(
     val_dataset,
-    batch_size=args.batch_size,
+    batch_sampler=valsampler,
     num_workers=args.num_workers,
-    shuffle=True,
 )
+
+# train_loader = torch.utils.data.DataLoader(
+#     train_dataset,
+#     batch_size=args.batch_size,
+#     num_workers=args.num_workers,
+#     shuffle=True,
+# )
+
+# val_loader = torch.utils.data.DataLoader(
+#     val_dataset,
+#     batch_size=args.batch_size,
+#     num_workers=args.num_workers,
+#     shuffle=True,
+# )
 device='cuda'
 model = EquivariantMDGenWrapper(args).to(device)
 if args.ckpt is not None:

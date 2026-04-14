@@ -694,7 +694,7 @@ class EquivariantTransformerDataset_MaterialProject(torch.utils.data.Dataset):
 
             torch.save(dataset, f'{save_dir}/{save_filename}.pt')
         else:
-            _all_dataset = torch.load(os.path.join(traj_dir, f"{stage}.pt"), weights_only=False)[1:2]
+            _all_dataset = torch.load(os.path.join(traj_dir, f"{stage}.pt"), weights_only=False)
             atomic_volumes = []
             for data in _all_dataset:
                 data.cell = lattice_polar_build_torch(lattice_polar_decompose_torch(data.cell.reshape(-1,3,3))).reshape(3,3)
@@ -705,22 +705,31 @@ class EquivariantTransformerDataset_MaterialProject(torch.utils.data.Dataset):
                 atomic_volumes.append(torch.dot(data.cell[0], torch.cross(data.cell[1], data.cell[2], dim=0))/num_atoms)
             
             self.mean_atomic_volume = torch.tensor(atomic_volumes).mean()
-            self.all_dataset = []
-            for i in range(1024):
-                data = _all_dataset[0].clone()
-                N = data.pos.shape[0]
-                assert data.pos.shape == (N,3)
-                data.pos = wrap_frac_pos(data.pos + torch.rand_like(data.pos)* args.x0std/(N)**(1./3.))
+            self.x0std = args.x0std
+            self.all_dataset = _all_dataset
+            
+            # self.all_dataset = []
+            # for i in range(16):
+            #     for j in range(len(_all_dataset)):
+            #         data = _all_dataset[j].clone()
+            #         N = data.pos.shape[0]
+            #         assert data.pos.shape == (N,3)
+            #         if N == 8:
+            #             # data.pos = wrap_frac_pos(data.pos + torch.rand_like(data.pos)* args.x0std/(N)**(1./3.))
+            #             self.all_dataset.append(data)
+            print( f"Training over {len(self.all_dataset)} samples; Training database size = {len(_all_dataset)}")
+            
 
-                self.all_dataset.append(data)
-    
     def __len__(self):
         return len(self.all_dataset)
     
     def __getitem__(self, idx):
         idx = idx % len(self.all_dataset)
         dataset = [self.all_dataset[idx]]
-
+        for data in dataset:
+            N = data.pos.shape[0]
+            assert data.pos.shape == (N,3)
+            data.pos = wrap_frac_pos(data.pos + torch.rand_like(data.pos)* self.x0std/(N)**(1./3.))
         x = torch.stack([data.pos for data in dataset]) % 1
         assert torch.all(x>=0)
         assert torch.all(x<=1)
@@ -824,8 +833,9 @@ import math
 from collections import defaultdict
 
 class BucketBatchSampler(Sampler):
-    def __init__(self, dataset, batch_size, drop_last=False, shuffle=True):
+    def __init__(self, dataset, num_atoms_list, batch_size, drop_last=False, shuffle=True):
         self.dataset = dataset
+        self.num_atoms_list = num_atoms_list
         self.batch_size = batch_size
         self.drop_last = drop_last
         self.shuffle = shuffle
@@ -834,9 +844,10 @@ class BucketBatchSampler(Sampler):
     def _create_batches(self):
         # Group indices by num_atoms
         buckets = defaultdict(list)
-        for idx in range(len(self.dataset)):
-            sample = self.dataset[idx]
-            num_atoms = int(max(sample["num_atoms"]))
+        # for idx in range(len(self.dataset)):
+        #     sample = self.dataset[idx]
+        #     num_atoms = int(max(sample["num_atoms"]))
+        for idx, num_atoms in enumerate(self.num_atoms_list):
             buckets[num_atoms].append(idx)
 
         # Create batches
