@@ -2,17 +2,17 @@
 # args = parse_train_args()
 
 import glob
-ckpt_tag = 10299
+ckpt_tag = "2599"
 inference_steps = 50
 sampling_method = "euler"
-sim_ckpt = glob.glob(f"workdir/default/run2-l1+symm/epoch={ckpt_tag}-step=*.ckpt")[0]
+sim_ckpt = glob.glob(f"workdir/default/epoch={ckpt_tag}-step=*.ckpt")[0]
 device = "cuda"
 
 import os, torch, tqdm, time
 import numpy as np
 from mdgen.equivariant_wrapper import EquivariantMDGenWrapper
 
-out_dir = f"experiments/MP_C_N8_batchOT/e{ckpt_tag}_{sampling_method}_step{inference_steps}_fracpos_symmkl/"
+out_dir = f"experiments/normalnoise0.02/MP_C1_fracpos/e{ckpt_tag}_{sampling_method}_step{inference_steps}_even+staticnoise/"
 os.makedirs(out_dir, exist_ok=True)
 with open(f"{out_dir}/README.md", "w") as fp:
     fp.write(sim_ckpt)
@@ -78,7 +78,7 @@ all_rollout_atoms = []
 all_rollout_atoms_ref = []
 start = time.time()
 all_logp = []
-for i_rollout in range(len(idx_rollouts)):
+for i_rollout in [0]:
     idx = idx_rollouts[i_rollout]
     print(i_rollout, idx)
     if i_rollout == 0:
@@ -109,8 +109,8 @@ for i_rollout in range(len(idx_rollouts)):
                 all_pred_frac_pos, _, all_cell_out  = model.inference(batch)
             else:
                 all_pred_frac_pos, _  = model.inference(batch)
-        # for idx_traj in range(len(all_pred_frac_pos)):
-        for idx_traj in [-1]:
+        for idx_traj in range(len(all_pred_frac_pos)):
+        # for idx_traj in [-1]:
             pred_frac_pos = all_pred_frac_pos[idx_traj][0]
             if model.transport.latt_path:
                 cell_out = all_cell_out[idx_traj]

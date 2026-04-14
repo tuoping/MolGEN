@@ -279,14 +279,14 @@ class Transport:
         B,T,N,C = shape
         x0 = []
         for i in range(1):
-            # x0.append(wrap_frac_pos(th.rand(shape)*self.args.x0std/(N)**(1./3.)))
-            # x0.append(th.rand(x1.shape, device=x1.device))
             ### Even sample
             m = math.ceil(N ** (1/3))
             g = (th.arange(m, device=device) + 0.5) / m
             X, Y, Z = th.meshgrid(g, g, g, indexing='ij')
             _x0_mean = th.stack([X.reshape(-1), Y.reshape(-1), Z.reshape(-1)], dim=1)[:N].unsqueeze(0).expand(T, -1, -1).unsqueeze(0).expand(B, -1, -1, -1)
-            x0.append(wrap_frac_pos(th.rand(shape, device=device)*self.args.x0std/(N)**(1./3.) + _x0_mean))
+            ### Uniform sample
+            # _x0_mean = th.rand(shape, device=device)
+            x0.append(wrap_frac_pos(th.randn(shape, device=device)*self.args.x0std/(N)**(1./3.) + _x0_mean))
         
         t0, t1 = self.check_interval(self.train_eps, self.sample_eps)
         # t = th.rand((x1.shape[0],))
@@ -356,19 +356,19 @@ class Transport:
         model_kwargs['x1'] = model_kwargs['x1'].view(B, T, N, C)
         
         ### OT in the batch dimension
-        # Flatten each sample's atom features into a single vector: (B*T, N*C)
-        x0_flat = x0[0].view(B*T, N, C).reshape(B*T, N*C)
-        x1_flat = x1.reshape(B*T, N*C)
-        # Cost matrix is (1, B*T, B*T) — pairwise distances between batch elements
-        cost_matrix = th.cdist(x0_flat.unsqueeze(0), x1_flat.unsqueeze(0))  # (1, B*T, B*T)
-        # Hungarian assignment over the batch dimension
-        assignment = hungarian_over_L(cost_matrix)  # (1, B*T)
-        assignment = assignment.squeeze(0)          # (B*T,)
-        # Permute x1 along the batch dimension
-        x1 = x1[assignment]  # (B*T, N, C)
-        model_kwargs['x1'] = model_kwargs['x1'][assignment]
-        x1 = x1.view(B, T, N, C)
-        model_kwargs['x1'] = model_kwargs['x1'].view(B, T, N, C)
+        # # Flatten each sample's atom features into a single vector: (B*T, N*C)
+        # x0_flat = x0[0].view(B*T, N, C).reshape(B*T, N*C)
+        # x1_flat = x1.reshape(B*T, N*C)
+        # # Cost matrix is (1, B*T, B*T) — pairwise distances between batch elements
+        # cost_matrix = th.cdist(x0_flat.unsqueeze(0), x1_flat.unsqueeze(0))  # (1, B*T, B*T)
+        # # Hungarian assignment over the batch dimension
+        # assignment = hungarian_over_L(cost_matrix)  # (1, B*T)
+        # assignment = assignment.squeeze(0)          # (B*T,)
+        # # Permute x1 along the batch dimension
+        # x1 = x1[assignment]  # (B*T, N, C)
+        # model_kwargs['x1'] = model_kwargs['x1'][assignment]
+        # x1 = x1.view(B, T, N, C)
+        # model_kwargs['x1'] = model_kwargs['x1'].view(B, T, N, C)
 
         if self.args.design:  # alterations made to the original SIT code to include dirichlet flow matching for design
             assert self.model_type == ModelType.VELOCITY
