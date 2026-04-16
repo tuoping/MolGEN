@@ -706,20 +706,20 @@ class EquivariantTransformerDataset_MaterialProject(torch.utils.data.Dataset):
             
             self.mean_atomic_volume = torch.tensor(atomic_volumes).mean()
             self.x0std = args.x0std
-            # self.all_dataset = _all_dataset
+            self.all_dataset = _all_dataset
             
             self.all_dataset = []
-            for i in range(64):
-                for j in [1]:
+            for i in range(1):
+                for j in range(len(_all_dataset)):
+                # for j in [1]:
                     data = _all_dataset[j].clone()
                     N = data.pos.shape[0]
                     assert data.pos.shape == (N,3)
-                    # if N == 8:
-                    assert N == 8
-                    data.pos = wrap_frac_pos(data.pos + torch.randn_like(data.pos)* self.x0std/(N)**(1./3.))
-                    self.all_dataset.append(data)
-            print( f"Training over {len(self.all_dataset) / 64} * samples; Training database size = {len(_all_dataset)}")
-            
+                    if N <= 32:
+                        # data.pos = wrap_frac_pos(data.pos + torch.randn_like(data.pos)* self.x0std/(N)**(1./3.))
+                        self.all_dataset.append(data)
+            print( f"Training over {len(self.all_dataset)} * samples; Training database size = {len(_all_dataset)}")
+
 
     def __len__(self):
         return len(self.all_dataset)
@@ -730,7 +730,7 @@ class EquivariantTransformerDataset_MaterialProject(torch.utils.data.Dataset):
         for data in dataset:
             N = data.pos.shape[0]
             assert data.pos.shape == (N,3)
-            # data.pos = wrap_frac_pos(data.pos + torch.rand_like(data.pos)* self.x0std/(N)**(1./3.))
+            # data.pos = wrap_frac_pos(data.pos + torch.randn_like(data.pos)* self.x0std/(N)**(1./3.))
         x = torch.stack([data.pos for data in dataset]) % 1
         assert torch.all(x>=0)
         assert torch.all(x<=1)

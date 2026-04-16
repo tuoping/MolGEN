@@ -159,7 +159,7 @@ def lattice_polar_decompose_torch(lattices: th.Tensor):
 from .path import wrap_frac_pos
 import math
 
-def compute_jsd_loss(mu_t_x1, sigma_F, mu_theta, k_max):
+def compute_jsd_loss(mu_t_x1, standard_bandwidth_factor, mu_theta, k_max):
     """
     Monte Carlo estimate of the full JSD:
     JSD(p || q) = 0.5 * E_p[log(p/m)] + 0.5 * E_q[log(q/m)]
@@ -172,7 +172,10 @@ def compute_jsd_loss(mu_t_x1, sigma_F, mu_theta, k_max):
         k_max: int - number of periodic images per dimension
     """
     x = 0.0
-    variance = sigma_F ** 2  # scalar or (B,)
+    if isinstance(standard_bandwidth_factor, th.Tensor):
+        bandwidth_factor = standard_bandwidth_factor[:, None, None] ** 2  # scalar or (B,)
+    else:
+        bandwidth_factor = standard_bandwidth_factor ** 2
 
     ks = th.arange(-k_max, k_max + 1, device=mu_t_x1.device)
     kx, ky, kz = th.meshgrid(ks, ks, ks, indexing='ij')
@@ -183,17 +186,17 @@ def compute_jsd_loss(mu_t_x1, sigma_F, mu_theta, k_max):
     diff = (x - mu_t_x1[:, :, None, :] + k_vecs[None, None, :, :])   # @cell[:, None, :, :]
     sq_norms = th.sum(diff ** 2, dim=-1)  # (B, N, K)
 
-    log_weights = -sq_norms / (2 * variance)  # (B, N, K)
+    log_weights = -sq_norms / (2) * bandwidth_factor  # (B, N, K)
     log_weights = log_weights - log_weights.max(dim=-1, keepdim=True).values
     weights = th.exp(log_weights)
     Z = weights.sum(dim=-1)  # (B, N, 1)
 
-    logP_ = th.logsumexp(-sq_norms / (2 * variance), dim=-1) - th.log(Z)  # (B, N)
+    logP_ = th.logsumexp(-sq_norms / (2) * bandwidth_factor, dim=-1) - th.log(Z)  # (B, N)
     # subtract normalization (2*pi*var)^{3/2} cancels in ratio, keep for correctness
     # but original code also drops the prefactor, so we follow suit
 
     pred_diff = (x - mu_theta)   # @cell  # (B, N, 3)
-    logQ_ = -th.sum(pred_diff ** 2, dim=-1) / (2 * variance)  # (B, N)
+    logQ_ = -th.sum(pred_diff ** 2, dim=-1) / (2) * bandwidth_factor  # (B, N)
 
     logm = th.logaddexp(logP_, logQ_) - th.log(th.tensor(2.0, device=mu_t_x1.device))
 
@@ -286,7 +289,8 @@ class Transport:
             _x0_mean = th.stack([X.reshape(-1), Y.reshape(-1), Z.reshape(-1)], dim=1)[:N].unsqueeze(0).expand(T, -1, -1).unsqueeze(0).expand(B, -1, -1, -1)
             ### Uniform sample
             # _x0_mean = th.rand(shape, device=device)
-            x0.append(wrap_frac_pos(th.randn(shape, device=device)*self.args.x0std/(N)**(1./3.) + _x0_mean))
+            # x0.append(wrap_frac_pos(th.randn(shape, device=device)*self.args.x0std/(N)**(1./3.) + _x0_mean))
+            x0.append(th.randn(shape, device=device)*self.args.x0std/(N)**(1./3.) + _x0_mean)
         
         t0, t1 = self.check_interval(self.train_eps, self.sample_eps)
         # t = th.rand((x1.shape[0],))
@@ -433,7 +437,8 @@ class Transport:
                     cell = model_kwargs['cell'].view(B*T,3,3)
                     terms['loss_l1'] = mean_flat((model_output.view(B*T,N,3)@cell - ut.view(B*T,N,3)@cell).abs(), mask.view(B*T,N,3))
                     volume = th.abs(th.det(cell))
-                    jsd = compute_jsd_loss(xt.view(B*T,N,3), self.args.x0std/(N)**(1./3.), (x0[0]+model_output*t[:,None,None,None]).view(B*T,N,3), 3) * (volume) ** (2./3.)
+                    jsd = compute_jsd_loss(xt.view(B*T,N,3), 1./(self.args.x0std/(N)**(1./3.)), (x0[0]+model_output*t[:,None,None,None]).view(B*T,N,3), 3) * (volume) ** (2./3.)
+                    # jsd = compute_jsd_loss(xt.view(B*T,N,3), t*(N)**(1./3.)/self.args.x0std, (x0[0]+model_output*t[:,None,None,None]).view(B*T,N,3), 3) * (volume) ** (2./3.)
                     terms['loss_symmkl'] = mean_flat(jsd, mask.view(B*T,N*3).mean(dim=-1)) 
                     terms['loss_flow'] = terms['loss_symmkl'] + terms['loss_l1'] 
                 elif self.args.KL == "L1":

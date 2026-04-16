@@ -2,17 +2,17 @@
 # args = parse_train_args()
 
 import glob
-ckpt_tag = "2599"
+ckpt_tag = "2099"
 inference_steps = 50
 sampling_method = "euler"
-sim_ckpt = glob.glob(f"workdir/default/epoch={ckpt_tag}-step=*.ckpt")[0]
+sim_ckpt = glob.glob(f"workdir/default/epoch={ckpt_tag}-step=0*.ckpt")[0]
 device = "cuda"
 
 import os, torch, tqdm, time
 import numpy as np
 from mdgen.equivariant_wrapper import EquivariantMDGenWrapper
 
-out_dir = f"experiments/normalnoise0.02/MP_C1_fracpos/e{ckpt_tag}_{sampling_method}_step{inference_steps}_even+staticnoise/"
+out_dir = f"experiments/Decreasingvar_schedule2/MP_C_N32_fracpos/e{ckpt_tag}_{sampling_method}_step{inference_steps}_even+decreasingvar_tunesymmkl/"
 os.makedirs(out_dir, exist_ok=True)
 with open(f"{out_dir}/README.md", "w") as fp:
     fp.write(sim_ckpt)
@@ -78,17 +78,16 @@ all_rollout_atoms = []
 all_rollout_atoms_ref = []
 start = time.time()
 all_logp = []
-for i_rollout in [0]:
+for i_rollout in range(len(idx_rollouts)):
     idx = idx_rollouts[i_rollout]
     print(i_rollout, idx)
-    if i_rollout == 0:
-        filename = os.path.join(out_dir, f"gentraj_{idx}.xyz")
-        _filename = os.path.join(out_dir, f"_gentraj_{idx}.xyz")
-        _frac_filename = os.path.join(out_dir, f"_frac_gentraj_{idx}.xyz")
-        filename_ref = os.path.join(out_dir, f"reftraj_{idx}.xyz")
-        for f in [filename, _filename, _frac_filename, filename_ref]:
-            if os.path.exists(f):
-                os.remove(f)
+    filename = os.path.join(out_dir, f"gentraj_{idx}.xyz")
+    _filename = os.path.join(out_dir, f"_gentraj_{idx}.xyz")
+    # _frac_filename = os.path.join(out_dir, f"_frac_gentraj_{idx}.xyz")
+    filename_ref = os.path.join(out_dir, f"reftraj_{idx}.xyz")
+    for f in [filename, _filename, filename_ref]:
+        if os.path.exists(f):
+            os.remove(f)
 
     for i_sample in range(1):
         item = dataset.__getitem__(idx)
@@ -118,7 +117,7 @@ for i_rollout in [0]:
                 atoms = Atoms(formula, scaled_positions=pred_frac_pos[0].detach().cpu().numpy(), cell=cell_out[0][0].detach().cpu().numpy(), pbc=[1,1,1])
                 write(_filename, atoms, append=True)
                 atoms = Atoms(formula, positions=pred_frac_pos[0].detach().cpu().numpy(), cell=cell_out[0][0].detach().cpu().numpy(), pbc=[1,1,1])
-                write(_frac_filename, atoms, append=True)
+                # write(_frac_filename, atoms, append=True)
             else:
                 cell_out = batch['cell']
                 pred_pos = pred_frac_pos[0] @ cell_out[0][0]
@@ -126,7 +125,7 @@ for i_rollout in [0]:
                 atoms = Atoms(formula, scaled_positions=pred_frac_pos[0].detach().cpu().numpy(), cell=cell_out[0][0].detach().cpu().numpy(), pbc=[1,1,1])
                 write(_filename, atoms, append=True)
                 atoms = Atoms(formula, positions=pred_frac_pos[0].detach().cpu().numpy(), cell=cell_out[0][0].detach().cpu().numpy(), pbc=[1,1,1])
-                write(_frac_filename, atoms, append=True)
+                # write(_frac_filename, atoms, append=True)
 
 
             atoms = Atoms(formula, positions=pred_pos.detach().cpu().numpy(), cell=cell_out[0][0].detach().cpu().numpy(), pbc=[1,1,1])
