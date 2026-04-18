@@ -8,6 +8,7 @@ Implementation of [Flow matching for reaction pathway generation](https://arxiv.
 pip install numpy==1.26.0 pandas==1.5.3 scikit-learn==1.6.1
 pip install torch==2.6.0 -f https://download.pytorch.org/whl/torch_stable.html
 pip install pytorch_lightning==2.0.4 mdtraj==1.9.9 biopython==1.79
+pip install --force-reinstall "setuptools<81"
 pip install wandb dm-tree einops torchdiffeq fair-esm pyEMMA
 pip install matplotlib==3.7.2
 pip install omegaconf==2.3.0
@@ -16,6 +17,8 @@ pip install ase==3.22 pymatgen
 TORCH=2.6.0 
 CUDA=cu124
 pip install pyg_lib torch_scatter torch_sparse torch_cluster torch_spline_conv torch_geometric  -f https://data.pyg.org/whl/torch-${TORCH}+${CUDA}.html
+
+pip install e3nn
 ```
 
 ## Datasets
@@ -43,7 +46,7 @@ testset = EquivariantTransformerDataset_MaterialProject("data/MP_C_sims", 6, spe
 Training command for a periodic system:
 ```
 
-python train.py --data_dir data/MP_C_data/ --num_species 1 --epochs 600 --cutoff 12 --path-type Linear --embed_dim 128 --val_epoch_freq 100 --batch_size 1024 --overfit --x0std 0.2
+python train.py --data_dir data/MP_C_data/ --num_species 1 --epochs 600 --cutoff 12 --path-type Linear --embed_dim 128 --val_epoch_freq 100 --batch_size 1024 --overfit --x0std 0.02
 
 ```
 
@@ -66,7 +69,6 @@ python Latt-inference.py
 
 - Key insights:
   - For stable prediction, need to add noise to the target structure;
-  - The current version of fractional coordinate flow is based on a fixed variance through the Gaussian flow matching path; The version with a changing variance is underway;
   - The variance of the fractional coordinates is divided by $N^{1/3}$, where N is the number of atoms, to ensure that the variance of the cartisian coordinates is $\approx$ args.x0std.
 
 Note:
