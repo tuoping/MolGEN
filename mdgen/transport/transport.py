@@ -266,7 +266,7 @@ class Transport:
         elif (type(self.path_sampler) in [path.ICPlan, path.GVPCPlan]) and (self.model_type != ModelType.VELOCITY or sde):  # avoid numerical issue by taking a first
             # semi-implicit step
 
-            t0 = eps if (diffusion_form == "SBDM" and sde) or self.model_type != ModelType.VELOCITY else 0
+            t0 = eps if (sde) or self.model_type != ModelType.VELOCITY else 0
             t1 = 1 - eps if (not sde or last_step_size == 0) else 1 - last_step_size
 
         if reverse:
@@ -403,7 +403,7 @@ class Transport:
             else:
                 assert self.args.weight_loss_var_x0 == 0
                 diffusion = self.path_sampler.compute_diffusion(x1, t, self.args.diffusion_form, self.args.diffusion_norm).view(-1)  # the input x here is not used
-                xt, ut, eps = self.path_sampler.plan_schrodinger_bridge(t, x0[0], x1, diffusion)
+                xt, ut, eps = self.path_sampler.plan_schrodinger_bridge_fractional(t, x0[0], x1, diffusion)
                 alpha_t, _ = self.path_sampler.compute_alpha_t(path.expand_t_like_x(t, xt))
                 sigma_t, _ = self.path_sampler.compute_sigma_t(path.expand_t_like_x(t, xt))
                 lambda_t = self.path_sampler.compute_lambda_schrodinger_bridge(t, diffusion)
@@ -576,6 +576,7 @@ class Sampler:
             *,
             diffusion_form="SBDM",
             diffusion_norm=1.0,
+            reverse=False
     ):
 
         def diffusion_fn(x, t):
@@ -583,12 +584,31 @@ class Sampler:
             return diffusion
 
         sde_drift = \
-            lambda x, t, model, **kwargs: \
-                self.drift(x, t, model, **kwargs) + diffusion_fn(x, t) * self.score(x, t, model, **kwargs)
+                lambda x, t, model, score_model, **kwargs: \
+                    self.drift(x, t, model, **kwargs) + diffusion_fn(x, t) * self.score(x, t, score_model, **kwargs)
 
         sde_diffusion = diffusion_fn
 
         return sde_drift, sde_diffusion
+    
+
+    def __get_sde_reverse_drift(
+            self,
+            *,
+            diffusion_form="SBDM",
+            diffusion_norm=1.0,
+            reverse=False
+    ):
+
+        def diffusion_fn(x, t):
+            diffusion = self.transport.path_sampler.compute_diffusion(x, t, form=diffusion_form, norm=diffusion_norm)
+            return diffusion
+
+        sde_drift = \
+                lambda x, t, model, score_model, **kwargs: \
+                    -self.drift(x, 1-t, model, **kwargs) - diffusion_fn(x, t) * self.score(x, 1-t, score_model, **kwargs)
+
+        return sde_drift
 
     def __get_last_step(
             self,
@@ -605,14 +625,14 @@ class Sampler:
                     x
         elif last_step == "Mean":
             last_step_fn = \
-                lambda x, t, model, **model_kwargs: \
-                    x + sde_drift(x, t, model, **model_kwargs) * last_step_size
+                lambda x, t, model, score_model, **model_kwargs: \
+                    x + sde_drift(x, t, model, score_model, **model_kwargs) * last_step_size
         elif last_step == "Tweedie":
             alpha = self.transport.path_sampler.compute_alpha_t  # simple aliasing; the original name was too long
             sigma = self.transport.path_sampler.compute_sigma_t
             last_step_fn = \
-                lambda x, t, model, **model_kwargs: \
-                    x / alpha(t)[0][0] + (sigma(t)[0][0] ** 2) / alpha(t)[0][0] * self.score(x, t, model,
+                lambda x, t, model, score_model, **model_kwargs: \
+                    x / alpha(t)[0][0] + (sigma(t)[0][0] ** 2) / alpha(t)[0][0] * self.score(x, t, score_model,
                                                                                              **model_kwargs)
         elif last_step == "Euler":
             last_step_fn = \
@@ -632,6 +652,7 @@ class Sampler:
             last_step="Mean",
             last_step_size=0.04,
             num_steps=250,
+            score_model=None
     ):
         """returns a sampling function with given SDE settings
         Args:
@@ -673,9 +694,9 @@ class Sampler:
         last_step_fn = self.__get_last_step(sde_drift, last_step=last_step, last_step_size=last_step_size)
 
         def _sample(init, model, **model_kwargs):
-            xs = _sde.sample(init, model, **model_kwargs)
+            xs = _sde.sample(init, model, score_model, **model_kwargs)
             ts = th.ones(init.size(0), device=init.device) * t1
-            x = last_step_fn(xs[-1], ts, model, **model_kwargs)
+            x = last_step_fn(xs[-1], ts, model, score_model, **model_kwargs)
             xs.append(x)
 
             assert len(xs) == num_steps, "Samples does not match the number of steps"
@@ -683,9 +704,79 @@ class Sampler:
             return xs
 
         return _sample
-    
-    def sample_RND(self):
-        pass
+
+
+    def sample_sde_likelihood(
+            self,
+            *,
+            sampling_method="Euler_likelihood",
+            diffusion_form="SBDM",
+            diffusion_norm=1.0,
+            last_step="Mean",
+            last_step_size=0.04,
+            num_steps=250,
+            reverse=False,
+            score_model=None
+    ):
+        """returns a sampling function with given SDE settings
+        Args:
+        - sampling_method: type of sampler used in solving the SDE; default to be Euler-Maruyama
+        - diffusion_form: function form of diffusion coefficient; default to be matching SBDM
+        - diffusion_norm: function magnitude of diffusion coefficient; default to 1
+        - last_step: type of the last step; default to identity
+        - last_step_size: size of the last step; default to match the stride of 250 steps over [0,1]
+        - num_steps: total integration step of SDE
+        """
+
+        if last_step is None:
+            last_step_size = 0.0
+
+        sde_drift, sde_diffusion = self.__get_sde_diffusion_and_drift(
+            diffusion_form=diffusion_form,
+            diffusion_norm=diffusion_norm,
+            reverse=reverse
+        )
+
+        reverse_sde_drift = self.__get_sde_reverse_drift(
+            diffusion_form=diffusion_form,
+            diffusion_norm=diffusion_norm,
+            reverse=reverse
+        )
+
+        t0, t1 = self.transport.check_interval(
+            self.transport.train_eps,
+            self.transport.sample_eps,
+            diffusion_form=diffusion_form,
+            sde=True,
+            eval=True,
+            reverse=reverse,                             # Case reverse: time integration from 1 to 0
+            last_step_size=last_step_size,
+        )
+
+        _sde = sde(
+            sde_drift,
+            sde_diffusion,
+            t0=t0,
+            t1=t1,
+            num_steps=num_steps,
+            sampler_type=sampling_method,
+            reverse_drift = reverse_sde_drift
+        )
+
+        last_step_fn = self.__get_last_step(sde_drift, last_step=last_step, last_step_size=last_step_size)
+
+        def _sample(init, model, **model_kwargs):
+            assert not th.allclose(init, th.zeros_like(init))
+            xs, logprob_xs, _logprob_xs = _sde.sample_likelihood(init, model, score_model, **model_kwargs)
+            ts = th.ones(init.size(0), device=init.device) * t1
+            x = last_step_fn(xs[-1], ts, model, score_model, **model_kwargs)
+            xs.append(x)
+
+            assert len(xs) == num_steps, "Samples does not match the number of steps"
+
+            return logprob_xs, _logprob_xs, xs[-1]
+
+        return _sample
 
     def sample_ode(
             self,
