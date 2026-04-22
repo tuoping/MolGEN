@@ -86,7 +86,7 @@ def parse_train_args():
 
     # ## Diffusion settings
     group = parser.add_argument_group("Diffusion settings")
-    group.add_argument("--diffusion-form", type=str, default="constant", choices=["constant" ,'increasing-decreasing'])
+    group.add_argument("--diffusion-form", type=str, default="constant", choices=["constant" ,'increasing-decreasing', 'decreasing'])
     group.add_argument("--diffusion-norm", type=float, default=1.0)
     
 

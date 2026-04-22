@@ -237,13 +237,14 @@ class EquivariantMDGenWrapper(Wrapper):
                 decoder = Decoder(dim=latent_dim, num_scalar_out=num_scalar_out, num_vector_out=num_vector_out, num_species=args.num_species),
                 cutoff=args.cutoff,
                 latent_dim=latent_dim,
+                num_radial = num_radial,
                 design=args.design,
-                potential_model = args.potential_model,
+                potential_model = False,
                 tps_condition=args.tps_condition,
                 sim_condition=args.sim_condition,
+                num_species=args.num_species,
                 pbc=args.pbc,
                 object_aware=args.object_aware,
-                num_species=args.num_species,
                 latt_path = latt_path
             )
         else:

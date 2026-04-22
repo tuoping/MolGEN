@@ -51,6 +51,43 @@ def velocity_gl3(L0: th.Tensor, L1: th.Tensor, t: th.Tensor) -> th.Tensor:
     u_Lt = Lt @ V
     return u_Lt   
 
+
+def compute_weighted(dx, standard_bandwidth_factor, f_x, k_max=3):
+    """
+    Monte Carlo estimate of the full JSD:
+    JSD(p || q) = 0.5 * E_p[log(p/m)] + 0.5 * E_q[log(q/m)]
+
+    Args:
+        dx: (B, N, 3) - x-\mu, where \mu is the means for the wrapped Gaussian
+        standard_bandwidth_factor: scalar or (B,) - 1/\sigma for the wrapped Gaussion
+        f_x: function - target function to weight
+            input: x is (B, N, 3), 
+            input: k_vecs is (K, 3)
+            output: (B, N, K)
+        k_max: int - number of periodic images per dimension
+    """
+    if isinstance(standard_bandwidth_factor, th.Tensor):
+        bandwidth_factor = standard_bandwidth_factor[:, None, None] ** 2  # scalar or (B,)
+    else:
+        bandwidth_factor = standard_bandwidth_factor ** 2
+
+    ks = th.arange(-k_max, k_max + 1, device=dx.device)
+    kx, ky, kz = th.meshgrid(ks, ks, ks, indexing='ij')
+    k_vecs = th.stack([kx.ravel(), ky.ravel(), kz.ravel()], dim=-1).float()  # (K, 3)
+
+    # Broadcast: mu_t_x1 is (B, N, 3), k_vecs is (K, 3)
+    # diff: (B, N, K, 3)
+    diff = (dx[:, :, None, :] + k_vecs[None, None, :, :])   # @cell[:, None, :, :]
+    sq_norms = th.sum(diff ** 2, dim=-1)  # (B, N, K)
+
+    log_weights = -sq_norms / (2) * bandwidth_factor  # (B, N, K)
+    log_weights = log_weights - log_weights.max(dim=-1, keepdim=True).values
+    weights = th.exp(log_weights)
+    Z = weights.sum(dim=-1, keepdim=True)  # (B, N, 1)
+
+    weighted_sum = (th.exp(-(sq_norms / (2) * bandwidth_factor)[:,:,:,None])* f_x(dx[:, :, None, :], k_vecs[None, None, :, :])).sum(dim=-2)/Z
+    return weighted_sum
+
 #################### Coupling Plans ####################
 
 class ICPlan:
@@ -275,6 +312,22 @@ class ICPlan:
         ut = self.compute_ut_schrodinger_bridge(t, x0, x1, xt)
         return xt, ut, epsilon
     
+    
+    def plan_schrodinger_bridge_fractional(self, t, x0, x1, diffusion):
+        B,T,N,_ = x0.shape
+        epsilon = th.randn_like(x0)
+        mu_t = x0 + t[:,None,None,None]*(wrap_frac_pos(x1 - x0 - 0.5) - 0.5)
+        std_t = self.compute_marginal_std(t, diffusion)
+        xt = mu_t + std_t[:,None,None,None] * epsilon
+
+        sigma_t_prime_over_sigma_t = (1 - 2 * t) / (2 * t * (1 - t) + 1e-8)
+        ut_ode = (wrap_frac_pos(x1 - x0 - 0.5) - 0.5).view(B*T,N,3)
+        def ut_k(dx, k):
+            return sigma_t_prime_over_sigma_t[:,None,None,None]*(dx + k) + ut_ode[:,:,None,:]
+        
+        ut = compute_weighted((std_t[:,None,None,None] * epsilon).view(B*T,N,3), 1/std_t, ut_k).view(B,T,N,3)
+        return xt, ut, epsilon
+
     def compute_lambda_schrodinger_bridge(self, t, diffusion):
         '''
         Compute the lambda function for the Schrodinger bridge.

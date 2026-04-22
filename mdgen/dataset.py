@@ -171,7 +171,7 @@ def calculate_rdf_pair(
 
     return r_values, g_r, integral_g_r
 
-# from mace.calculators import MACECalculator
+from mace.calculators import MACECalculator
 
 class EquivariantTransformerDataset_CrCoNi(torch.utils.data.Dataset):
     def __init__(self, traj_dirname, cutoff, num_species=5, num_frames=None, random_starting_point=True, localmask=False, sim_condition=True, stage="train"):
@@ -622,11 +622,11 @@ class EquivariantTransformerDataset_MaterialProject(torch.utils.data.Dataset):
         self.sim_condition = sim_condition
 
         if self.stage == "save":    
-            # self.calculator = MACECalculator(
-            #     model_path="./MACE-matpes-r2scan-omat-ft.model",
-            #     device="cuda",
-            #     default_dtype="float32",
-            # )
+            self.calculator = MACECalculator(
+                model_path="./mace-omat-0-medium.model",
+                device="cuda",
+                default_dtype="float32",
+            )
         
             traj_filename = os.path.join(traj_dir, "all_structures.extxyz")
             atoms_list = ase.io.read(traj_filename, index=":")
@@ -643,54 +643,56 @@ class EquivariantTransformerDataset_MaterialProject(torch.utils.data.Dataset):
             dataset = []
             os.makedirs(save_dir, exist_ok=True)
             if os.path.exists(f'{save_dir}/conventional.extxyz'): os.remove(f'{save_dir}/conventional.extxyz')
+            eps = 1e-4
             for i_atoms, _atoms in enumerate(atoms_list):
-
-                lattice   = _atoms.get_cell().array
-                positions = _atoms.get_scaled_positions()
-                numbers   = _atoms.get_atomic_numbers()
-                cell_spg  = (lattice, positions, numbers)
-                (conv_lattice, conv_positions, conv_numbers) = spglib.standardize_cell(cell_spg,
-                               to_primitive=False,
-                               no_idealize=False)
-                atoms = Atoms(
-                    numbers=conv_numbers,
-                    scaled_positions=conv_positions,
-                    cell=conv_lattice,
-                    pbc=True
-                )
-                if atoms.get_number_of_atoms() < 8:
-                    from ase.build.supercells import make_supercell
-                    atoms = make_supercell(atoms, np.eye(3,3)*2)
-                ase.io.write(f'{save_dir}/conventional.extxyz', atoms, append=True)
-                if sel_idx is not None and i_atoms not in sel_idx:
-                    continue
-                # print(i_atoms, sel_idx)
-                # atoms.calc = self.calculator
-                # mace_energy = atoms.get_potential_energy()
-                num_atoms = len(atoms)
-                atoms.wrap()   
-                # masses = atoms.get_masses()
-                inv_cell = np.linalg.pinv(np.array(atoms.cell))
-                z = atom_encoder.transform(atoms.numbers.reshape(-1, 1))
-                padded_z = np.zeros((num_atoms, num_species))
-                padded_z[:, :z.shape[1]] = z
-                num_atoms = len(atoms)
-                # atoms.calc = self.calculator
-                # mace_energy = atoms.get_potential_energy()
-                # stiffness = Stiffness_from_modulus(SGnumber[i_atoms], bulk_modulus[i_atoms], shear_modulus[i_atoms], material_type)
-                data = Data(
-                    z          = torch.tensor(padded_z,               dtype=torch.float32),
-                    pos        = torch.tensor(atoms.positions - np.ones(3)*0.5 @ atoms.cell, dtype=torch.float32),
-                    frac_pos        = torch.tensor(atoms.positions @ inv_cell - np.ones(3)*0.5, dtype=torch.float32),
-                    cell       = torch.tensor(np.array(atoms.cell), dtype=torch.float32),
-                    E_formation = None,
-                    E_above_hull = None,
-                    num_atoms = torch.tensor(num_atoms, dtype=torch.long),
-                    # stiffness = torch.tensor(stiffness, dtype=torch.float32),
-                    # masses = torch.tensor(masses)
-                )
-                dataset.append(data.clone())
-                volume = atoms.get_volume()
+                for i in range(64):
+                    lattice   = _atoms.get_cell().array
+                    positions = _atoms.get_scaled_positions()
+                    numbers   = _atoms.get_atomic_numbers()
+                    cell_spg  = (lattice, positions, numbers)
+                    (conv_lattice, conv_positions, conv_numbers) = spglib.standardize_cell(cell_spg,
+                                   to_primitive=False,
+                                   no_idealize=False)
+                    N = positions.shape[0]
+                    atoms = Atoms(
+                        numbers=conv_numbers,
+                        scaled_positions=conv_positions + np.random.randn(*conv_positions.shape)* eps/(N)**(1./3.),
+                        cell=conv_lattice,
+                        pbc=True
+                    )
+                    if atoms.get_number_of_atoms() < 8:
+                        from ase.build.supercells import make_supercell
+                        atoms = make_supercell(atoms, np.eye(3,3)*2)
+                    ase.io.write(f'{save_dir}/conventional.extxyz', atoms, append=True)
+                    if sel_idx is not None and i_atoms not in sel_idx:
+                        continue
+                    # print(i_atoms, sel_idx)
+                    atoms.calc = self.calculator
+                    # mace_energy = atoms.get_potential_energy()
+                    num_atoms = len(atoms)
+                    atoms.wrap()   
+                    # masses = atoms.get_masses()
+                    inv_cell = np.linalg.pinv(np.array(atoms.cell))
+                    z = atom_encoder.transform(atoms.numbers.reshape(-1, 1))
+                    padded_z = np.zeros((num_atoms, num_species))
+                    padded_z[:, :z.shape[1]] = z
+                    num_atoms = len(atoms)
+                    # atoms.calc = self.calculator
+                    # mace_energy = atoms.get_potential_energy()
+                    # stiffness = Stiffness_from_modulus(SGnumber[i_atoms], bulk_modulus[i_atoms], shear_modulus[i_atoms], material_type)
+                    data = Data(
+                        z          = torch.tensor(padded_z,               dtype=torch.float32),
+                        pos        = torch.tensor(atoms.positions - np.ones(3)*0.5 @ atoms.cell, dtype=torch.float32),
+                        forces = torch.tensor(atoms.get_forces(), dtype=torch.float32),
+                        cell       = torch.tensor(np.array(atoms.cell), dtype=torch.float32),
+                        E_formation = None,
+                        E_above_hull = None,
+                        num_atoms = torch.tensor(num_atoms, dtype=torch.long),
+                        # stiffness = torch.tensor(stiffness, dtype=torch.float32),
+                        # masses = torch.tensor(masses)
+                    )
+                    dataset.append(data.clone())
+                    volume = atoms.get_volume()
 
             torch.save(dataset, f'{save_dir}/{save_filename}.pt')
         else:
@@ -707,17 +709,13 @@ class EquivariantTransformerDataset_MaterialProject(torch.utils.data.Dataset):
             self.mean_atomic_volume = torch.tensor(atomic_volumes).mean()
             self.x0std = args.x0std
             self.all_dataset = _all_dataset
-            
             self.all_dataset = []
-            for i in range(1):
-                for j in range(len(_all_dataset)):
-                # for j in [1]:
-                    data = _all_dataset[j].clone()
-                    N = data.pos.shape[0]
-                    assert data.pos.shape == (N,3)
-                    if N <= 32:
-                        # data.pos = wrap_frac_pos(data.pos + torch.randn_like(data.pos)* self.x0std/(N)**(1./3.))
-                        self.all_dataset.append(data)
+            for j in range(len(_all_dataset)):
+                data = _all_dataset[j]
+                N = data.pos.shape[0]
+                assert data.pos.shape == (N,3)
+                if N == 8:
+                    self.all_dataset.append(data)
             print( f"Training over {len(self.all_dataset)} * samples; Training database size = {len(_all_dataset)}")
 
 
@@ -752,6 +750,7 @@ class EquivariantTransformerDataset_MaterialProject(torch.utils.data.Dataset):
             "name": "Material Project",
             "species": torch.stack([data.z for data in dataset]),
             "x": x,
+            "forces": torch.stack([data.forces for data in dataset]),
             "cell": torch.stack([data.cell for data in dataset]),
             "num_atoms": torch.stack([data.num_atoms for data in dataset]),
             "mask": mask,

@@ -118,10 +118,14 @@ def geodesic_distance(x_string):
 
 def grad_log_normal_iso_3d(x, mu=0, sigma=1):
     """
-    ∇_x log N(x | mu, σ² I)
+    -s_t = ∇_x log N(x | mu, σ² I) = -(x - mu) / (sigma**2)
     same shape as x
     """
-    return -(x - mu) / (sigma**2)
+    # return -(x - mu) / (sigma**2)
+    B,T,N,_ = x.shape
+    def f_dx_k(dx, k):
+        return (-dx+k) / (sigma[:,None,None,None]**2)
+    return path.compute_weighted((x-mu).view(B*T,N,3), 1/sigma, f_dx_k)
 
 
 @th.no_grad()
@@ -159,15 +163,15 @@ def lattice_polar_decompose_torch(lattices: th.Tensor):
 from .path import wrap_frac_pos
 import math
 
-def compute_jsd_loss(mu_t_x1, standard_bandwidth_factor, mu_theta, k_max):
+def compute_jsd_loss(mu_t_x1, standard_bandwidth_factor, mu_theta, k_max=3):
     """
     Monte Carlo estimate of the full JSD:
     JSD(p || q) = 0.5 * E_p[log(p/m)] + 0.5 * E_q[log(q/m)]
 
     Args:
         mu_t_x1: (B, N, 3) - means for the wrapped Gaussian
-        sigma_F: scalar or (B,) - standard deviation
-        v_theta: (B, N, 3) - predicted velocity
+        standard_bandwidth_factor: scalar or (B,) - 1/\sigma for the wrapped Gaussion
+        mu_theta: (B, N, 3) - predicted mean
         t: scalar or (B,) - time
         k_max: int - number of periodic images per dimension
     """
@@ -281,6 +285,7 @@ class Transport:
         """
         B,T,N,C = shape
         x0 = []
+        x0_mean = []
         for i in range(1):
             ### Even sample
             m = math.ceil(N ** (1/3))
@@ -291,6 +296,7 @@ class Transport:
             # _x0_mean = th.rand(shape, device=device)
             # x0.append(wrap_frac_pos(th.randn(shape, device=device)*self.args.x0std/(N)**(1./3.) + _x0_mean))
             x0.append(th.randn(shape, device=device)*self.args.x0std/(N)**(1./3.) + _x0_mean)
+            x0_mean.append(_x0_mean)
         
         t0, t1 = self.check_interval(self.train_eps, self.sample_eps)
         # t = th.rand((x1.shape[0],))
@@ -298,7 +304,7 @@ class Transport:
         # t = th.zeros(shape[0])
         t = t*(t1-t0) + t0
         t = t.to(device)
-        return t, x0
+        return t, x0, x0_mean
 
 
     def sample_latt(self, shape, device):
@@ -349,7 +355,7 @@ class Transport:
             model_kwargs = {}
         B, T, N, C = x1.shape
         ### normal sampler of t
-        t, x0 = self.sample(x1.shape, x1.device)
+        t, x0, x0_mean = self.sample(x1.shape, x1.device)
         ### OT in the atom number dimension
         x1 = x1.view(B*T, N, C)
         model_kwargs['x1'] = model_kwargs['x1'].view(B*T, N, C)
@@ -447,9 +453,10 @@ class Transport:
                 else:
                     raise Exception(f"Wrong KL argument: {self.args.KL}")
                 if self.score_model is not None:
-                    terms['loss_dsm'] = mean_flat((lambda_t[:,None,None,None] * score_model_output + eps)**2, mask)
-                    terms['loss_tsm_0'] = mean_flat( (score_model_output - alpha_t*grad_log_normal_iso_3d(x0[0]))**2 * (t < 0.5).to(th.int)[:,None,None,None], mask)
-                    terms['loss_tsm_1'] = mean_flat( (score_model_output - sigma_t*forces)**2 * (t >= 0.5).to(th.int)[:,None,None,None], mask)
+                    cell = model_kwargs['cell']
+                    terms['loss_dsm'] = mean_flat(((lambda_t[:,None,None,None] * score_model_output + eps)**2)@cell, mask)
+                    terms['loss_tsm_0'] = mean_flat( ((score_model_output - alpha_t*grad_log_normal_iso_3d(x0[0], mu=x0_mean[0], sigma=th.sqrt(2*diffusion)))**2 * (t < 0.5).to(th.int)[:,None,None,None])@cell, mask)
+                    terms['loss_tsm_1'] = mean_flat( ((score_model_output - sigma_t*forces)**2 * (t >= 0.5).to(th.int)[:,None,None,None])@cell, mask)
                     terms['loss'] = terms['loss_flow'] + terms['loss_dsm'] + terms['loss_tsm_0'] + terms["loss_tsm_1"]
                 else:
                     terms['loss'] = terms['loss_flow']
@@ -606,7 +613,7 @@ class Sampler:
 
         sde_drift = \
                 lambda x, t, model, score_model, **kwargs: \
-                    -self.drift(x, 1-t, model, **kwargs) - diffusion_fn(x, t) * self.score(x, 1-t, score_model, **kwargs)
+                    -self.drift(x, 1-t, model, **kwargs) + diffusion_fn(x, t) * self.score(x, 1-t, score_model, **kwargs)
 
         return sde_drift
 
