@@ -74,21 +74,19 @@ if args.ckpt is not None:
 # assert model.transport.latt_path
 
 callbacks_fn = [
+    # ModelCheckpoint(
+    #     dirpath=os.environ["MODEL_DIR"], 
+    #     save_top_k=-1,
+    #     every_n_epochs=args.ckpt_freq,
+    # ),
     ModelCheckpoint(
         dirpath=os.environ["MODEL_DIR"], 
-        # filename="{epoch:03d}-{step:07d}-{val_loss:.4f}",
-        # monitor="val_loss",
-        save_top_k=-1,
-        every_n_epochs=args.ckpt_freq,
-        # save_last=True
-    ),
-    ModelCheckpoint(
-        dirpath=os.environ["MODEL_DIR"], 
-        filename="{epoch:03d}-{step:07d}-{val_loss:.4f}",
-        monitor="val_loss",
+        filename="{epoch:03d}-{step:07d}-{val_loss_path:.4f}",
+        monitor="val_loss_path",
         save_top_k=1,
-        # save_last=True
+        save_last=True
     ),
+
     ModelSummary(max_depth=2),
 ]
 

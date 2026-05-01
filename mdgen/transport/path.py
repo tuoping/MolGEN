@@ -85,7 +85,7 @@ def compute_weighted(dx, standard_bandwidth_factor, f_x, k_max=3):
     weights = th.exp(log_weights)
     Z = weights.sum(dim=-1, keepdim=True)  # (B, N, 1)
 
-    weighted_sum = (th.exp(-(sq_norms / (2) * bandwidth_factor)[:,:,:,None])* f_x(dx[:, :, None, :], k_vecs[None, None, :, :])).sum(dim=-2)/Z
+    weighted_sum = ((weights/Z)[:,:,:,None] * f_x(dx[:, :, None, :], k_vecs[None, None, :, :])).sum(dim=-2)
     return weighted_sum
 
 #################### Coupling Plans ####################
@@ -131,7 +131,7 @@ class ICPlan:
             "SBDM": norm * self.compute_drift(x, t)[1],
             "sigma": norm * self.compute_sigma_t(t)[0],
             "linear": norm * (1 - t),
-            "decreasing": 0.25 * (norm * th.cos(np.pi * t) + 1) ** 2,
+            "decreasing": norm * 0.25 * (th.cos(np.pi * t) + 1) ** 2,
             "increasing-decreasing": norm * th.sin(np.pi * t) ** 2,
         }
 
@@ -345,7 +345,8 @@ class ICPlan:
             lambda function at time t
         '''
         std_t = self.compute_marginal_std(t, diffusion)
-        return 2*std_t/(2*diffusion+1e-8)
+        # std_t = th.sqrt(2*diffusion) * th.sqrt(t*(1-t))
+        return 2*std_t/(2*diffusion + 1e-20)
 
 
 class VPCPlan(ICPlan):
@@ -403,65 +404,3 @@ class GVPCPlan(ICPlan):
         """Special purposed function for computing numerical stabled d_alpha_t / alpha_t"""
         return np.pi / (2 * th.tan(t * np.pi / 2))
 
-
-class PowPlan(ICPlan):
-    def __init__(self, sigma=0.0):
-        super().__init__(sigma)
-
-    def compute_alpha_t(self, t, p=2.0):
-        # alpha(1)=0 and d/dt alpha -> 0 as t->1
-        alpha  = th.pow((1 - t), (p))              # p>=2 makes slope vanish
-        dalpha = -p * th.pow((1 - t), (p - 1))
-        return alpha, dalpha
-
-    def compute_sigma_t(self, t, sigma_min=1e-3, sigma_max=1.0, q=2.0):
-        # sigma rises to sigma_max with zero slope at t=1
-        s      = 1 - th.pow((1 - t), (q))          # smooth cap; q>=2
-        ds     = q * th.pow((1 - t), (q - 1))
-        sigma  = sigma_min + (sigma_max - sigma_min) * s
-        dsigma = (sigma_max - sigma_min) * ds
-        return sigma, dsigma
-
-    def compute_d_alpha_alpha_ratio_t(self, t, p=2.0, tol=1e-9):
-        """Special purposed function for computing numerical stabled d_alpha_t / alpha_t"""
-        alpha, dalpha = self.compute_alpha_t(t, p=p)
-        if th.abs(alpha) < tol:
-            raise ValueError(f"alpha is too small: {alpha}, t={t}, p={p}")
-        return dalpha / alpha
-
-    
-
-class TimeWarpPlan(ICPlan):
-    def __init__(self, sigma=0.0):
-        super().__init__(sigma)
-    
-    def _phi(self, t, kind="smoothstep"):
-        if kind == "smoothstep":  # 3 t^2 - 2 t^3
-            s  = t*t*(3 - 2*t)
-            ds = 6 * t * (1 - t)
-        else:  # cosine
-            import math
-            s  = 0.5 - 0.5 * np.cos(math.pi * t)
-            ds = 0.5 * math.pi * np.sin(math.pi * t)
-        return s, ds
-
-    def compute_alpha_t(self, t, kind="smoothstep", p=1.0):
-        # Optional p>=1 to taper even flatter near t=1: alpha=(1-phi)^p
-        s, ds = self._phi(t, kind)
-        alpha  = th.pow((1 - s), p)
-        dalpha = -p * th.pow((1 - s), p - 1) * ds
-        return alpha, dalpha
-
-    def compute_sigma_t(self, t, kind="smoothstep", sigma_min=0.0):
-        # Anchored to x1: sigma(0)=sigma_min (often 0), sigma(1)=1, with zero slope at ends
-        s, ds = self._phi(t, kind)
-        sigma  = sigma_min + (1 - sigma_min) * s
-        dsigma = (1 - sigma_min) * ds
-        return sigma, dsigma
-    
-    def compute_d_alpha_alpha_ratio_t(self, t, kind='smoothstep', tol=1e-9):
-        """Special purposed function for computing numerical stabled d_alpha_t / alpha_t"""
-        alpha, dalpha = self.compute_alpha_t(t, kind)
-        if th.abs(alpha) < tol:
-            raise ValueError(f"alpha is too small: {alpha}, t={t}, kind={kind}")
-        return dalpha / alpha

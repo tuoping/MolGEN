@@ -118,13 +118,16 @@ def geodesic_distance(x_string):
 
 def grad_log_normal_iso_3d(x, mu=0, sigma=1):
     """
-    -s_t = ∇_x log N(x | mu, σ² I) = -(x - mu) / (sigma**2)
+    s_t = ∇_x log N(x | mu, σ² I) = -(x - mu) / (sigma**2)
     same shape as x
     """
     # return -(x - mu) / (sigma**2)
     B,T,N,_ = x.shape
     def f_dx_k(dx, k):
-        return (-dx+k) / (sigma[:,None,None,None]**2)
+        if isinstance(sigma, th.Tensor):
+            return (-dx+k) / (sigma[:,None,None,None]**2)
+        else:
+            return (-dx+k) / (sigma**2)
     return path.compute_weighted((x-mu).view(B*T,N,3), 1/sigma, f_dx_k)
 
 
@@ -228,7 +231,6 @@ class Transport:
             PathType.LINEAR: path.ICPlan,
             PathType.GVP: path.GVPCPlan,
             PathType.VP: path.VPCPlan,
-            PathType.Pow: path.PowPlan,
         }
         self.args = args
         self.loss_type = loss_type
@@ -454,9 +456,10 @@ class Transport:
                     raise Exception(f"Wrong KL argument: {self.args.KL}")
                 if self.score_model is not None:
                     cell = model_kwargs['cell']
-                    terms['loss_dsm'] = mean_flat(((lambda_t[:,None,None,None] * score_model_output + eps)**2)@cell, mask)
-                    terms['loss_tsm_0'] = mean_flat( ((score_model_output - alpha_t*grad_log_normal_iso_3d(x0[0], mu=x0_mean[0], sigma=th.sqrt(2*diffusion)))**2 * (t < 0.5).to(th.int)[:,None,None,None])@cell, mask)
-                    terms['loss_tsm_1'] = mean_flat( ((score_model_output - sigma_t*forces)**2 * (t >= 0.5).to(th.int)[:,None,None,None])@cell, mask)
+                    terms['loss_dsm'] = mean_flat(((lambda_t[:,None,None,None]*score_model_output + eps)**2)@cell, mask)
+                    # terms['loss_tsm_0'] = mean_flat( ((score_model_output - 1./sigma_t*grad_log_normal_iso_3d(x0[0], mu=x0_mean[0], sigma=th.sqrt(2*diffusion * 1e-4)))**2 * (t < 0.5).to(th.int)[:,None,None,None])@cell, mask)
+                    terms['loss_tsm_0'] = mean_flat( ((score_model_output - 1./sigma_t*grad_log_normal_iso_3d(x0[0], mu=x0_mean[0], sigma=self.args.x0std/(N)**(1./3.)))**2 * (t < 0.5).to(th.int)[:,None,None,None])@cell, mask) 
+                    terms['loss_tsm_1'] = mean_flat( ((score_model_output - 1./alpha_t*forces)**2 * (t > 0.5).to(th.int)[:,None,None,None])@cell, mask)
                     terms['loss'] = terms['loss_flow'] + terms['loss_dsm'] + terms['loss_tsm_0'] + terms["loss_tsm_1"]
                 else:
                     terms['loss'] = terms['loss_flow']
