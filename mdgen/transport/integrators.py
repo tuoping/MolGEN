@@ -13,6 +13,8 @@ class sde:
         t1,
         num_steps,
         sampler_type,
+        score = None,
+        num_corrector_step = 0,
     ):
         assert t0 < t1, "SDE sampler has to be in forward time"
 
@@ -25,6 +27,8 @@ class sde:
         self.drift = drift
         self.diffusion = diffusion
         self.sampler_type = sampler_type
+        self.score = score
+        self.num_corrector_step = num_corrector_step
 
     def __Euler_Maruyama_step(self, x, mean_x, t, model, score_model, **model_kwargs):
         w_cur = th.randn(x.size()).to(x)
@@ -34,6 +38,20 @@ class sde:
         diffusion = self.diffusion(x, t)
         mean_x = x + drift * self.dt
         x = mean_x + th.sqrt(2 * diffusion) * dw
+        if self.score is not None:
+            for i in range(self.num_corrector_step):
+                x, mean_x = self.__corrector_step(x, t, score_model, **model_kwargs)
+        return x, mean_x
+    
+    def __corrector_step(self, x, t, score_model, **model_kwargs):
+        w_cur = th.randn(x.size()).to(x)
+        score = self.score(x, t, score_model, **model_kwargs)
+        # epsilon = 2 * (0.2 * th.linalg.norm(w_cur, dim=-1).mean()
+        #        / th.linalg.norm(score, dim=-1).mean()) ** 2
+        epsilon = 2 * (th.sqrt(th.tensor(3.0)) * 0.005
+               / th.linalg.norm(score, dim=-1).mean()) ** 2
+        mean_x = x + epsilon * score
+        x = mean_x + th.sqrt(2*epsilon)*w_cur
         return x, mean_x
     
     def __Heun_step(self, x, _, t, model, score_model, **model_kwargs):
