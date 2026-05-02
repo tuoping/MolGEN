@@ -332,7 +332,7 @@ class ICPlan:
         '''
         Compute the lambda function for the Schrodinger bridge.
         Diffusion rate: g(t) = sqrt(2 * diffusion)
-        lambda_t = 2*(g(t)**2*sqrt(t*(1-t)))/(g(t)**2+1e-8)
+        lambda_t = 2*(g(t)**2*sqrt(t*(1-t)))/(g(t)**2)
         Parameters
         ----------
         t : FloatTensor, shape (bs)

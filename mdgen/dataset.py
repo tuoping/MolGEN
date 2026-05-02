@@ -629,14 +629,7 @@ class EquivariantTransformerDataset_MaterialProject(torch.utils.data.Dataset):
             )
         
             traj_filename = os.path.join(traj_dir, "all_structures.extxyz")
-            atoms_list = ase.io.read(traj_filename, index=":")
-            # import json
-            # bulk_modulus = json.load(open(os.path.join(traj_dir, "bulk_modulus_all_structures.json")))
-            # shear_modulus = json.load(open(os.path.join(traj_dir, "shear_modulus_all_structures.json")))
-            # SGnumber = np.loadtxt(os.path.join(traj_dir, "SGnumber_all_structures.txt")).astype(int)
-            
-            # Onehot encoder for atom type
-            # unique_numbers = np.concatenate([np.unique(atoms.numbers) for atoms in atoms_list])        
+            atoms_list = ase.io.read(traj_filename, index=":")  
             atom_encoder = OneHotEncoder(sparse_output=False)
             atom_encoder.fit(np.array(species).reshape(-1,1))
             
@@ -656,43 +649,38 @@ class EquivariantTransformerDataset_MaterialProject(torch.utils.data.Dataset):
                     N = positions.shape[0]
                     atoms = Atoms(
                         numbers=conv_numbers,
-                        scaled_positions=conv_positions + np.random.randn(*conv_positions.shape)* eps/(N)**(1./3.),
+                        scaled_positions=conv_positions,
                         cell=conv_lattice,
                         pbc=True
                     )
+                    
                     if atoms.get_number_of_atoms() < 8:
                         from ase.build.supercells import make_supercell
                         atoms = make_supercell(atoms, np.eye(3,3)*2)
+                    noise = np.random.randn(*atoms.positions.shape) @ atoms.cell * eps/(N)**(1./3.)
+                    atoms.set_positions(atoms.positions + noise)
                     ase.io.write(f'{save_dir}/conventional.extxyz', atoms, append=True)
                     if sel_idx is not None and i_atoms not in sel_idx:
                         continue
-                    # print(i_atoms, sel_idx)
                     atoms.calc = self.calculator
-                    # mace_energy = atoms.get_potential_energy()
                     num_atoms = len(atoms)
                     atoms.wrap()   
-                    # masses = atoms.get_masses()
                     inv_cell = np.linalg.pinv(np.array(atoms.cell))
                     z = atom_encoder.transform(atoms.numbers.reshape(-1, 1))
                     padded_z = np.zeros((num_atoms, num_species))
                     padded_z[:, :z.shape[1]] = z
                     num_atoms = len(atoms)
-                    # atoms.calc = self.calculator
-                    # mace_energy = atoms.get_potential_energy()
-                    # stiffness = Stiffness_from_modulus(SGnumber[i_atoms], bulk_modulus[i_atoms], shear_modulus[i_atoms], material_type)
                     data = Data(
                         z          = torch.tensor(padded_z,               dtype=torch.float32),
                         pos        = torch.tensor(atoms.positions - np.ones(3)*0.5 @ atoms.cell, dtype=torch.float32),
-                        forces = torch.tensor(atoms.get_forces(), dtype=torch.float32),
+                        forces     = torch.tensor(atoms.get_forces(), dtype=torch.float32),
+                        # forces = torch.tensor(noise / (eps/ N**(1./3.))**2, dtype=torch.float32),
                         cell       = torch.tensor(np.array(atoms.cell), dtype=torch.float32),
                         E_formation = None,
                         E_above_hull = None,
                         num_atoms = torch.tensor(num_atoms, dtype=torch.long),
-                        # stiffness = torch.tensor(stiffness, dtype=torch.float32),
-                        # masses = torch.tensor(masses)
                     )
                     dataset.append(data.clone())
-                    volume = atoms.get_volume()
 
             torch.save(dataset, f'{save_dir}/{save_filename}.pt')
         else:
@@ -703,6 +691,8 @@ class EquivariantTransformerDataset_MaterialProject(torch.utils.data.Dataset):
                 data.z = data.z[:,:num_species]
                 inv_cell = torch.linalg.inv(data.cell)
                 data.pos = data.pos@inv_cell 
+                data.forces = data.forces@inv_cell 
+                assert data.pos.shape == data.forces.shape
                 num_atoms = data.pos.shape[0]
                 atomic_volumes.append(torch.dot(data.cell[0], torch.cross(data.cell[1], data.cell[2], dim=0))/num_atoms)
             

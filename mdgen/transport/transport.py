@@ -698,7 +698,7 @@ class Sampler:
             t0=t0,
             t1=t1,
             num_steps=num_steps,
-            sampler_type=sampling_method
+            sampler_type=sampling_method,
         )
 
         last_step_fn = self.__get_last_step(sde_drift, last_step=last_step, last_step_size=last_step_size)
