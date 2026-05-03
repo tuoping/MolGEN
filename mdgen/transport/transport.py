@@ -395,7 +395,7 @@ class Transport:
                     B,T,_,_ = model_kwargs['cell'].shape
                     # latt1 = lattice_polar_decompose_torch(model_kwargs['cell'].reshape([B*T,3,3])).reshape(B*T,6)
                     latt1 = model_kwargs['cell']
-                    latt, ulatt = self.path_sampler.plan_latt_riemann(t, latt0, latt1)
+                    latt, ulatt = self.path_sampler.plan_latt(t, latt0, latt1)
                     model_kwargs['cell'] = latt
                     # model_kwargs['cell'] = lattice_polar_build_torch(latt.reshape([B*T,6])).reshape([B,T,3,3])
                     # ulatt_L = lattice_polar_build_torch(ulatt.reshape([B*T,6])).reshape([B,T,3,3])
