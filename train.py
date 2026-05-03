@@ -30,7 +30,7 @@ torch.set_float32_matmul_precision('medium')
 # from torch.utils.data import ConcatDataset
 # from torch.utils.data import Subset
 
-train_dataset = EquivariantTransformerDataset_MaterialProject(args, species=[6], sim_condition=False, stage="train")
+train_dataset = EquivariantTransformerDataset_MaterialProject(args, species=[6], sim_condition=False, stage="train_withforces")
 args.mean_atomic_volume = train_dataset.mean_atomic_volume
 num_atoms_list = [int(max(train_dataset[i]["num_atoms"])) for i in range(len(train_dataset))]
 trainsampler = BucketBatchSampler(train_dataset, num_atoms_list, batch_size=args.batch_size)
@@ -39,7 +39,7 @@ if args.overfit:
     val_dataset = train_dataset
     valsampler = trainsampler
 else:
-    val_dataset = EquivariantTransformerDataset_MaterialProject(args.data_dir, args.cutoff, species=[6], sim_condition=False, stage="val")
+    val_dataset = EquivariantTransformerDataset_MaterialProject(args.data_dir, args.cutoff, species=[6], sim_condition=False, stage="val_withforces")
 
 train_loader = torch.utils.data.DataLoader(
     train_dataset,
@@ -74,21 +74,19 @@ if args.ckpt is not None:
 # assert model.transport.latt_path
 
 callbacks_fn = [
+    # ModelCheckpoint(
+    #     dirpath=os.environ["MODEL_DIR"], 
+    #     save_top_k=-1,
+    #     every_n_epochs=args.ckpt_freq,
+    # ),
     ModelCheckpoint(
         dirpath=os.environ["MODEL_DIR"], 
-        # filename="{epoch:03d}-{step:07d}-{val_loss:.4f}",
-        # monitor="val_loss",
-        save_top_k=-1,
-        every_n_epochs=args.ckpt_freq,
-        # save_last=True
-    ),
-    ModelCheckpoint(
-        dirpath=os.environ["MODEL_DIR"], 
-        filename="{epoch:03d}-{step:07d}-{val_loss:.4f}",
-        monitor="val_loss",
+        filename="{epoch:03d}-{step:07d}-{val_loss_path:.4f}",
+        monitor="val_loss_path",
         save_top_k=1,
-        # save_last=True
+        save_last=True
     ),
+
     ModelSummary(max_depth=2),
 ]
 

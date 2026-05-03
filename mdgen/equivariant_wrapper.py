@@ -237,13 +237,14 @@ class EquivariantMDGenWrapper(Wrapper):
                 decoder = Decoder(dim=latent_dim, num_scalar_out=num_scalar_out, num_vector_out=num_vector_out, num_species=args.num_species),
                 cutoff=args.cutoff,
                 latent_dim=latent_dim,
+                num_radial = num_radial,
                 design=args.design,
-                potential_model = args.potential_model,
+                potential_model = False,
                 tps_condition=args.tps_condition,
                 sim_condition=args.sim_condition,
+                num_species=args.num_species,
                 pbc=args.pbc,
                 object_aware=args.object_aware,
-                num_species=args.num_species,
                 latt_path = latt_path
             )
         else:
@@ -285,7 +286,7 @@ class EquivariantMDGenWrapper(Wrapper):
         mean_log = get_log_mean(log)
         self.log("val_loss", mean_log['val_loss'])
         # self.log("val_loss_gen", mean_log['val_loss_gen'])
-        # self.log("val_meanRMSD_Kabsch", mean_log['val_meanRMSD_Kabsch'])
+        self.log("val_loss_path", mean_log['val_loss_path'])
         self.print_log(prefix='val', save=False)
 
     def prep_batch(self, batch):
@@ -505,7 +506,7 @@ class EquivariantMDGenWrapper(Wrapper):
             self.prefix_log("loss_dsm", out_dict['loss_dsm'].detach().cpu())
             self.prefix_log("loss_tsm_0", out_dict['loss_tsm_0'].detach().cpu())
             self.prefix_log("loss_tsm_1", out_dict['loss_tsm_1'].detach().cpu())
-
+            self.prefix_log("loss_path", out_dict['loss_dsm'].detach().cpu()+out_dict['loss_flow'].detach().cpu())
         if self.args.KL == 'symm':
             self.prefix_log('loss_symmkl', out_dict['loss_symmkl'].detach().cpu())
             # self.prefix_log('loss_entropy', out_dict['loss_entropy'])
@@ -640,14 +641,16 @@ class EquivariantMDGenWrapper(Wrapper):
             # g = (torch.arange(m, device=self.device) + 0.5) / m
             # X, Y, Z = torch.meshgrid(g, g, g, indexing='ij')
             # zs =  torch.stack([X.reshape(-1), Y.reshape(-1), Z.reshape(-1)], dim=1)[:N].unsqueeze(0).expand(T, -1, -1).unsqueeze(0).expand(B, -1, -1, -1)
-            _, zs = self.transport.sample(latents.shape, self.device)
+            _, zs, _ = self.transport.sample(latents.shape, self.device)
             zs = zs[0]
             if self.transport.latt_path:
                 cell0 = self.transport.sample_latt(zs.shape, self.device)
         self.integration_step = 0
-        assert self.score_model is None
         assert self.args.likelihood is None
-        with torch.no_grad(): sample_fn = self.transport_sampler.sample_ode(sampling_method=self.args.sampling_method, num_steps=self.args.inference_steps)  # default to ode
+        if self.score_model is None:
+            with torch.no_grad(): sample_fn = self.transport_sampler.sample_ode(sampling_method=self.args.sampling_method, num_steps=self.args.inference_steps)  # default to ode
+        else:
+            with torch.no_grad(): sample_fn = self.transport_sampler.sample_sde(num_steps=self.args.inference_steps, diffusion_form=self.args.diffusion_form, diffusion_norm=torch.tensor(self.args.diffusion_norm), score_model=partial(self.score_model.forward_inference, **prep['model_kwargs']))
         if self.transport.latt_path:
             samples = sample_fn(
                 (zs, cell0),

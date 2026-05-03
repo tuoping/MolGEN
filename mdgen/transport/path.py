@@ -51,6 +51,43 @@ def velocity_gl3(L0: th.Tensor, L1: th.Tensor, t: th.Tensor) -> th.Tensor:
     u_Lt = Lt @ V
     return u_Lt   
 
+
+def compute_weighted(dx, standard_bandwidth_factor, f_x, k_max=3):
+    """
+    Monte Carlo estimate of the full JSD:
+    JSD(p || q) = 0.5 * E_p[log(p/m)] + 0.5 * E_q[log(q/m)]
+
+    Args:
+        dx: (B, N, 3) - x-\mu, where \mu is the means for the wrapped Gaussian
+        standard_bandwidth_factor: scalar or (B,) - 1/\sigma for the wrapped Gaussion
+        f_x: function - target function to weight
+            input: x is (B, N, 3), 
+            input: k_vecs is (K, 3)
+            output: (B, N, K)
+        k_max: int - number of periodic images per dimension
+    """
+    if isinstance(standard_bandwidth_factor, th.Tensor):
+        bandwidth_factor = standard_bandwidth_factor[:, None, None] ** 2  # scalar or (B,)
+    else:
+        bandwidth_factor = standard_bandwidth_factor ** 2
+
+    ks = th.arange(-k_max, k_max + 1, device=dx.device)
+    kx, ky, kz = th.meshgrid(ks, ks, ks, indexing='ij')
+    k_vecs = th.stack([kx.ravel(), ky.ravel(), kz.ravel()], dim=-1).float()  # (K, 3)
+
+    # Broadcast: mu_t_x1 is (B, N, 3), k_vecs is (K, 3)
+    # diff: (B, N, K, 3)
+    diff = (dx[:, :, None, :] + k_vecs[None, None, :, :])   # @cell[:, None, :, :]
+    sq_norms = th.sum(diff ** 2, dim=-1)  # (B, N, K)
+
+    log_weights = -sq_norms / (2) * bandwidth_factor  # (B, N, K)
+    log_weights = log_weights - log_weights.max(dim=-1, keepdim=True).values
+    weights = th.exp(log_weights)
+    Z = weights.sum(dim=-1, keepdim=True)  # (B, N, 1)
+
+    weighted_sum = ((weights/Z)[:,:,:,None] * f_x(dx[:, :, None, :], k_vecs[None, None, :, :])).sum(dim=-2)
+    return weighted_sum
+
 #################### Coupling Plans ####################
 
 class ICPlan:
@@ -94,7 +131,7 @@ class ICPlan:
             "SBDM": norm * self.compute_drift(x, t)[1],
             "sigma": norm * self.compute_sigma_t(t)[0],
             "linear": norm * (1 - t),
-            "decreasing": 0.25 * (norm * th.cos(np.pi * t) + 1) ** 2,
+            "decreasing": norm * 0.25 * (th.cos(np.pi * t) + 1) ** 2,
             "increasing-decreasing": norm * th.sin(np.pi * t) ** 2,
         }
 
@@ -275,11 +312,27 @@ class ICPlan:
         ut = self.compute_ut_schrodinger_bridge(t, x0, x1, xt)
         return xt, ut, epsilon
     
+    
+    def plan_schrodinger_bridge_fractional(self, t, x0, x1, diffusion):
+        B,T,N,_ = x0.shape
+        epsilon = th.randn_like(x0)
+        mu_t = x0 + t[:,None,None,None]*(wrap_frac_pos(x1 - x0 - 0.5) - 0.5)
+        std_t = self.compute_marginal_std(t, diffusion)
+        xt = mu_t + std_t[:,None,None,None] * epsilon
+
+        sigma_t_prime_over_sigma_t = (1 - 2 * t) / (2 * t * (1 - t) + 1e-8)
+        ut_ode = (wrap_frac_pos(x1 - x0 - 0.5) - 0.5).view(B*T,N,3)
+        def ut_k(dx, k):
+            return sigma_t_prime_over_sigma_t[:,None,None,None]*(dx + k) + ut_ode[:,:,None,:]
+        
+        ut = compute_weighted((std_t[:,None,None,None] * epsilon).view(B*T,N,3), 1/std_t, ut_k).view(B,T,N,3)
+        return xt, ut, epsilon
+
     def compute_lambda_schrodinger_bridge(self, t, diffusion):
         '''
         Compute the lambda function for the Schrodinger bridge.
         Diffusion rate: g(t) = sqrt(2 * diffusion)
-        lambda_t = 2*(g(t)**2*sqrt(t*(1-t)))/(g(t)**2+1e-8)
+        lambda_t = 2*(g(t)**2*sqrt(t*(1-t)))/(g(t)**2)
         Parameters
         ----------
         t : FloatTensor, shape (bs)
@@ -292,7 +345,8 @@ class ICPlan:
             lambda function at time t
         '''
         std_t = self.compute_marginal_std(t, diffusion)
-        return 2*std_t/(2*diffusion+1e-8)
+        # std_t = th.sqrt(2*diffusion) * th.sqrt(t*(1-t))
+        return 2*std_t/(2*diffusion + 1e-20)
 
 
 class VPCPlan(ICPlan):
@@ -350,65 +404,3 @@ class GVPCPlan(ICPlan):
         """Special purposed function for computing numerical stabled d_alpha_t / alpha_t"""
         return np.pi / (2 * th.tan(t * np.pi / 2))
 
-
-class PowPlan(ICPlan):
-    def __init__(self, sigma=0.0):
-        super().__init__(sigma)
-
-    def compute_alpha_t(self, t, p=2.0):
-        # alpha(1)=0 and d/dt alpha -> 0 as t->1
-        alpha  = th.pow((1 - t), (p))              # p>=2 makes slope vanish
-        dalpha = -p * th.pow((1 - t), (p - 1))
-        return alpha, dalpha
-
-    def compute_sigma_t(self, t, sigma_min=1e-3, sigma_max=1.0, q=2.0):
-        # sigma rises to sigma_max with zero slope at t=1
-        s      = 1 - th.pow((1 - t), (q))          # smooth cap; q>=2
-        ds     = q * th.pow((1 - t), (q - 1))
-        sigma  = sigma_min + (sigma_max - sigma_min) * s
-        dsigma = (sigma_max - sigma_min) * ds
-        return sigma, dsigma
-
-    def compute_d_alpha_alpha_ratio_t(self, t, p=2.0, tol=1e-9):
-        """Special purposed function for computing numerical stabled d_alpha_t / alpha_t"""
-        alpha, dalpha = self.compute_alpha_t(t, p=p)
-        if th.abs(alpha) < tol:
-            raise ValueError(f"alpha is too small: {alpha}, t={t}, p={p}")
-        return dalpha / alpha
-
-    
-
-class TimeWarpPlan(ICPlan):
-    def __init__(self, sigma=0.0):
-        super().__init__(sigma)
-    
-    def _phi(self, t, kind="smoothstep"):
-        if kind == "smoothstep":  # 3 t^2 - 2 t^3
-            s  = t*t*(3 - 2*t)
-            ds = 6 * t * (1 - t)
-        else:  # cosine
-            import math
-            s  = 0.5 - 0.5 * np.cos(math.pi * t)
-            ds = 0.5 * math.pi * np.sin(math.pi * t)
-        return s, ds
-
-    def compute_alpha_t(self, t, kind="smoothstep", p=1.0):
-        # Optional p>=1 to taper even flatter near t=1: alpha=(1-phi)^p
-        s, ds = self._phi(t, kind)
-        alpha  = th.pow((1 - s), p)
-        dalpha = -p * th.pow((1 - s), p - 1) * ds
-        return alpha, dalpha
-
-    def compute_sigma_t(self, t, kind="smoothstep", sigma_min=0.0):
-        # Anchored to x1: sigma(0)=sigma_min (often 0), sigma(1)=1, with zero slope at ends
-        s, ds = self._phi(t, kind)
-        sigma  = sigma_min + (1 - sigma_min) * s
-        dsigma = (1 - sigma_min) * ds
-        return sigma, dsigma
-    
-    def compute_d_alpha_alpha_ratio_t(self, t, kind='smoothstep', tol=1e-9):
-        """Special purposed function for computing numerical stabled d_alpha_t / alpha_t"""
-        alpha, dalpha = self.compute_alpha_t(t, kind)
-        if th.abs(alpha) < tol:
-            raise ValueError(f"alpha is too small: {alpha}, t={t}, kind={kind}")
-        return dalpha / alpha
