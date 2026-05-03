@@ -903,7 +903,7 @@ class EquivariantTransformerDataset_Alanine_Dipeptide(torch.utils.data.Dataset):
                 "x": (data.pos.unsqueeze(0)),
                 "num_atoms": torch.tensor([len(data.z)], dtype=torch.long),
                 'cell': (data.cell.unsqueeze(0)),
-                'cv': data.cv.unsqueeze(0), 
+                'cv': data.cv.unsqueeze(0)/2./torch.pi + torch.pi, 
                 "FreeEnergy": torch.tensor([[0.0]]),
                 'forces': data.forces.unsqueeze(0),
                 "mask": mask,
