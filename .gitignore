@@ -8,4 +8,7 @@ slurm-*
 *.xyz
 misc_notebooks/check*
 experiments
-*_cache
+*.model
+*.tgz
+.vscode
+.codex
