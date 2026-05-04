@@ -298,7 +298,7 @@ class Transport:
                 X, Y, Z = th.meshgrid(g, g, g, indexing='ij')
                 _x0_mean = th.stack([X.reshape(-1), Y.reshape(-1), Z.reshape(-1)], dim=1)[:N].unsqueeze(0).expand(T, -1, -1).unsqueeze(0).expand(B, -1, -1, -1)
             else:
-                _x0_mean = self.prior_mean.unsqueeze(0).expand(T, -1, -1).unsqueeze(0).expand(B, -1, -1, -1)
+                _x0_mean = self.prior_mean
             ### Uniform sample
             # _x0_mean = th.rand(shape, device=device)
             # x0.append(wrap_frac_pos(th.randn(shape, device=device)*self.args.x0std/(N)**(1./3.) + _x0_mean))
@@ -335,7 +335,7 @@ class Transport:
             _cell = cell * ((target_volume/volume)**(1./3.))[:,None,None]
             return _cell.view(*shape[:2], 3, 3)
         else:
-            return self.prior_cell.clone().unsqueeze(0).expand(T, -1, -1).unsqueeze(0).expand(B, -1, -1, -1)
+            return self.prior_cell.clone()
 
     def training_losses(
             self,

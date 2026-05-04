@@ -4,10 +4,10 @@ from mdgen.logger import get_logger
 logger = get_logger(__name__)
 
 import torch, os
-from mdgen.dataset import EquivariantTransformerDataset_MaterialProject
+from mdgen.dataset import EquivariantTransformerDataset_phasediagram
 from mdgen.dataset import BucketBatchSampler
 
-from mdgen.equivariant_wrapper import EquivariantMDGenWrapper
+from mdgen.fed_wrapper import EquivariantFEDWrapper
 from pytorch_lightning.callbacks import ModelCheckpoint, ModelSummary
 import pytorch_lightning as pl
 
@@ -30,8 +30,7 @@ torch.set_float32_matmul_precision('medium')
 # from torch.utils.data import ConcatDataset
 # from torch.utils.data import Subset
 
-train_dataset = EquivariantTransformerDataset_MaterialProject(args, species=[6], sim_condition=False, stage="train_withforces")
-args.mean_atomic_volume = train_dataset.mean_atomic_volume
+train_dataset = EquivariantTransformerDataset_phasediagram(args, species=[14, 8], sim_condition=False, stage="train")
 num_atoms_list = [int(max(train_dataset[i]["num_atoms"])) for i in range(len(train_dataset))]
 trainsampler = BucketBatchSampler(train_dataset, num_atoms_list, batch_size=args.batch_size)
 
@@ -39,7 +38,9 @@ if args.overfit:
     val_dataset = train_dataset
     valsampler = trainsampler
 else:
-    val_dataset = EquivariantTransformerDataset_MaterialProject(args.data_dir, args.cutoff, species=[6], sim_condition=False, stage="val_withforces")
+    val_dataset = EquivariantTransformerDataset_phasediagram(args.data_dir, species=[14, 8], sim_condition=False, stage="val")
+    num_atoms_list = [int(max(val_dataset[i]["num_atoms"])) for i in range(len(val_dataset))]
+    valsampler = BucketBatchSampler(val_dataset, num_atoms_list, batch_size=args.batch_size)
 
 train_loader = torch.utils.data.DataLoader(
     train_dataset,
@@ -67,7 +68,7 @@ val_loader = torch.utils.data.DataLoader(
 #     shuffle=True,
 # )
 device='cuda'
-model = EquivariantMDGenWrapper(args).to(device)
+model = EquivariantFEDWrapper(args).to(device)
 if args.ckpt is not None:
     checkpoint = torch.load(args.ckpt, weights_only=False, map_location=torch.device(device))
     model.load_state_dict(checkpoint["state_dict"], strict=False )

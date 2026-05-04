@@ -815,12 +815,12 @@ class EquivariantTransformerDataset_phasediagram(torch.utils.data.Dataset):
 
             idx_data = np.arange(len(dataset))
             np.random.shuffle(idx_data)
-            n_test = idx_data // 10
-            n_val = idx_data // 10
+            n_test = int(len(idx_data) // 10)
+            n_val = int(len(idx_data) // 10)
             test_idx = idx_data[:n_test]
             val_idx = idx_data[n_test:n_test+n_val]
             train_idx = idx_data[n_test+n_val:]
-            
+
             torch.save([dataset[i] for i in test_idx], f'{save_dir}/test.pt')
             torch.save([dataset[i] for i in val_idx], f'{save_dir}/val.pt')
             torch.save([dataset[i] for i in train_idx], f'{save_dir}/train.pt')
