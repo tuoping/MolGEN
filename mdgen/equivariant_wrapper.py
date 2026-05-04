@@ -346,9 +346,9 @@ class EquivariantMDGenWrapper(Wrapper):
         assert _ == 3, f"latents shape should be (B, T, D, 3), but got {latents.shape}"
         ########
         
-        if "TKS_mask" not in batch.keys():
-            batch['TKS_mask'] = torch.ones(B,T,L, dtype=int, device=species.device)
-            batch['TKS_v_mask'] = torch.ones(B,T,L,3, dtype=int, device=species.device)
+        if "inpainting_mask" not in batch.keys():
+            batch['inpainting_mask'] = torch.ones(B,T,L, dtype=int, device=species.device)
+            batch['inpainting_v_mask'] = torch.ones(B,T,L,3, dtype=int, device=species.device)
 
         if self.args.sim_condition:
             cond_mask_f = torch.zeros(B, T, L, dtype=int, device=species.device)
@@ -384,11 +384,11 @@ class EquivariantMDGenWrapper(Wrapper):
                 "species": species.to(_TORCH_FLOAT_PRECISION),
                 "latents": latents.to(_TORCH_FLOAT_PRECISION),
                 'E': batch['e_now'].to(_TORCH_FLOAT_PRECISION),
-                'loss_mask': batch["TKS_v_mask"]*cond_mask.unsqueeze(-1).to(_TORCH_FLOAT_PRECISION),
-                'loss_mask_potential_model': (batch["TKS_mask"]!=0).to(int)[:,:,0]*cond_mask[:,:,0],
+                'loss_mask': batch["inpainting_v_mask"]*cond_mask.unsqueeze(-1).to(_TORCH_FLOAT_PRECISION),
+                'loss_mask_potential_model': (batch["inpainting_mask"]!=0).to(int)[:,:,0]*cond_mask[:,:,0],
                 'model_kwargs': {
                     "x1": latents.to(_TORCH_FLOAT_PRECISION),
-                    'v_mask': (batch["TKS_v_mask"]!=0).to(int)*cond_mask.unsqueeze(-1),
+                    'v_mask': (batch["inpainting_v_mask"]!=0).to(int)*cond_mask.unsqueeze(-1),
                     "aatype": species.to(_TORCH_FLOAT_PRECISION),
                     "cell": batch['cell'].to(_TORCH_FLOAT_PRECISION),
                     "num_atoms": batch["num_atoms"],
@@ -415,11 +415,11 @@ class EquivariantMDGenWrapper(Wrapper):
             return {
                 "species": species.to(_TORCH_FLOAT_PRECISION),
                 "latents": latents.to(_TORCH_FLOAT_PRECISION),
-                'loss_mask': batch["TKS_v_mask"]*cond_mask.unsqueeze(-1).to(_TORCH_FLOAT_PRECISION),
-                'loss_mask_potential_model': (batch["TKS_mask"]!=0).to(int)[:,:,0]*cond_mask[:,:,0],
+                'loss_mask': batch["inpainting_v_mask"]*cond_mask.unsqueeze(-1).to(_TORCH_FLOAT_PRECISION),
+                'loss_mask_potential_model': (batch["inpainting_mask"]!=0).to(int)[:,:,0]*cond_mask[:,:,0],
                 'model_kwargs': {
                     "x1": latents[:,-1,...].unsqueeze(1).expand(B,T,L,3).to(_TORCH_FLOAT_PRECISION),
-                    'v_mask': (batch["TKS_v_mask"]!=0).to(int)*cond_mask.unsqueeze(-1),
+                    'v_mask': (batch["inpainting_v_mask"]!=0).to(int)*cond_mask.unsqueeze(-1),
                     "aatype": species.to(_TORCH_FLOAT_PRECISION),
                     "cell": batch['cell'].to(_TORCH_FLOAT_PRECISION),
                     "num_atoms": batch["num_atoms"],
