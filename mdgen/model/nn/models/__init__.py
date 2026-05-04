@@ -1,1 +1,0 @@
-from .gated_gcn import GatedGCN_Net

@@ -12,7 +12,7 @@ MolGEN initiates with a standard Gaussian distribution. Therefore, it also incor
 Please feel free to reach out to us at tuoping@berkeley.edu, liju@mit.edu with any questions.
 
 
-![algo.png](https://github.com/tuoping/MolGEN/blob/e3/algo_schematic.png)
+![algo.png](https://github.com/tuoping/MolGEN/blob/main/algo_schematic.png)
 
 ## Installation
 
@@ -84,6 +84,34 @@ python Transition1x-inference.py $ckpt_path $output_dir
 `)
 - For IRC calculations using Psi4, use `scripts/pydft-scripts/irc_*` 
 - `scripts/calculate_err_pyscf_alltrials.py` is the script for full postprocessing including the IRC calculations.
+
+## Model hyperparameters
+
+### Hyperparameters for constructing the equivariant messages
+
+| Symbol              | Shape / Value                                   |
+|---------------------|-------------------------------------------------|
+| $\nu_i$             | [ $N_{atoms}$, $N_{channels}$]       |
+| $\phi_k(r_{ji})$    | [ $N_{edges}$, $N_{channels}$, $N_{radial basis}$] |
+| $w_l(r_{ji})$       | [ $N_{edges}$, $N_{channels}$, $d_l$]  |
+| $Y_l(\hat r_{ji})$  | [ $N_{edges}$, $N_{channels}$, $2l + 1$] |
+| $\mathcal{M}(j,i)$  | [ $N_{edges}$, $N_{channels}$, $d_0 + d_1 \times 3 + d_2 \times 5$] |
+| $\mathbf{m}(j,i)$   | [ $N_{edges}$, $N_{channels}$, $d_0 + d_1 + d_2$] |
+| $N_{\text{channels}}$     | $128$                                      |
+| $N_{\text{radial basis}}$ | $96$                                       |
+| $d_0, d_1, d_2$     | $64, 48, 8$                                     |
+| $l_{\max}$          | $2$                                             |
+
+### Hyperparameters of the equivariant transformer
+
+| Name                         | Value |
+|------------------------------|-------|
+| Number of transformer layers | 6     |
+| Number of heads              | 8     |
+| $h$                        | 256   |
+| $h_s$                      | 768   |
+| Dimension of $\varphi_r$ | $[256, 256] * 8$          |
+| Dimension of FFN           | $[256 \times 2, 768, 256 \times 2]$ |
 
 
 ## License

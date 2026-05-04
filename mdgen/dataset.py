@@ -1,6 +1,4 @@
 import torch
-from .rigid_utils import Rigid
-from .residue_constants import restype_order
 import numpy as np
 import pandas as pd
 
