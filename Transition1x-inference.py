@@ -68,7 +68,7 @@ sample_batch = next(iter(val_loader))
 print(sample_batch.keys())
 print(dataset[499]["x"].shape)
 
-for key in ['species', 'x', 'cell', 'num_atoms', 'mask', 'v_mask', "TKS_mask", "TKS_v_mask", "fragments_idx"]:
+for key in ['species', 'x', 'cell', 'num_atoms', 'mask', 'v_mask', "inpainting_mask", "inpainting_v_mask", "fragments_idx"]:
     try:
         sample_batch[key] = sample_batch[key].to(device)
     except:
@@ -122,7 +122,7 @@ for i_rollout in range(0, len(idx_rollouts)):
         item = dataset.__getitem__(idx)
         batch = next(iter(torch.utils.data.DataLoader([item])))
 
-        for key in ['species', 'x', 'cell', 'num_atoms', 'mask', 'v_mask', "TKS_mask", "TKS_v_mask", "fragments_idx"]:
+        for key in ['species', 'x', 'cell', 'num_atoms', 'mask', 'v_mask', "inpainting_mask", "inpainting_v_mask", "fragments_idx"]:
             try:
                 batch[key] = batch[key].to(device)
             except:
