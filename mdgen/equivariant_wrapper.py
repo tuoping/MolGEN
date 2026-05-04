@@ -377,6 +377,7 @@ class EquivariantMDGenWrapper(Wrapper):
         else:
             conditional_batch = None
         if (self.args.tps_condition and conditional_batch):
+            ### TPS
             if self.score_model is not None:
                 raise Exception("Stochastic path is not implemented for tps_condition=True")
             return {
@@ -408,12 +409,12 @@ class EquivariantMDGenWrapper(Wrapper):
                 'conditional_batch': conditional_batch
             }
         elif (self.args.sim_condition and conditional_batch):
+            ### Forward prediction
             if self.score_model is not None:
                 raise Exception("Stochastic path is not implemented for sim_condition=True")
             return {
                 "species": species.to(_TORCH_FLOAT_PRECISION),
                 "latents": latents.to(_TORCH_FLOAT_PRECISION),
-                # 'E': batch['e_now'].to(_TORCH_FLOAT_PRECISION),
                 'loss_mask': batch["TKS_v_mask"]*cond_mask.unsqueeze(-1).to(_TORCH_FLOAT_PRECISION),
                 'loss_mask_potential_model': (batch["TKS_mask"]!=0).to(int)[:,:,0]*cond_mask[:,:,0],
                 'model_kwargs': {
@@ -429,16 +430,12 @@ class EquivariantMDGenWrapper(Wrapper):
                             "fragments_idx": batch['fragments_idx'][:,0,...].unsqueeze(1).expand(B,T,L).reshape(-1),
                             'mask': cond_mask_f[:,0,...].unsqueeze(1).expand(B,T,L).reshape(-1),          # Since only 1st configuration is inputed and cond_mask already masked the prediction only to the TPS, cond_mask_f here is a place_holder
                         },
-                        # 'cond_r':{
-                        #     'x': latents[:,-1,...].unsqueeze(1).expand(B,T,L,3).reshape(-1,3).to(_TORCH_FLOAT_PRECISION),
-                        #     "fragments_idx": batch['fragments_idx'][:,-1,...].unsqueeze(1).expand(B,T,L).reshape(-1),
-                        #     'mask': cond_mask_r[:,-1,...].unsqueeze(1).expand(B,T,L).reshape(-1),
-                        # }
                     }
                 },
                 'conditional_batch': conditional_batch
             }
         else:
+            ### Generic
             if self.score_model is None:
                 return {
                     "species": species.to(_TORCH_FLOAT_PRECISION),

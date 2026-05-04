@@ -749,6 +749,120 @@ class EquivariantTransformerDataset_MaterialProject(torch.utils.data.Dataset):
         }
     
 
+from deepmd.calculator import DP
+
+class EquivariantTransformerDataset_phasediagram(torch.utils.data.Dataset):
+    def __init__(self, args, species, localmask=False, sim_condition=False, stage="train", save_dir = None, sel_idx = None):
+        traj_dir = args.data_dir
+        cutoff = args.cutoff
+        temperature = 300
+        self.kT = temperature*8.617*10**-5
+        num_species = len(species)
+        self.num_species = num_species
+        type_map = {}
+        type_map = {}
+        for idx_e, e in enumerate(species):
+            type_map[idx_e+1] = e 
+
+        self.cutoff = cutoff
+
+        self.num_frames = 1
+        self.stage = stage
+        self.localmask = localmask
+        self.sim_condition = sim_condition
+
+        if self.stage == "save":    
+            self.calculator = DP(model="data/SiO2/DP_R2SCAN.pb")
+        
+            traj_filename = os.path.join(traj_dir, "dump.equi")
+            atoms_list = ase.io.read(traj_filename, index=":", format="lammps-dump-text")  
+            atom_encoder = OneHotEncoder(sparse_output=False)
+            atom_encoder.fit(np.array(species).reshape(-1,1))
+            
+            atoms_0 = ase.io.read(os.path.join(traj_dir, "final-config.vasp"))
+            inv_cell_0 = np.linalg.pinv(np.array(atoms_0.cell))
+            frac_pos_0 = atoms_0.positions @ inv_cell_0  - np.ones(3)*0.5
+
+            dataset = []
+            for i_atoms, atoms in enumerate(atoms_list):
+                atomic_species = [type_map[k] for k in atoms.get_atomic_numbers().astype(int)]
+                atoms.set_atomic_numbers(atomic_species)
+                atoms.calc = self.calculator
+                num_atoms = len(atoms)
+                atoms.wrap()   
+                inv_cell = np.linalg.pinv(np.array(atoms.cell))
+                z = atom_encoder.transform(atoms.numbers.reshape(-1, 1))
+                padded_z = np.zeros((num_atoms, num_species))
+                padded_z[:, :z.shape[1]] = z
+                num_atoms = len(atoms)
+                data = Data(
+                    z          = torch.tensor(padded_z,               dtype=torch.float32),
+                    num_atoms = torch.tensor(num_atoms, dtype=torch.long),
+
+                    # pos        = torch.tensor(atoms.positions - np.ones(3)*0.5 @ atoms.cell, dtype=torch.float32),
+                    cell       = torch.tensor(np.array(atoms.cell), dtype=torch.float32),
+                    frac_pos = torch.tensor(atoms.positions @ inv_cell - np.ones(3)*0.5, dtype=torch.float32),
+
+                    forces     = torch.tensor(atoms.get_forces(), dtype=torch.float32),
+                    E_formation = None,
+                    E_above_hull = None,
+                    E = torch.tensor(atoms.get_potential_energy(), dtype=torch.float32),
+
+                    cell_0 = torch.tensor(np.array(atoms_0.cell), dtype=torch.float32),
+                    frac_pos_0 = torch.tensor(frac_pos_0, dtype=torch.float32)
+                )
+                dataset.append(data.clone())
+
+            idx_data = np.arange(len(dataset))
+            np.random.shuffle(idx_data)
+            n_test = idx_data // 10
+            n_val = idx_data // 10
+            torch.save(dataset[idx_data[:n_test]], f'{save_dir}/test.pt')
+            torch.save(dataset[idx_data[n_test:n_test+n_val]], f'{save_dir}/val.pt')
+            torch.save(dataset[idx_data[n_test+n_val:]], f'{save_dir}/train.pt')
+        else:
+            self.all_dataset = torch.load(os.path.join(traj_dir, f"{stage}.pt"), weights_only=False)
+
+
+    def __len__(self):
+        return len(self.all_dataset)
+    
+    def __getitem__(self, idx):
+        idx = idx % len(self.all_dataset)
+        dataset = [self.all_dataset[idx]]
+        x = torch.stack([data.frac_pos for data in dataset]) % 1
+        x0 = torch.stack([data.frac_pos_0 for data in dataset]) % 1
+        assert torch.all(x>=0)
+        assert torch.all(x<=1)
+        T,L,_ = x.shape
+            
+        _mask = torch.ones([T,L]) # T,L
+        _v_mask = _mask.unsqueeze(-1).expand(-1,-1,3) # T,L,3
+        _h_mask = _mask.unsqueeze(-1).expand(-1,-1,self.num_species) # T,L,num_species
+
+
+        if self.localmask:
+            raise Exception("Yet to implement localmask")
+        else:
+            mask = _mask
+            v_mask = _v_mask
+            h_mask = _h_mask
+
+        return {
+            "name": "Material Project",
+            "species": torch.stack([data.z for data in dataset]),
+            "x": x,
+            "x0": x0,
+            "forces": torch.stack([data.forces for data in dataset]),
+            "cell": torch.stack([data.cell for data in dataset]),
+            "cell0": torch.stack([data.cell_0 for data in dataset]),
+            "num_atoms": torch.stack([data.num_atoms for data in dataset]),
+            "mask": mask,
+            "v_mask": v_mask,
+            "h_mask": h_mask,
+        }
+    
+
 class EquivariantTransformerDataset_Transition1x(torch.utils.data.Dataset):
     def __init__(self, data_dirname, num_species=5, sim_condition=False, tps_condition=True, stage="train"):
         temperature = 300
