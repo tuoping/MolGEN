@@ -350,127 +350,28 @@ class EquivariantMDGenWrapper(Wrapper):
             batch['inpainting_mask'] = torch.ones(B,T,L, dtype=int, device=species.device)
             batch['inpainting_v_mask'] = torch.ones(B,T,L,3, dtype=int, device=species.device)
 
-        if self.args.sim_condition:
-            cond_mask_f = torch.zeros(B, T, L, dtype=int, device=species.device)
-            cond_mask = torch.zeros(B, T, L, dtype=int, device=species.device)
-            cond_mask_f[:, 0] = 1
-            cond_mask[:, -1] = 1
-            if self.stage == "inference":
-                conditional_batch = True
-            else:
-                conditional_batch = torch.rand(1)[0] >= 1-self.args.ratio_conditonal
-                # conditional_batch = True
-
-        elif self.args.tps_condition:
-            cond_mask_f = torch.zeros(B, T, L, dtype=int, device=species.device)
-            cond_mask_r = torch.zeros(B, T, L, dtype=int, device=species.device)
-            cond_mask = torch.zeros(B, T, L, dtype=int, device=species.device)
-            cond_mask_f[:, 0] = 1
-            cond_mask_r[:, -1] = 1
-            cond_mask[:, 1:-1] = 1
-            if self.stage == "inference":
-                conditional_batch = True
-            else:
-                conditional_batch = torch.rand(1)[0] >= 1-self.args.ratio_conditonal
-                # conditional_batch = True
-
-        else:
-            conditional_batch = None
-        if (self.args.tps_condition and conditional_batch):
-            ### TPS
-            if self.score_model is not None:
-                raise Exception("Stochastic path is not implemented for tps_condition=True")
-            return {
+        conditional_batch = None
+        data = {
                 "species": species.to(_TORCH_FLOAT_PRECISION),
                 "latents": latents.to(_TORCH_FLOAT_PRECISION),
-                'E': batch['e_now'].to(_TORCH_FLOAT_PRECISION),
-                'loss_mask': batch["inpainting_v_mask"]*cond_mask.unsqueeze(-1).to(_TORCH_FLOAT_PRECISION),
-                'loss_mask_potential_model': (batch["inpainting_mask"]!=0).to(int)[:,:,0]*cond_mask[:,:,0],
+                'loss_mask': v_loss_mask.to(_TORCH_FLOAT_PRECISION),
                 'model_kwargs': {
-                    "x1": latents.to(_TORCH_FLOAT_PRECISION),
-                    'v_mask': (batch["inpainting_v_mask"]!=0).to(int)*cond_mask.unsqueeze(-1),
+                    # "cv": batch['cv'].to(_TORCH_FLOAT_PRECISION),
+                    "cv": None,
                     "aatype": species.to(_TORCH_FLOAT_PRECISION),
+                    'x1': latents.to(_TORCH_FLOAT_PRECISION),
+                    'v_mask': (v_loss_mask!=0).to(int),
                     "cell": batch['cell'].to(_TORCH_FLOAT_PRECISION),
                     "num_atoms": batch["num_atoms"],
-                    "fragments_idx": batch['fragments_idx'],
-                    "conditions": {
-                        'cond_f':{
-                            'x': latents[:,0,...].unsqueeze(1).expand(B,T,L,3).reshape(-1,3).to(_TORCH_FLOAT_PRECISION),             # Only using the 1st configuration as cond_f
-                            "fragments_idx": batch['fragments_idx'][:,0,...].unsqueeze(1).expand(B,T,L).reshape(-1),
-                            'mask': cond_mask_f[:,0,...].unsqueeze(1).expand(B,T,L).reshape(-1),          # Since only 1st configuration is inputed and cond_mask already masked the prediction only to the TPS, cond_mask_f here is a place_holder
-                        },
-                        'cond_r':{
-                            'x': latents[:,-1,...].unsqueeze(1).expand(B,T,L,3).reshape(-1,3).to(_TORCH_FLOAT_PRECISION),
-                            "fragments_idx": batch['fragments_idx'][:,-1,...].unsqueeze(1).expand(B,T,L).reshape(-1),
-                            'mask': cond_mask_r[:,-1,...].unsqueeze(1).expand(B,T,L).reshape(-1),
-                        }
-                    }
+                    "conditions": None
                 },
                 'conditional_batch': conditional_batch
             }
-        elif (self.args.sim_condition and conditional_batch):
-            ### Forward prediction
-            if self.score_model is not None:
-                raise Exception("Stochastic path is not implemented for sim_condition=True")
-            return {
-                "species": species.to(_TORCH_FLOAT_PRECISION),
-                "latents": latents.to(_TORCH_FLOAT_PRECISION),
-                'loss_mask': batch["inpainting_v_mask"]*cond_mask.unsqueeze(-1).to(_TORCH_FLOAT_PRECISION),
-                'loss_mask_potential_model': (batch["inpainting_mask"]!=0).to(int)[:,:,0]*cond_mask[:,:,0],
-                'model_kwargs': {
-                    "x1": latents[:,-1,...].unsqueeze(1).expand(B,T,L,3).to(_TORCH_FLOAT_PRECISION),
-                    'v_mask': (batch["inpainting_v_mask"]!=0).to(int)*cond_mask.unsqueeze(-1),
-                    "aatype": species.to(_TORCH_FLOAT_PRECISION),
-                    "cell": batch['cell'].to(_TORCH_FLOAT_PRECISION),
-                    "num_atoms": batch["num_atoms"],
-                    "fragments_idx": batch['fragments_idx'],
-                    "conditions": {
-                        'cond_f':{
-                            'x': latents[:,0,...].unsqueeze(1).expand(B,T,L,3).reshape(-1,3).to(_TORCH_FLOAT_PRECISION),             # Only using the 1st configuration as cond_f
-                            "fragments_idx": batch['fragments_idx'][:,0,...].unsqueeze(1).expand(B,T,L).reshape(-1),
-                            'mask': cond_mask_f[:,0,...].unsqueeze(1).expand(B,T,L).reshape(-1),          # Since only 1st configuration is inputed and cond_mask already masked the prediction only to the TPS, cond_mask_f here is a place_holder
-                        },
-                    }
-                },
-                'conditional_batch': conditional_batch
-            }
-        else:
-            ### Generic
-            if self.score_model is None:
-                return {
-                    "species": species.to(_TORCH_FLOAT_PRECISION),
-                    "latents": latents.to(_TORCH_FLOAT_PRECISION),
-                    'loss_mask': v_loss_mask.to(_TORCH_FLOAT_PRECISION),
-                    'model_kwargs': {
-                        # "cv": batch['cv'].to(_TORCH_FLOAT_PRECISION),
-                        "cv": None,
-                        "aatype": species.to(_TORCH_FLOAT_PRECISION),
-                        'x1': latents.to(_TORCH_FLOAT_PRECISION),
-                        'v_mask': (v_loss_mask!=0).to(int),
-                        "cell": batch['cell'].to(_TORCH_FLOAT_PRECISION),
-                        "num_atoms": batch["num_atoms"],
-                        "conditions": None
-                    },
-                    'conditional_batch': conditional_batch
-                }
-            else:
-                return {
-                    "species": species.to(_TORCH_FLOAT_PRECISION),
-                    "latents": latents.to(_TORCH_FLOAT_PRECISION),
-                    'loss_mask': v_loss_mask.to(_TORCH_FLOAT_PRECISION),
-                    'forces': batch['forces'].to(_TORCH_FLOAT_PRECISION),
-                    'model_kwargs': {
-                        # "cv": batch['cv'].to(_TORCH_FLOAT_PRECISION),
-                        "cv": None,
-                        "aatype": species.to(_TORCH_FLOAT_PRECISION),
-                        'x1': latents.to(_TORCH_FLOAT_PRECISION),
-                        'v_mask': (v_loss_mask!=0).to(int),
-                        "cell": batch['cell'].to(_TORCH_FLOAT_PRECISION),
-                        "num_atoms": batch["num_atoms"],
-                        "conditions": None
-                    },
-                    'conditional_batch': conditional_batch
-                }
+        
+        if self.score_model is not None:
+            data["forces"] = batch['forces'].to(_TORCH_FLOAT_PRECISION)
+
+        return data
     
     def general_step(self, batch, stage='train'):
         self.iter_step += 1
