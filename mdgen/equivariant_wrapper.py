@@ -344,66 +344,8 @@ class EquivariantMDGenWrapper(Wrapper):
 
         else:
             conditional_batch = None
-        if (self.args.tps_condition and conditional_batch):
-            return {
-                "species": species.to(_TORCH_FLOAT_PRECISION),
-                "latents": latents.to(_TORCH_FLOAT_PRECISION),
-                'E': batch['e_now'].to(_TORCH_FLOAT_PRECISION),
-                'loss_mask': batch["TKS_v_mask"]*cond_mask.unsqueeze(-1).to(_TORCH_FLOAT_PRECISION),
-                'loss_mask_potential_model': (batch["TKS_mask"]!=0).to(int)[:,:,0]*cond_mask[:,:,0],
-                'model_kwargs': {
-                    "x1": latents.to(_TORCH_FLOAT_PRECISION),
-                    'v_mask': (batch["TKS_v_mask"]!=0).to(int)*cond_mask.unsqueeze(-1),
-                    "aatype": species.to(_TORCH_FLOAT_PRECISION),
-                    "cell": batch['cell'].to(_TORCH_FLOAT_PRECISION),
-                    "num_atoms": batch["num_atoms"],
-                    "fragments_idx": batch['fragments_idx'],
-                    "conditions": {
-                        'cond_f':{
-                            'x': latents[:,0,...].unsqueeze(1).expand(B,T,L,3).reshape(-1,3).to(_TORCH_FLOAT_PRECISION),             # Only using the 1st configuration as cond_f
-                            "fragments_idx": batch['fragments_idx'][:,0,...].unsqueeze(1).expand(B,T,L).reshape(-1),
-                            'mask': cond_mask_f[:,0,...].unsqueeze(1).expand(B,T,L).reshape(-1),          # Since only 1st configuration is inputed and cond_mask already masked the prediction only to the TPS, cond_mask_f here is a place_holder
-                        },
-                        'cond_r':{
-                            'x': latents[:,-1,...].unsqueeze(1).expand(B,T,L,3).reshape(-1,3).to(_TORCH_FLOAT_PRECISION),
-                            "fragments_idx": batch['fragments_idx'][:,-1,...].unsqueeze(1).expand(B,T,L).reshape(-1),
-                            'mask': cond_mask_r[:,-1,...].unsqueeze(1).expand(B,T,L).reshape(-1),
-                        }
-                    }
-                },
-                'conditional_batch': conditional_batch
-            }
-        elif (self.args.sim_condition and conditional_batch):
-            return {
-                "species": species.to(_TORCH_FLOAT_PRECISION),
-                "latents": latents.to(_TORCH_FLOAT_PRECISION),
-                # 'E': batch['e_now'].to(_TORCH_FLOAT_PRECISION),
-                'loss_mask': batch["TKS_v_mask"]*cond_mask.unsqueeze(-1).to(_TORCH_FLOAT_PRECISION),
-                'loss_mask_potential_model': (batch["TKS_mask"]!=0).to(int)[:,:,0]*cond_mask[:,:,0],
-                'model_kwargs': {
-                    "x1": latents[:,-1,...].unsqueeze(1).expand(B,T,L,3).to(_TORCH_FLOAT_PRECISION),
-                    'v_mask': (batch["TKS_v_mask"]!=0).to(int)*cond_mask.unsqueeze(-1),
-                    "aatype": species.to(_TORCH_FLOAT_PRECISION),
-                    "cell": batch['cell'].to(_TORCH_FLOAT_PRECISION),
-                    "num_atoms": batch["num_atoms"],
-                    "fragments_idx": batch['fragments_idx'],
-                    "conditions": {
-                        'cond_f':{
-                            'x': latents[:,0,...].unsqueeze(1).expand(B,T,L,3).reshape(-1,3).to(_TORCH_FLOAT_PRECISION),             # Only using the 1st configuration as cond_f
-                            "fragments_idx": batch['fragments_idx'][:,0,...].unsqueeze(1).expand(B,T,L).reshape(-1),
-                            'mask': cond_mask_f[:,0,...].unsqueeze(1).expand(B,T,L).reshape(-1),          # Since only 1st configuration is inputed and cond_mask already masked the prediction only to the TPS, cond_mask_f here is a place_holder
-                        },
-                        # 'cond_r':{
-                        #     'x': latents[:,-1,...].unsqueeze(1).expand(B,T,L,3).reshape(-1,3).to(_TORCH_FLOAT_PRECISION),
-                        #     "fragments_idx": batch['fragments_idx'][:,-1,...].unsqueeze(1).expand(B,T,L).reshape(-1),
-                        #     'mask': cond_mask_r[:,-1,...].unsqueeze(1).expand(B,T,L).reshape(-1),
-                        # }
-                    }
-                },
-                'conditional_batch': conditional_batch
-            }
-        else:
-            return {
+
+        data = {
                 "species": species.to(_TORCH_FLOAT_PRECISION),
                 "latents": latents.to(_TORCH_FLOAT_PRECISION),
                 'loss_mask': v_loss_mask.to(_TORCH_FLOAT_PRECISION),
@@ -418,6 +360,30 @@ class EquivariantMDGenWrapper(Wrapper):
                 },
                 'conditional_batch': conditional_batch
             }
+        
+        if (self.args.tps_condition and conditional_batch):
+            data["conditions"] = {
+                        'cond_f':{
+                            'x': latents[:,0,...].unsqueeze(1).expand(B,T,L,3).reshape(-1,3).to(_TORCH_FLOAT_PRECISION),             # Only using the 1st configuration as cond_f
+                            "fragments_idx": batch['fragments_idx'][:,0,...].unsqueeze(1).expand(B,T,L).reshape(-1),
+                            'mask': cond_mask_f[:,0,...].unsqueeze(1).expand(B,T,L).reshape(-1),          # Since only 1st configuration is inputed and cond_mask already masked the prediction only to the TPS, cond_mask_f here is a place_holder
+                        },
+                        'cond_r':{
+                            'x': latents[:,-1,...].unsqueeze(1).expand(B,T,L,3).reshape(-1,3).to(_TORCH_FLOAT_PRECISION),
+                            "fragments_idx": batch['fragments_idx'][:,-1,...].unsqueeze(1).expand(B,T,L).reshape(-1),
+                            'mask': cond_mask_r[:,-1,...].unsqueeze(1).expand(B,T,L).reshape(-1),
+                        }
+                    }
+        elif (self.args.sim_condition and conditional_batch):
+            data["conditions"] = {
+                        'cond_f':{
+                            'x': latents[:,0,...].unsqueeze(1).expand(B,T,L,3).reshape(-1,3).to(_TORCH_FLOAT_PRECISION),             # Only using the 1st configuration as cond_f
+                            "fragments_idx": batch['fragments_idx'][:,0,...].unsqueeze(1).expand(B,T,L).reshape(-1),
+                            'mask': cond_mask_f[:,0,...].unsqueeze(1).expand(B,T,L).reshape(-1),          # Since only 1st configuration is inputed and cond_mask already masked the prediction only to the TPS, cond_mask_f here is a place_holder
+                        }
+                    }
+
+        return data
     
     def general_step(self, batch, stage='train'):
         self.iter_step += 1
