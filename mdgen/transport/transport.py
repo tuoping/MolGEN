@@ -369,13 +369,14 @@ class Transport:
         ### normal sampler of t
         t, x0, x0_mean = self.sample(x1.shape, x1.device)
         ### OT in the atom number dimension
-        x1 = x1.view(B*T, N, C)
-        model_kwargs['x1'] = model_kwargs['x1'].view(B*T, N, C)
-        assignment = hungarian_over_L(th.cdist(x0[0].view(B*T, N, C), x1))
-        x1 = x1[th.arange(B).unsqueeze(1).expand(B, N), assignment]
-        model_kwargs['x1'] = model_kwargs['x1'][th.arange(B).unsqueeze(1).expand(B, N), assignment]
-        x1 = x1.view(B, T, N, C)
-        model_kwargs['x1'] = model_kwargs['x1'].view(B, T, N, C)
+        if self.prior_mean is None:
+            x1 = x1.view(B*T, N, C)
+            model_kwargs['x1'] = model_kwargs['x1'].view(B*T, N, C)
+            assignment = hungarian_over_L(th.cdist(x0[0].view(B*T, N, C), x1))
+            x1 = x1[th.arange(B).unsqueeze(1).expand(B, N), assignment]
+            model_kwargs['x1'] = model_kwargs['x1'][th.arange(B).unsqueeze(1).expand(B, N), assignment]
+            x1 = x1.view(B, T, N, C)
+            model_kwargs['x1'] = model_kwargs['x1'].view(B, T, N, C)
         
         ### OT in the batch dimension
         # # Flatten each sample's atom features into a single vector: (B*T, N*C)
