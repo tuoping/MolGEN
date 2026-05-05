@@ -38,7 +38,7 @@ if args.overfit:
     val_dataset = train_dataset
     valsampler = trainsampler
 else:
-    val_dataset = EquivariantTransformerDataset_phasediagram(args.data_dir, species=[14, 8], sim_condition=False, stage="val")
+    val_dataset = EquivariantTransformerDataset_phasediagram(args, species=[14, 8], sim_condition=False, stage="val")
     num_atoms_list = [int(max(val_dataset[i]["num_atoms"])) for i in range(len(val_dataset))]
     valsampler = BucketBatchSampler(val_dataset, num_atoms_list, batch_size=args.batch_size)
 
