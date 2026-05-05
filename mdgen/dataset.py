@@ -1,6 +1,4 @@
 import torch
-from .rigid_utils import Rigid
-from .residue_constants import restype_order
 import numpy as np
 import pandas as pd
 
@@ -749,7 +747,7 @@ class EquivariantTransformerDataset_MaterialProject(torch.utils.data.Dataset):
         }
     
 
-from deepmd.calculator import DP
+# from deepmd.calculator import DP
 
 class EquivariantTransformerDataset_phasediagram(torch.utils.data.Dataset):
     def __init__(self, args, species, localmask=False, sim_condition=False, stage="train", save_dir = None, sel_idx = None):
