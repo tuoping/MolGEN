@@ -296,12 +296,18 @@ class EquivariantMDGenWrapper(Wrapper):
             return self.prep_batch_x(batch)
 
     def prep_batch_species(self, batch):
-        species = batch["species"]
+        B, T, L, num_elem = batch['species'].shape
+        if self.args.num_species == num_elem:
+            species = batch["species"]
+        elif self.args.num_species < num_elem:
+            raise Exception(f"num_species parameter too small, should be no less than {num_elem}")
+        else:
+            species = torch.empty((B, T, L, 5), dtype=batch['species'].dtype, device=batch['species'].device)
+            species[:, :3] = batch['species']
+            species[:, 3:] = 0.
+
         latents = batch["species"]
         x_now = batch["x"]
-    
-        B, T, L, num_elem = species.shape
-
         
         if self.args.design:
             loss_mask = batch["mask"]
@@ -310,9 +316,7 @@ class EquivariantMDGenWrapper(Wrapper):
         else:
             v_loss_mask = batch["v_mask"]
             loss_mask = v_loss_mask
-
-
-        B, T, L, _ = latents.shape
+            
         assert _ == self.args.num_species, f"latents shape should be (B, T, D, self.args.num_species), but got {latents.shape}"
         ########
         cond_mask = torch.zeros(B, T, L, dtype=int, device=species.device)
