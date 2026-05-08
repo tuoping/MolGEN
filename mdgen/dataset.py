@@ -747,7 +747,11 @@ class EquivariantTransformerDataset_MaterialProject(torch.utils.data.Dataset):
         }
     
 
-# from deepmd.calculator import DP
+try:
+    from deepmd.calculator import DP
+    HAS_DEEPMD = True
+except ImportError:
+    pass
 
 class EquivariantTransformerDataset_phasediagram(torch.utils.data.Dataset):
     def __init__(self, args, species, localmask=False, sim_condition=False, stage="train", save_dir = None, sel_idx = None):
