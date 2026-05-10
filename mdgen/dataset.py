@@ -704,7 +704,7 @@ class EquivariantTransformerDataset_MaterialProject(torch.utils.data.Dataset):
                 data = _all_dataset[j]
                 N = data.pos.shape[0]
                 assert data.pos.shape == (N,3)
-                if N == 8:
+                if N <= 32:
                     self.all_dataset.append(data)
             print( f"Training over {len(self.all_dataset)} * samples; Training database size = {len(_all_dataset)}")
 

@@ -131,6 +131,34 @@ def grad_log_normal_iso_3d(x, mu=0, sigma=1):
     return path.compute_weighted((x-mu).view(B*T,N,3), 1/sigma, f_dx_k)
 
 
+def latin_hypercube_torch(
+    B: int,
+    N: int,
+    d: int,
+    device,
+    dtype=th.float,
+):
+    """
+    Centered Latin hypercube sampling in [0, 1]^d.
+    No jitter: each point lies exactly at the center of a bin.
+
+    Returns:
+        X: tensor of shape (N, d)
+    """
+    # random keys: one independent permutation for each batch and dimension
+    keys = th.rand(
+        B, d, N,
+        device=device,
+    )
+
+    # argsort gives permutations of 0, ..., N-1
+    perms = th.argsort(keys, dim=-1)  # shape: (batch_size, d, N)
+
+    # transpose to point-major layout: (batch_size, N, d)
+    X = (perms.transpose(1, 2).to(dtype) + 0.5) / N
+
+    return X
+
 @th.no_grad()
 def lattice_polar_build_torch(k):
     assert k.dim() == 2, "input must be batched k of shape (B,6)"
@@ -290,13 +318,16 @@ class Transport:
         x0_mean = []
         for i in range(1):
             ### Even sample
-            m = math.ceil(N ** (1/3))
-            g = (th.arange(m, device=device) + 0.5) / m
-            X, Y, Z = th.meshgrid(g, g, g, indexing='ij')
-            _x0_mean = th.stack([X.reshape(-1), Y.reshape(-1), Z.reshape(-1)], dim=1)[:N].unsqueeze(0).expand(T, -1, -1).unsqueeze(0).expand(B, -1, -1, -1)
+            # m = math.ceil(N ** (1/3))
+            # g = (th.arange(m, device=device) + 0.5) / m
+            # X, Y, Z = th.meshgrid(g, g, g, indexing='ij')
+            # _x0_mean = th.stack([X.reshape(-1), Y.reshape(-1), Z.reshape(-1)], dim=1)[:N].unsqueeze(0).expand(T, -1, -1).unsqueeze(0).expand(B, -1, -1, -1) - 0.5
+            ### Latin hypercube sample
+            _x0_mean = latin_hypercube_torch(B*T, N, C, device).view(B,T,N,C)
             ### Uniform sample
             # _x0_mean = th.rand(shape, device=device)
             # x0.append(wrap_frac_pos(th.randn(shape, device=device)*self.args.x0std/(N)**(1./3.) + _x0_mean))
+
             x0.append(th.randn(shape, device=device)*self.args.x0std/(N)**(1./3.) + _x0_mean)
             x0_mean.append(_x0_mean)
         
@@ -366,7 +397,7 @@ class Transport:
         model_kwargs['x1'] = model_kwargs['x1'][th.arange(B).unsqueeze(1).expand(B, N), assignment]
         x1 = x1.view(B, T, N, C)
         model_kwargs['x1'] = model_kwargs['x1'].view(B, T, N, C)
-        
+
         ### OT in the batch dimension
         # # Flatten each sample's atom features into a single vector: (B*T, N*C)
         # x0_flat = x0[0].view(B*T, N, C).reshape(B*T, N*C)
