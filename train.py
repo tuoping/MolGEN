@@ -82,8 +82,8 @@ callbacks_fn = [
     # ),
     ModelCheckpoint(
         dirpath=os.environ["MODEL_DIR"], 
-        filename="{epoch:03d}-{step:07d}-{val_loss_path:.4f}",
-        monitor="val_loss_path",
+        filename="{epoch:03d}-{step:07d}-{val_loss:.4f}",
+        monitor="val_loss",
         save_top_k=1,
         save_last=True
     ),
