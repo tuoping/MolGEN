@@ -268,6 +268,8 @@ class Transport:
         self.sample_eps = sample_eps
         self.score_model = score_model
         self.latt_path = latt_path
+        self.prior_mean = None
+        self.prior_cell = None
 
     def prior_logp(self, z):
         '''
@@ -317,16 +319,18 @@ class Transport:
         x0 = []
         x0_mean = []
         for i in range(1):
-            ### Even sample
-            # m = math.ceil(N ** (1/3))
-            # g = (th.arange(m, device=device) + 0.5) / m
-            # X, Y, Z = th.meshgrid(g, g, g, indexing='ij')
-            # _x0_mean = th.stack([X.reshape(-1), Y.reshape(-1), Z.reshape(-1)], dim=1)[:N].unsqueeze(0).expand(T, -1, -1).unsqueeze(0).expand(B, -1, -1, -1) - 0.5
-            ### Latin hypercube sample
-            _x0_mean = latin_hypercube_torch(B*T, N, C, device).view(B,T,N,C)
-            ### Uniform sample
-            # _x0_mean = th.rand(shape, device=device)
-            # x0.append(wrap_frac_pos(th.randn(shape, device=device)*self.args.x0std/(N)**(1./3.) + _x0_mean))
+            if self.prior_mean is None:
+                ### Even sample
+                # m = math.ceil(N ** (1/3))
+                # g = (th.arange(m, device=device) + 0.5) / m
+                # X, Y, Z = th.meshgrid(g, g, g, indexing='ij')
+                # _x0_mean = th.stack([X.reshape(-1), Y.reshape(-1), Z.reshape(-1)], dim=1)[:N].unsqueeze(0).expand(T, -1, -1).unsqueeze(0).expand(B, -1, -1, -1)
+                ### Latin hypercube sample
+                _x0_mean = latin_hypercube_torch(B*T, N, C, device).view(B,T,N,C)
+                ### Uniform sample
+                # _x0_mean = th.rand(shape, device=device)
+            else:
+                _x0_mean = self.prior_mean
 
             x0.append(th.randn(shape, device=device)*self.args.x0std/(N)**(1./3.) + _x0_mean)
             x0_mean.append(_x0_mean)
@@ -345,18 +349,23 @@ class Transport:
           Args:
             x1 - data point; [batch, *dim]
         """
-        num_atoms = shape[2]
-        mu = th.zeros(*shape[:2], 6)
-        mu[:,:,-1] = 1.
-        sigma = 0.1
-        k = th.normal(mu, sigma).to(device)
-        cell = lattice_polar_build_torch(k.reshape(-1, 6)).reshape(-1, 3, 3)
-        volume = (cell[:,0] * th.cross(cell[:,1], cell[:,2], dim=1)).sum(dim=-1)
-        target_volume = num_atoms * self.mean_atomic_volume * th.ones_like(volume)
-        # residual_k = (th.log(target_volume) - th.log(volume))/3
-        # return k.reshape(-1, 6) + residual_k[:,None]
-        _cell = cell * ((target_volume/volume)**(1./3.))[:,None,None]
-        return _cell.view(*shape[:2], 3, 3)
+        B = shape[0]
+        T = shape[1]
+        if self.prior_cell is None:
+            num_atoms = shape[2]
+            mu = th.zeros(*shape[:2], 6)
+            mu[:,:,-1] = 1.
+            sigma = 0.1
+            k = th.normal(mu, sigma).to(device)
+            cell = lattice_polar_build_torch(k.reshape(-1, 6)).reshape(-1, 3, 3)
+            volume = (cell[:,0] * th.cross(cell[:,1], cell[:,2], dim=1)).sum(dim=-1)
+            target_volume = num_atoms * self.mean_atomic_volume * th.ones_like(volume)
+            # residual_k = (th.log(target_volume) - th.log(volume))/3
+            # return k.reshape(-1, 6) + residual_k[:,None]
+            _cell = cell * ((target_volume/volume)**(1./3.))[:,None,None]
+            return _cell.view(*shape[:2], 3, 3)
+        else:
+            return self.prior_cell.clone()
 
     def training_losses(
             self,
@@ -390,6 +399,7 @@ class Transport:
         ### normal sampler of t
         t, x0, x0_mean = self.sample(x1.shape, x1.device)
         ### OT in the atom number dimension
+<<<<<<< HEAD
         x1 = x1.view(B*T, N, C)
         model_kwargs['x1'] = model_kwargs['x1'].view(B*T, N, C)
         assignment = hungarian_over_L(th.cdist(x0[0].view(B*T, N, C), x1))
@@ -398,6 +408,17 @@ class Transport:
         x1 = x1.view(B, T, N, C)
         model_kwargs['x1'] = model_kwargs['x1'].view(B, T, N, C)
 
+=======
+        if self.prior_mean is None:
+            x1 = x1.view(B*T, N, C)
+            model_kwargs['x1'] = model_kwargs['x1'].view(B*T, N, C)
+            assignment = hungarian_over_L(th.cdist(x0[0].view(B*T, N, C), x1))
+            x1 = x1[th.arange(B).unsqueeze(1).expand(B, N), assignment]
+            model_kwargs['x1'] = model_kwargs['x1'][th.arange(B).unsqueeze(1).expand(B, N), assignment]
+            x1 = x1.view(B, T, N, C)
+            model_kwargs['x1'] = model_kwargs['x1'].view(B, T, N, C)
+        
+>>>>>>> e85296f72ca06b130cfb81a9d76995bbc94df339
         ### OT in the batch dimension
         # # Flatten each sample's atom features into a single vector: (B*T, N*C)
         # x0_flat = x0[0].view(B*T, N, C).reshape(B*T, N*C)

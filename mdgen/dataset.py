@@ -1,6 +1,4 @@
 import torch
-from .rigid_utils import Rigid
-from .residue_constants import restype_order
 import numpy as np
 import pandas as pd
 
@@ -302,7 +300,7 @@ class EquivariantTransformerDataset_CrCoNi(torch.utils.data.Dataset):
             # assert _RDF[0].shape == (2,35)
             act_space = torch.from_numpy(np.loadtxt(self.traj_act_space[idx])).to(torch.long)
             LSS_reward_pool = torch.stack([data.E_now for data in _dataset])
-            TKS_reward_pool = torch.stack([data.E_barrier-data.freq*self.kT for data in _dataset])
+            inpainting_reward_pool = torch.stack([data.E_barrier-data.freq*self.kT for data in _dataset])
             if start_i_traj is None:
                 if self.random_starting_point:
                     start_i_traj = np.random.randint(0, len(_dataset)-self.num_frames-1, 1)[0]
@@ -316,7 +314,7 @@ class EquivariantTransformerDataset_CrCoNi(torch.utils.data.Dataset):
             num_atoms = dataset[0].num_atoms
             LSS_reward = torch.stack([data.E_now for data in dataset]) # T
             if self.sim_condition:
-                TKS_reward = torch.stack([-data.E_barrier+data.freq*self.kT for data in dataset])  # T
+                inpainting_reward = torch.stack([-data.E_barrier+data.freq*self.kT for data in dataset])  # T
                 
 
             x = torch.stack([data.pos for data in dataset])
@@ -325,15 +323,15 @@ class EquivariantTransformerDataset_CrCoNi(torch.utils.data.Dataset):
             ### Normalize over each trajectory
             log_mask = -LSS_reward - torch.logsumexp(-LSS_reward_pool, dim=0)
             if self.sim_condition:
-                TKS_log_mask = -TKS_reward - torch.logsumexp(-TKS_reward_pool, dim=0) 
+                inpainting_log_mask = -inpainting_reward - torch.logsumexp(-inpainting_reward_pool, dim=0) 
                 
             _mask = torch.exp(log_mask)[:,None] # T,L
             _v_mask = _mask.unsqueeze(-1).expand(-1,-1,3) # T,L,3
             _h_mask = _mask.unsqueeze(-1).expand(-1,-1,self.num_species) # T,L,num_species
             if self.sim_condition:
-                _TKS_mask = torch.exp(TKS_log_mask)[:,None]
-                _TKS_v_mask = _TKS_mask.unsqueeze(-1).expand(-1,-1,3) # T,L,3
-                _TKS_h_mask = _TKS_mask.unsqueeze(-1).expand(-1,-1,self.num_species) # T,L,num_species
+                _inpainting_mask = torch.exp(inpainting_log_mask)[:,None]
+                _inpainting_v_mask = _inpainting_mask.unsqueeze(-1).expand(-1,-1,3) # T,L,3
+                _inpainting_h_mask = _inpainting_mask.unsqueeze(-1).expand(-1,-1,self.num_species) # T,L,num_species
 
             if self.localmask:
                 # disp_mask = (torch.stack([data.disp for data in dataset]).norm(dim=-1)>1).unsqueeze(-1)
@@ -341,9 +339,9 @@ class EquivariantTransformerDataset_CrCoNi(torch.utils.data.Dataset):
                 v_mask = torch.ones([T,L,3])
                 h_mask = torch.ones([T,L,self.num_species])
                 if self.sim_condition:
-                    TKS_mask = torch.ones([T,L])
-                    TKS_v_mask = torch.ones([T,L,3])
-                    TKS_h_mask = torch.ones([T,L,self.num_species])
+                    inpainting_mask = torch.ones([T,L])
+                    inpainting_v_mask = torch.ones([T,L,3])
+                    inpainting_h_mask = torch.ones([T,L,self.num_species])
                 for i_traj in range(start_i_traj, end_i_traj):
                     disp_mask = torch.zeros([L])
                     act_space_i = act_space[i_traj]
@@ -352,17 +350,17 @@ class EquivariantTransformerDataset_CrCoNi(torch.utils.data.Dataset):
                     h_mask[i_traj-start_i_traj] = _h_mask[i_traj-start_i_traj]*disp_mask.unsqueeze(0).unsqueeze(-1)
                     v_mask[i_traj-start_i_traj] = _v_mask[i_traj-start_i_traj]*disp_mask.unsqueeze(0).unsqueeze(-1)
                     if self.sim_condition:
-                        TKS_mask[i_traj-start_i_traj] = _TKS_mask[i_traj-start_i_traj]*disp_mask.unsqueeze(0)
-                        TKS_h_mask[i_traj-start_i_traj] = _TKS_h_mask[i_traj-start_i_traj]*disp_mask.unsqueeze(0).unsqueeze(-1)
-                        TKS_v_mask[i_traj-start_i_traj] = _TKS_v_mask[i_traj-start_i_traj]*disp_mask.unsqueeze(0).unsqueeze(-1)
+                        inpainting_mask[i_traj-start_i_traj] = _inpainting_mask[i_traj-start_i_traj]*disp_mask.unsqueeze(0)
+                        inpainting_h_mask[i_traj-start_i_traj] = _inpainting_h_mask[i_traj-start_i_traj]*disp_mask.unsqueeze(0).unsqueeze(-1)
+                        inpainting_v_mask[i_traj-start_i_traj] = _inpainting_v_mask[i_traj-start_i_traj]*disp_mask.unsqueeze(0).unsqueeze(-1)
             else:
                 mask = _mask
                 v_mask = _v_mask
                 h_mask = _h_mask
                 if self.sim_condition:
-                    TKS_mask = _TKS_mask
-                    TKS_v_mask = _TKS_v_mask
-                    TKS_h_mask = _TKS_h_mask
+                    inpainting_mask = _inpainting_mask
+                    inpainting_v_mask = _inpainting_v_mask
+                    inpainting_h_mask = _inpainting_h_mask
             # if hasattr(dataset[0], "E_mace"):
             #     e_mace = torch.stack([data.E_mace for data in dataset])
             # else:
@@ -383,9 +381,9 @@ class EquivariantTransformerDataset_CrCoNi(torch.utils.data.Dataset):
                     "mask": mask,
                     "v_mask": v_mask,
                     "h_mask": h_mask,
-                    "TKS_mask": TKS_mask,
-                    "TKS_v_mask": TKS_v_mask,
-                    "TKS_h_mask": TKS_h_mask,
+                    "inpainting_mask": inpainting_mask,
+                    "inpainting_v_mask": inpainting_v_mask,
+                    "inpainting_h_mask": inpainting_h_mask,
                     "e_now": torch.stack([data.E_now for data in dataset]),
                 }
             else:
@@ -409,7 +407,7 @@ class EquivariantTransformerDataset_CrCoNi(torch.utils.data.Dataset):
         # _RDF = torch.load(self.traj_rdf[idx], weights_only=False)
         # assert _RDF[0].shape == (2,35)
         LSS_reward_pool = torch.stack([data.E_now for data in _dataset])
-        TKS_reward_pool = torch.stack([data.E_barrier-data.freq*self.kT for data in _dataset])
+        inpainting_reward_pool = torch.stack([data.E_barrier-data.freq*self.kT for data in _dataset])
         if start_i_traj is None:
             if self.random_starting_point:
                 start_i_traj = np.random.randint(0, len(_dataset)-self.num_frames-1, 1)[0]
@@ -421,7 +419,7 @@ class EquivariantTransformerDataset_CrCoNi(torch.utils.data.Dataset):
         dataset = _dataset[start_i_traj:end_i_traj]
         LSS_reward = torch.stack([data.E_now for data in dataset]) # T
         if self.sim_condition:
-            TKS_reward = torch.stack([-data.E_barrier+data.freq*self.kT for data in dataset])  # T
+            inpainting_reward = torch.stack([-data.E_barrier+data.freq*self.kT for data in dataset])  # T
             
 
         x = torch.stack([data.pos for data in dataset])
@@ -431,15 +429,15 @@ class EquivariantTransformerDataset_CrCoNi(torch.utils.data.Dataset):
         ### Normalize over each trajectory
         log_mask = -LSS_reward - torch.logsumexp(-LSS_reward_pool, dim=0)
         if self.sim_condition:
-            TKS_log_mask = -TKS_reward - torch.logsumexp(-TKS_reward_pool, dim=0) 
+            inpainting_log_mask = -inpainting_reward - torch.logsumexp(-inpainting_reward_pool, dim=0) 
             
         _mask = torch.ones(T,L) # T,L
         _v_mask = _mask.unsqueeze(-1).expand(-1,-1,3) # T,L,3
         _h_mask = _mask.unsqueeze(-1).expand(-1,-1,self.num_species) # T,L,num_species
         if self.sim_condition:
-            _TKS_mask = torch.ones(T,L)
-            _TKS_v_mask = _TKS_mask.unsqueeze(-1).expand(-1,-1,3) # T,L,3
-            _TKS_h_mask = _TKS_mask.unsqueeze(-1).expand(-1,-1,self.num_species) # T,L,num_species
+            _inpainting_mask = torch.ones(T,L)
+            _inpainting_v_mask = _inpainting_mask.unsqueeze(-1).expand(-1,-1,3) # T,L,3
+            _inpainting_h_mask = _inpainting_mask.unsqueeze(-1).expand(-1,-1,self.num_species) # T,L,num_species
 
         if self.localmask:
             # disp_mask = (torch.stack([data.disp for data in dataset]).norm(dim=-1)>1).unsqueeze(-1)
@@ -447,9 +445,9 @@ class EquivariantTransformerDataset_CrCoNi(torch.utils.data.Dataset):
             v_mask = torch.ones([T,L,3])
             h_mask = torch.ones([T,L,self.num_species])
             if self.sim_condition:
-                TKS_mask = torch.ones([T,L])
-                TKS_v_mask = torch.ones([T,L,3])
-                TKS_h_mask = torch.ones([T,L,self.num_species])
+                inpainting_mask = torch.ones([T,L])
+                inpainting_v_mask = torch.ones([T,L,3])
+                inpainting_h_mask = torch.ones([T,L,self.num_species])
             for i_traj in range(start_i_traj, end_i_traj):
                 disp_mask = torch.zeros([L])
                 act_space_i = act_space[i_traj]
@@ -458,17 +456,17 @@ class EquivariantTransformerDataset_CrCoNi(torch.utils.data.Dataset):
                 h_mask[i_traj-start_i_traj] = _h_mask[i_traj-start_i_traj]*disp_mask.unsqueeze(0).unsqueeze(-1)
                 v_mask[i_traj-start_i_traj] = _v_mask[i_traj-start_i_traj]*disp_mask.unsqueeze(0).unsqueeze(-1)
                 if self.sim_condition:
-                    TKS_mask[i_traj-start_i_traj] = _TKS_mask[i_traj-start_i_traj]*disp_mask.unsqueeze(0)
-                    TKS_h_mask[i_traj-start_i_traj] = _TKS_h_mask[i_traj-start_i_traj]*disp_mask.unsqueeze(0).unsqueeze(-1)
-                    TKS_v_mask[i_traj-start_i_traj] = _TKS_v_mask[i_traj-start_i_traj]*disp_mask.unsqueeze(0).unsqueeze(-1)
+                    inpainting_mask[i_traj-start_i_traj] = _inpainting_mask[i_traj-start_i_traj]*disp_mask.unsqueeze(0)
+                    inpainting_h_mask[i_traj-start_i_traj] = _inpainting_h_mask[i_traj-start_i_traj]*disp_mask.unsqueeze(0).unsqueeze(-1)
+                    inpainting_v_mask[i_traj-start_i_traj] = _inpainting_v_mask[i_traj-start_i_traj]*disp_mask.unsqueeze(0).unsqueeze(-1)
         else:
             mask = _mask
             v_mask = _v_mask
             h_mask = _h_mask
             if self.sim_condition:
-                TKS_mask = _TKS_mask
-                TKS_v_mask = _TKS_v_mask
-                TKS_h_mask = _TKS_h_mask
+                inpainting_mask = _inpainting_mask
+                inpainting_v_mask = _inpainting_v_mask
+                inpainting_h_mask = _inpainting_h_mask
         if self.sim_condition:
             return {
                 "idx": idx_source,
@@ -476,9 +474,9 @@ class EquivariantTransformerDataset_CrCoNi(torch.utils.data.Dataset):
                 "mask": mask,
                 "v_mask": v_mask,
                 "h_mask": h_mask,
-                "TKS_mask": TKS_mask,
-                "TKS_v_mask": TKS_v_mask,
-                "TKS_h_mask": TKS_h_mask,
+                "inpainting_mask": inpainting_mask,
+                "inpainting_v_mask": inpainting_v_mask,
+                "inpainting_h_mask": inpainting_h_mask,
             }
         else:
             return {
@@ -749,6 +747,128 @@ class EquivariantTransformerDataset_MaterialProject(torch.utils.data.Dataset):
         }
     
 
+try:
+    from deepmd.calculator import DP
+    HAS_DEEPMD = True
+except ImportError:
+    pass
+
+class EquivariantTransformerDataset_phasediagram(torch.utils.data.Dataset):
+    def __init__(self, args, species, localmask=False, sim_condition=False, stage="train", save_dir = None, sel_idx = None):
+        traj_dir = args.data_dir
+        cutoff = args.cutoff
+        temperature = 300
+        self.kT = temperature*8.617*10**-5
+        num_species = len(species)
+        self.num_species = num_species
+        type_map = {}
+        type_map = {}
+        for idx_e, e in enumerate(species):
+            type_map[idx_e+1] = e 
+
+        self.cutoff = cutoff
+
+        self.num_frames = 1
+        self.stage = stage
+        self.localmask = localmask
+        self.sim_condition = sim_condition
+
+        if self.stage == "save":    
+            self.calculator = DP(model="data/SiO2/DP_R2SCAN.pb")
+        
+            traj_filename = os.path.join(traj_dir, "dump.equi")
+            atoms_list = ase.io.read(traj_filename, index=":", format="lammps-dump-text")  
+            atom_encoder = OneHotEncoder(sparse_output=False)
+            atom_encoder.fit(np.array(species).reshape(-1,1))
+            
+            atoms_0 = ase.io.read(os.path.join(traj_dir, "final-config.vasp"))
+            inv_cell_0 = np.linalg.pinv(np.array(atoms_0.cell))
+            frac_pos_0 = atoms_0.positions @ inv_cell_0  - np.ones(3)*0.5
+
+            dataset = []
+            for i_atoms, atoms in enumerate(atoms_list):
+                atomic_species = [type_map[k] for k in atoms.get_atomic_numbers().astype(int)]
+                atoms.set_atomic_numbers(atomic_species)
+                atoms.calc = self.calculator
+                num_atoms = len(atoms)
+                atoms.wrap()   
+                inv_cell = np.linalg.pinv(np.array(atoms.cell))
+                z = atom_encoder.transform(atoms.numbers.reshape(-1, 1))
+                padded_z = np.zeros((num_atoms, num_species))
+                padded_z[:, :z.shape[1]] = z
+                num_atoms = len(atoms)
+                data = Data(
+                    z          = torch.tensor(padded_z,               dtype=torch.float32),
+                    num_atoms = torch.tensor(num_atoms, dtype=torch.long),
+
+                    # pos        = torch.tensor(atoms.positions - np.ones(3)*0.5 @ atoms.cell, dtype=torch.float32),
+                    cell       = torch.tensor(np.array(atoms.cell), dtype=torch.float32),
+                    frac_pos = torch.tensor(atoms.positions @ inv_cell - np.ones(3)*0.5, dtype=torch.float32),
+
+                    forces     = torch.tensor(atoms.get_forces(), dtype=torch.float32),
+                    E_formation = None,
+                    E_above_hull = None,
+                    E = torch.tensor(atoms.get_potential_energy(), dtype=torch.float32),
+
+                    cell_0 = torch.tensor(np.array(atoms_0.cell), dtype=torch.float32),
+                    frac_pos_0 = torch.tensor(frac_pos_0, dtype=torch.float32)
+                )
+                dataset.append(data.clone())
+
+            idx_data = np.arange(len(dataset))
+            np.random.shuffle(idx_data)
+            n_test = int(len(idx_data) // 10)
+            n_val = int(len(idx_data) // 10)
+            test_idx = idx_data[:n_test]
+            val_idx = idx_data[n_test:n_test+n_val]
+            train_idx = idx_data[n_test+n_val:]
+
+            torch.save([dataset[i] for i in test_idx], f'{save_dir}/test.pt')
+            torch.save([dataset[i] for i in val_idx], f'{save_dir}/val.pt')
+            torch.save([dataset[i] for i in train_idx], f'{save_dir}/train.pt')
+        else:
+            self.all_dataset = torch.load(os.path.join(traj_dir, f"{stage}.pt"), weights_only=False)
+
+
+    def __len__(self):
+        return len(self.all_dataset)
+    
+    def __getitem__(self, idx):
+        idx = idx % len(self.all_dataset)
+        dataset = [self.all_dataset[idx]]
+        x = torch.stack([data.frac_pos for data in dataset]) % 1
+        x0 = torch.stack([data.frac_pos_0 for data in dataset]) % 1
+        assert torch.all(x>=0)
+        assert torch.all(x<=1)
+        T,L,_ = x.shape
+            
+        _mask = torch.ones([T,L]) # T,L
+        _v_mask = _mask.unsqueeze(-1).expand(-1,-1,3) # T,L,3
+        _h_mask = _mask.unsqueeze(-1).expand(-1,-1,self.num_species) # T,L,num_species
+
+
+        if self.localmask:
+            raise Exception("Yet to implement localmask")
+        else:
+            mask = _mask
+            v_mask = _v_mask
+            h_mask = _h_mask
+
+        return {
+            "name": "Material Project",
+            "species": torch.stack([data.z for data in dataset]),
+            "x": x,
+            "x0": x0,
+            "forces": torch.stack([data.forces for data in dataset]),
+            "cell": torch.stack([data.cell for data in dataset]),
+            "cell0": torch.stack([data.cell_0 for data in dataset]),
+            "num_atoms": torch.stack([data.num_atoms for data in dataset]),
+            "mask": mask,
+            "v_mask": v_mask,
+            "h_mask": h_mask,
+        }
+    
+
 class EquivariantTransformerDataset_Transition1x(torch.utils.data.Dataset):
     def __init__(self, data_dirname, num_species=5, sim_condition=False, tps_condition=True, stage="train"):
         temperature = 300
@@ -763,8 +883,8 @@ class EquivariantTransformerDataset_Transition1x(torch.utils.data.Dataset):
         # self.partition = torch.logsumexp(-self.LSS_reward_pool, dim=0)
         '''
         if tps_condition:
-            TKS_reward_pool = torch.stack([data.E_transition_state - data.E_reactant for data in self.dataset])
-            self.TKS_partition = torch.logsumexp(-TKS_reward_pool, dim=0)
+            inpainting_reward_pool = torch.stack([data.E_transition_state - data.E_reactant for data in self.dataset])
+            self.inpainting_partition = torch.logsumexp(-inpainting_reward_pool, dim=0)
         '''
         self.tps_condition = tps_condition
     
@@ -777,9 +897,9 @@ class EquivariantTransformerDataset_Transition1x(torch.utils.data.Dataset):
         L = len(data.z_reactant)
         # LSS_reward = [data.E_reactant, data.E_product, data.E_transition_state]
         if self.tps_condition:
-            TKS_mask = torch.ones(3,L)
-            TKS_v_mask = TKS_mask.unsqueeze(-1).expand(-1,-1,3)
-            TKS_h_mask = TKS_mask.unsqueeze(-1).expand(-1,-1,self.num_species) # 1,L,num_species
+            inpainting_mask = torch.ones(3,L)
+            inpainting_v_mask = inpainting_mask.unsqueeze(-1).expand(-1,-1,3)
+            inpainting_h_mask = inpainting_mask.unsqueeze(-1).expand(-1,-1,self.num_species) # 1,L,num_species
         # assert len(data.z_reactant)==len(data.z_product)
         
         mask = torch.ones([3,L]) # T,L
@@ -799,9 +919,9 @@ class EquivariantTransformerDataset_Transition1x(torch.utils.data.Dataset):
                 "mask": mask,
                 "v_mask": v_mask,
                 "h_mask": h_mask,
-                "TKS_mask": TKS_mask,
-                "TKS_v_mask": TKS_v_mask,
-                "TKS_h_mask": TKS_h_mask,
+                "inpainting_mask": inpainting_mask,
+                "inpainting_v_mask": inpainting_v_mask,
+                "inpainting_h_mask": inpainting_h_mask,
             }
         else:
             return {
@@ -885,9 +1005,9 @@ class EquivariantTransformerDataset_Alanine_Dipeptide(torch.utils.data.Dataset):
         L = len(data.z)
         # LSS_reward = [data.E_reactant, data.E_product, data.E_transition_state]
         if self.tps_condition:
-            TKS_mask = torch.ones(1,L)
-            TKS_v_mask = TKS_mask.unsqueeze(-1).expand(-1,-1,3)
-            TKS_h_mask = TKS_mask.unsqueeze(-1).expand(-1,-1,self.num_species) # 1,L,num_species
+            inpainting_mask = torch.ones(1,L)
+            inpainting_v_mask = inpainting_mask.unsqueeze(-1).expand(-1,-1,3)
+            inpainting_h_mask = inpainting_mask.unsqueeze(-1).expand(-1,-1,self.num_species) # 1,L,num_species
         # assert len(data.z_reactant)==len(data.z_product)
         
         mask = torch.ones([1,L]) # T,L

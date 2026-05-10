@@ -167,7 +167,7 @@ def lattice_polar_decompose_torch(lattices: torch.Tensor):
     k = decompose_symmetric_matrix(S)
     return k
 
-class EquivariantMDGenWrapper(Wrapper):
+class EquivariantFEDWrapper(Wrapper):
     def __init__(self, args):
         super().__init__(args)
         for key in [
@@ -259,8 +259,7 @@ class EquivariantMDGenWrapper(Wrapper):
             score_model=self.score_model,
             latt_path = latt_path
         )
-        if self.transport.latt_path:
-            self.transport.mean_atomic_volume = args.mean_atomic_volume
+
         self.transport_sampler = Sampler(self.transport)
 
         if not hasattr(args, 'ema'):
@@ -286,8 +285,7 @@ class EquivariantMDGenWrapper(Wrapper):
         mean_log = get_log_mean(log)
         self.log("val_loss", mean_log['val_loss'])
         # self.log("val_loss_gen", mean_log['val_loss_gen'])
-        if self.score_model is not None:
-            self.log("val_loss_path", mean_log['val_loss_path'])
+        self.log("val_loss_path", mean_log['val_loss_path'])
         self.print_log(prefix='val', save=False)
 
     def prep_batch(self, batch):
@@ -297,18 +295,12 @@ class EquivariantMDGenWrapper(Wrapper):
             return self.prep_batch_x(batch)
 
     def prep_batch_species(self, batch):
-        B, T, L, num_elem = batch['species'].shape
-        if self.args.num_species == num_elem:
-            species = batch["species"]
-        elif self.args.num_species < num_elem:
-            raise Exception(f"num_species parameter too small, should be no less than {num_elem}")
-        else:
-            species = torch.empty((B, T, L, 5), dtype=batch['species'].dtype, device=batch['species'].device)
-            species[:, :3] = batch['species']
-            species[:, 3:] = 0.
-
+        species = batch["species"]
         latents = batch["species"]
         x_now = batch["x"]
+    
+        B, T, L, num_elem = species.shape
+
         
         if self.args.design:
             loss_mask = batch["mask"]
@@ -317,7 +309,9 @@ class EquivariantMDGenWrapper(Wrapper):
         else:
             v_loss_mask = batch["v_mask"]
             loss_mask = v_loss_mask
-            
+
+
+        B, T, L, _ = latents.shape
         assert _ == self.args.num_species, f"latents shape should be (B, T, D, self.args.num_species), but got {latents.shape}"
         ########
         cond_mask = torch.zeros(B, T, L, dtype=int, device=species.device)
@@ -341,7 +335,6 @@ class EquivariantMDGenWrapper(Wrapper):
     def prep_batch_x(self, batch):
         species = batch["species"]
         latents = batch["x"]
-        # rdf = batch["RDF"]
         B, T, L, num_elem = species.shape
 
         v_loss_mask = batch["v_mask"]
@@ -351,31 +344,40 @@ class EquivariantMDGenWrapper(Wrapper):
         assert _ == 3, f"latents shape should be (B, T, D, 3), but got {latents.shape}"
         ########
         
+    
+        self.transport.prior_cell = batch["cell0"]
+        self.transport.prior_mean = batch["x0"]
+
+
         if "inpainting_mask" not in batch.keys():
             batch['inpainting_mask'] = torch.ones(B,T,L, dtype=int, device=species.device)
             batch['inpainting_v_mask'] = torch.ones(B,T,L,3, dtype=int, device=species.device)
 
-        conditional_batch = None
+        conditional_batch = False
+
         data = {
-                "species": species.to(_TORCH_FLOAT_PRECISION),
-                "latents": latents.to(_TORCH_FLOAT_PRECISION),
-                'loss_mask': v_loss_mask.to(_TORCH_FLOAT_PRECISION),
-                'model_kwargs': {
-                    # "cv": batch['cv'].to(_TORCH_FLOAT_PRECISION),
-                    "cv": None,
-                    "aatype": species.to(_TORCH_FLOAT_PRECISION),
-                    'x1': latents.to(_TORCH_FLOAT_PRECISION),
-                    'v_mask': (v_loss_mask!=0).to(int),
-                    "cell": batch['cell'].to(_TORCH_FLOAT_PRECISION),
-                    "num_atoms": batch["num_atoms"],
-                    "conditions": None
-                },
-                'conditional_batch': conditional_batch
-            }
+                    "species": species.to(_TORCH_FLOAT_PRECISION),
+                    "latents": latents.to(_TORCH_FLOAT_PRECISION),
+                    'loss_mask': v_loss_mask.to(_TORCH_FLOAT_PRECISION),
+                    'model_kwargs': {
+                        # "cv": batch['cv'].to(_TORCH_FLOAT_PRECISION),
+                        "cv": None,
+                        "aatype": species.to(_TORCH_FLOAT_PRECISION),
+                        'x1': latents.to(_TORCH_FLOAT_PRECISION),
+                        'v_mask': (v_loss_mask!=0).to(int),
+                        "cell": batch['cell'].to(_TORCH_FLOAT_PRECISION),
+                        "num_atoms": batch["num_atoms"],
+                        "conditions": None
+                    },
+                    'conditional_batch': conditional_batch
+                }
         
         if self.score_model is not None:
             data["forces"] = batch['forces'].to(_TORCH_FLOAT_PRECISION)
 
+        if conditional_batch:
+            raise Exception("Not implemented")
+       
         return data
     
     def general_step(self, batch, stage='train'):
