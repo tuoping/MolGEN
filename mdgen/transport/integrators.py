@@ -68,7 +68,7 @@ class sde:
     def __forward_fn(self):
         """TODO: generalize here by adding all private functions ending with steps to it"""
         sampler_dict = {
-            "Euler": self.__Euler_Maruyama_step,
+            "euler": self.__Euler_Maruyama_step,
             "Heun": self.__Heun_step,
         }
 
