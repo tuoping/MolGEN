@@ -2,10 +2,13 @@
 # args = parse_train_args()
 
 import glob
+
 ckpt_tag = "229"
 inference_steps = 500
+
 sampling_method = "euler"
-sim_ckpt = glob.glob(f"workdir/nvt/epoch={ckpt_tag}-step=0*.ckpt")[0]
+sim_ckpt = glob.glob(f"workdir/latinhypecubeprior/epoch={ckpt_tag}-step=0*.ckpt")[0]
+
 device = "cuda"
 
 import os, torch, tqdm, time
@@ -13,6 +16,7 @@ import numpy as np
 from mdgen.fed_wrapper import EquivariantFEDWrapper
 
 out_dir = f"experiments/SiO2_coesite_nvt_nowrap/e{ckpt_tag}_{sampling_method}_step{inference_steps}/"
+
 os.makedirs(out_dir, exist_ok=True)
 with open(f"{out_dir}/README.md", "w") as fp:
     fp.write(sim_ckpt)
@@ -26,11 +30,12 @@ args = hparams['args']
 args.sampling_method = sampling_method
 args.inference_steps = inference_steps
 args.data_dir = "data/SiO2/npt_1600K_1GPa/npt_coesite_dense/nvt/"
-args.likelihood = "EJE"
+# args.likelihood = "EJE"
 
 
-from mdgen.dataset import EquivariantTransformerDataset_phasediagram
-dataset = EquivariantTransformerDataset_phasediagram(args, species=[14, 8], sim_condition=False, stage="test")
+from mdgen.dataset import EquivariantTransformerDataset_MaterialProject
+dataset = EquivariantTransformerDataset_MaterialProject(args, species=[6], sim_condition=False, stage="train_withforces")
+
 
 
 model = EquivariantFEDWrapper(**hparams)
@@ -79,10 +84,11 @@ all_rollout_atoms = []
 all_rollout_atoms_ref = []
 start = time.time()
 all_logp = []
-for i_rollout in range(len(idx_rollouts)):
+for i_rollout in range(0, len(idx_rollouts), 8):
     idx = idx_rollouts[i_rollout]
     print(i_rollout, idx)
     filename = os.path.join(out_dir, f"gentraj_{idx}.xyz")
+
     if args.likelihood is not None:
         filename_reverse = os.path.join(out_dir, f"reverse_gentraj_{idx}.xyz")
         fout_logp = open(os.path.join(out_dir, f"Logp_{idx}.txt"), "a")
