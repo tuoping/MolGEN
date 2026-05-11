@@ -836,10 +836,10 @@ class EquivariantTransformerDataset_phasediagram(torch.utils.data.Dataset):
     def __getitem__(self, idx):
         idx = idx % len(self.all_dataset)
         dataset = [self.all_dataset[idx]]
-        x = torch.stack([data.frac_pos for data in dataset]) % 1
-        x0 = torch.stack([data.frac_pos_0 for data in dataset]) % 1
-        assert torch.all(x>=0)
-        assert torch.all(x<=1)
+        x = torch.stack([data.frac_pos for data in dataset])
+        x0 = torch.stack([data.frac_pos_0 for data in dataset])
+        # assert torch.all(x>=0)
+        # assert torch.all(x<=1)
         T,L,_ = x.shape
             
         _mask = torch.ones([T,L]) # T,L
