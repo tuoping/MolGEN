@@ -574,7 +574,6 @@ class EquivariantMDGenWrapper(Wrapper):
             # print("WARNNING::")
             # print("Applying the following mask to the output vector:")
             # print(prep["model_kwargs"]['v_mask'])
-
             if self.transport.latt_path:
                 samples[0] = samples[0] *prep["model_kwargs"]['v_mask'] + prep["latents"]*(1-prep["model_kwargs"]['v_mask'])
                 cell_out = samples[1][-1]
