@@ -107,6 +107,7 @@ class ode:
         num_steps,
         atol,
         rtol,
+        latt_path = False
     ):
         assert t0 < t1, "ODE sampler has to be in forward time"
 
@@ -118,14 +119,15 @@ class ode:
         self.sampler_type = sampler_type
 
         self.path_sampler = path.ICPlan()
+        self.latt_path = latt_path
 
     def sample(self, x, model, **model_kwargs):
         device = x[0].device if isinstance(x, tuple) else x.device
         def _fn(t, x):
             t = th.ones(x[0].size(0)).to(device) * t if isinstance(x, tuple) else th.ones(x.size(0)).to(device) * t
-            if isinstance(x, tuple):
+            if isinstance(x, tuple) and self.latt_path:
                 model_kwargs['cell'] = x[1]
-                model_output = self.drift(x[0], t, model, **model_kwargs)
+                model_output = self.drift(x[0], t, model, **model_kwargs)  
             else:
                 model_output = self.drift(x, t, model, **model_kwargs)
             return model_output
