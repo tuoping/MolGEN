@@ -139,7 +139,6 @@ for i_rollout in range(0, len(idx_rollouts), 8):
             else:
                 cell_out = batch['cell']
                 pred_pos = pred_frac_pos[0] @ cell_out[0][0]
-                print(pred_frac_pos.shape, cell_out.shape)
 
             atoms = Atoms(formula, positions=pred_pos.detach().cpu().numpy(), cell=cell_out[0][0].detach().cpu().numpy(), pbc=[1,1,1])
             write(filename, atoms, append=True)
