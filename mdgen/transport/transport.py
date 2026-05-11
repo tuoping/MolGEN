@@ -332,7 +332,7 @@ class Transport:
             else:
                 _x0_mean = self.prior_mean
 
-            x0.append(th.randn(shape, device=device)*self.args.x0std/(N)**(1./3.) + _x0_mean)
+            x0.append(th.randn(shape, device=device)*self.args.x0std/(N**(1./3.)) + _x0_mean)
             x0_mean.append(_x0_mean)
         
         t0, t1 = self.check_interval(self.train_eps, self.sample_eps)
@@ -893,7 +893,7 @@ class Sampler:
         - atol: absolute error tolerance for the solver
         - rtol: relative error tolerance for the solver
         """
-        
+        assert not self.transport.latt_path
         def _likelihood_drift(x, t, model, **model_kwargs):
             x, _ = x
             x = x.detach().requires_grad_(True)
@@ -908,7 +908,8 @@ class Sampler:
                     drift = -self.drift(x, t, model, **model_kwargs)
                 else:
                     drift = self.drift(x, t, model, **model_kwargs)
-                grad = th.autograd.grad(th.sum(drift * eps), x)[0]
+                cell = self.transport.prior_cell
+                grad = th.autograd.grad(th.sum( (drift@cell) * eps), x)[0]
                 logp_grad = th.sum(grad * eps, dim=tuple(range(2, len(x.size()))))
             return (drift, logp_grad)
 
@@ -929,18 +930,18 @@ class Sampler:
             num_steps=num_steps,
             atol=atol,
             rtol=rtol,
+            latt_path=self.transport.latt_path
         )
 
         def _sample_fn(x, model, **model_kwargs):
             init_logp = th.zeros(x.size()[:2]).to(x)
             input = (x, init_logp)
             drift, delta_logp = _ode.sample(input, model, **model_kwargs)
-            drift, delta_logp = drift[-1], delta_logp[-1]
+            # drift, delta_logp = drift[-1], delta_logp[-1]
+            delta_logp = delta_logp[-1]
+
             # prior_logp = self.transport.prior_logp(drift)
-            if reverse:
-                logp =  delta_logp
-            else:
-                logp =  delta_logp
+            logp =  delta_logp
             return logp, drift
 
         return _sample_fn
