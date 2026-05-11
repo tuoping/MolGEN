@@ -3,7 +3,7 @@
 
 import glob
 ckpt_tag = "229"
-inference_steps = 50
+inference_steps = 500
 sampling_method = "euler"
 sim_ckpt = glob.glob(f"workdir/nvt/epoch={ckpt_tag}-step=0*.ckpt")[0]
 device = "cuda"
@@ -12,7 +12,7 @@ import os, torch, tqdm, time
 import numpy as np
 from mdgen.fed_wrapper import EquivariantFEDWrapper
 
-out_dir = f"experiments/SiO2_coesite_nvt/e{ckpt_tag}_{sampling_method}_step{inference_steps}/"
+out_dir = f"experiments/SiO2_coesite_nvt_nowrap/e{ckpt_tag}_{sampling_method}_step{inference_steps}/"
 os.makedirs(out_dir, exist_ok=True)
 with open(f"{out_dir}/README.md", "w") as fp:
     fp.write(sim_ckpt)
@@ -63,8 +63,8 @@ def rollout(model, batch):
 
 
 map_to_chemical_symbol = {
-    0: "Si",
-    1: "O"
+    0: "O",
+    1: "Si"
 }
 
 idx_rollouts = np.arange(len(dataset))
@@ -85,11 +85,11 @@ for i_rollout in range(len(idx_rollouts)):
     filename = os.path.join(out_dir, f"gentraj_{idx}.xyz")
     if args.likelihood is not None:
         filename_reverse = os.path.join(out_dir, f"reverse_gentraj_{idx}.xyz")
-    filename_ref = os.path.join(out_dir, f"reftraj_{idx}.xyz")
+        fout_logp = open(os.path.join(out_dir, f"Logp_{idx}.txt"), "a")
+        fout_reverse_logp = open(os.path.join(out_dir, f"reverse_Logp_{idx}.txt"), "a")
+        fout_zs = open(os.path.join(out_dir, f"Uzs_{idx}.txt"), "a")
 
-    fout_logp = open(os.path.join(out_dir, f"Logp_{idx}.txt"), "a")
-    fout_reverse_logp = open(os.path.join(out_dir, f"reverse_Logp_{idx}.txt"), "a")
-    fout_zs = open(os.path.join(out_dir, f"Uzs_{idx}.txt"), "a")
+    filename_ref = os.path.join(out_dir, f"reftraj_{idx}.xyz")
 
     for f in [filename, filename_ref]:
         if os.path.exists(f):
