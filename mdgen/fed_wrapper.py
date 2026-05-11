@@ -551,21 +551,41 @@ class EquivariantFEDWrapper(Wrapper):
             if self.transport.latt_path:
                 cell0 = self.transport.sample_latt(zs.shape, self.device)
         self.integration_step = 0
-        assert self.args.likelihood is None
         if self.score_model is None:
-            with torch.no_grad(): sample_fn = self.transport_sampler.sample_ode(sampling_method=self.args.sampling_method, num_steps=self.args.inference_steps)  # default to ode
+            if self.args.likelihood == "EJE":
+                sample_fn = self.transport_sampler.sample_ode_likelihood(sampling_method=self.args.sampling_method, num_steps=self.args.inference_steps)
+                sample_fn_reverse = self.transport_sampler.sample_ode_likelihood(sampling_method=self.args.sampling_method, num_steps=self.args.inference_steps, reverse=True)
+            elif self.args.likelihood is None:
+                with torch.no_grad(): sample_fn = self.transport_sampler.sample_ode(sampling_method=self.args.sampling_method, num_steps=self.args.inference_steps)  # default to ode
+            else:
+                raise Exception(f"Wrong likelihood parameter: {self.args.likelihood}")
         else:
+            if self.args.likelihood is not None:
+                raise Exception("Likelihood evaluation not implemented for SDE")
             with torch.no_grad(): sample_fn = self.transport_sampler.sample_sde(num_steps=self.args.inference_steps, diffusion_form=self.args.diffusion_form, diffusion_norm=torch.tensor(self.args.diffusion_norm), score_model=partial(self.score_model.forward_inference, **prep['model_kwargs']))
+        
+        assert not self.args.guided
         if self.transport.latt_path:
+            if self.args.likelihood is not None:
+                raise Exception("Likelihood evaluation not implemented for variable lattice")
             samples = sample_fn(
                 (zs, cell0),
                 partial(self.model.forward_inference, **prep['model_kwargs'])
             )
         else:
-            samples = sample_fn(
-                zs,
-                partial(self.model.forward_inference, **prep['model_kwargs'])
-            )
+            if self.args.likelihood == "EJE":
+                zs = zs.detach().requires_grad_(True)
+                samples_logp, samples = sample_fn(
+                    zs,
+                    partial(self.model.forward_inference, **prep['model_kwargs'])
+                )
+            elif self.args.likelihood is None:
+                samples = sample_fn(
+                    zs,
+                    partial(self.model.forward_inference, **prep['model_kwargs'])
+                )
+            else:
+                raise Exception(f"Wrong likelihood parameter: {self.args.likelihood}")
 
         
         if self.args.design:
@@ -576,12 +596,19 @@ class EquivariantFEDWrapper(Wrapper):
             # print("WARNNING::")
             # print("Applying the following mask to the output vector:")
             # print(prep["model_kwargs"]['v_mask'])
-            for i in range(len(samples[0])):
-                samples[0][i] = samples[0][i] *prep["model_kwargs"]['v_mask'] + prep["latents"]*(1-prep["model_kwargs"]['v_mask'])
-            vector_out = samples[0][-1].detach().requires_grad_(False)
+
             if self.transport.latt_path:
+                samples[0] = samples[0] *prep["model_kwargs"]['v_mask'] + prep["latents"]*(1-prep["model_kwargs"]['v_mask'])
                 cell_out = samples[1][-1]
                 cell_out = cell_out.detach().requires_grad_(False)
+            else:
+                samples = samples *prep["model_kwargs"]['v_mask'] + prep["latents"]*(1-prep["model_kwargs"]['v_mask'])
+
+            if self.args.likelihood == "EJE":
+                reverse_samples_logp, samples_zs = sample_fn_reverse(
+                        samples[-1],
+                        partial(self.model.forward_inference, **prep['model_kwargs'])
+                    )
 
         if self.args.design:
             aa_out = torch.argmax(logits, -1)
@@ -594,6 +621,9 @@ class EquivariantFEDWrapper(Wrapper):
         if self.transport.latt_path:
             return samples[0], aa_out, samples[1]
         else:
-            return samples, aa_out
+            if self.args.likelihood == "EJE":
+                return samples_logp, samples, aa_out, reverse_samples_logp, zs, samples_zs
+            else:
+                return samples, aa_out
 
     
