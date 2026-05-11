@@ -69,7 +69,7 @@ def parse_train_args():
     group.add_argument('--object_aware', action='store_true')
 
     group = parser.add_argument_group("Transport arguments")
-    group.add_argument("--path-type", type=str, default="Linear", choices=["Linear", "GVP", "VP", "Pow", "Schrodinger_Linear"])
+    group.add_argument("--path-type", type=str, default="Linear", choices=["Linear", "GVP", "VP", "Schrodinger_Linear"])
     group.add_argument("--prediction", type=str, default="velocity", choices=["velocity", "score", "noise"])
     group.add_argument("--KL", type=str, default="L1", choices=['forward', 'reverse', 'symm', "L2", 'L1', 'alpha'])
     group.add_argument("--sampling_method", type=str, default="dopri5", choices=["dopri5", "euler", "Heun"])
