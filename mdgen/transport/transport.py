@@ -253,7 +253,8 @@ class Transport:
             train_eps,
             sample_eps,
             score_model = None,
-            latt_path = False
+            latt_path = False,
+            weightfunction_x = None
     ):
         path_options = {
             PathType.LINEAR: path.ICPlan,
@@ -270,6 +271,7 @@ class Transport:
         self.latt_path = latt_path
         self.prior_mean = None
         self.prior_cell = None
+        self.weightfunction_x = weightfunction_x
 
     def prior_logp(self, z):
         '''
@@ -510,6 +512,10 @@ class Transport:
                         terms['loss_lattflow'] = mean_flat((lowertrigflow_output - lowertrigulatt).abs(), th.ones_like(lowertrigflow_output, device=lowertrigflow_output.device))
                         terms['loss'] = terms['loss_flow'] + terms['loss_lattflow']
                         # terms['loss'] = terms['loss_lattflow']
+                if self.weightfunction_x is not None:
+                    loss_weight = self.weightfunction_x(x0[0] + model_output*t[:,None,None,None], model_kwargs['cell'], model_kwargs['num_atoms'], return_per_config=True).view(B,T)
+                    terms["loss_repulsive"] = (loss_weight * t[:,None]**4).sum()
+                    terms['loss'] += terms['loss_repulsive']
             else:
                 _, drift_var = self.path_sampler.compute_drift(xt, t)
                 sigma_t, _ = self.path_sampler.compute_sigma_t(path.expand_t_like_x(t, xt))
@@ -999,7 +1005,8 @@ def create_transport(
         train_eps=None,
         sample_eps=None,
         score_model=None,
-        latt_path = False
+        latt_path = False,
+        weightfunction_x = None
 ):
     """function for creating Transport object
     **Note**: model prediction defaults to velocity
@@ -1055,7 +1062,8 @@ def create_transport(
         train_eps=train_eps,
         sample_eps=sample_eps,
         score_model=score_model,
-        latt_path=latt_path
+        latt_path=latt_path,
+        weightfunction_x = weightfunction_x
     )
 
     return state
