@@ -902,12 +902,12 @@ class Sampler:
         assert not self.transport.latt_path
         def _likelihood_drift(x, t, model, **model_kwargs):
             x, _ = x
-            x = x.detach().requires_grad_(True)
             eps = th.randint(2, x.size(), dtype=th.float, device=x.device) * 2 - 1
             if reverse:
                 t = th.ones_like(t) * (1 - t)
             with th.enable_grad():
                 # x.requires_grad = True
+                x = x.detach().requires_grad_(True)
                 assert x.requires_grad
                 ### This way doesn't accumulate the gradient through the ODE steps
                 if reverse:
@@ -917,6 +917,8 @@ class Sampler:
                 cell = self.transport.prior_cell
                 grad = th.autograd.grad(th.sum( (drift@cell) * eps), x)[0]
                 logp_grad = th.sum(grad * eps, dim=tuple(range(2, len(x.size()))))
+            drift = drift.detach()
+            logp_grad = logp_grad.detach()
             return (drift, logp_grad)
 
         t0, t1 = self.transport.check_interval(

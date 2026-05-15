@@ -3,20 +3,19 @@
 
 import glob
 
-ckpt_tag = "3379"
+ckpt_tag = "229"
+inference_steps = 500
 
-inference_steps = 50
 sampling_method = "euler"
-sim_ckpt = glob.glob(f"workdir/latinhypecubeprior/bck.3.run5/epoch={ckpt_tag}-step=0*.ckpt")[0]
+sim_ckpt = glob.glob(f"workdir/latinhypecubeprior/epoch={ckpt_tag}-step=0*.ckpt")[0]
 
 device = "cuda"
 
 import os, torch, tqdm, time
 import numpy as np
-from mdgen.equivariant_wrapper import EquivariantMDGenWrapper
+from mdgen.fed_wrapper import EquivariantFEDWrapper
 
-out_dir = f"experiments/latinhypecubeprior_nnoise0.02/MP_C_N32_fracpos/lossxtRepulsiveE_e{ckpt_tag}_{sampling_method}_step{inference_steps}/"
-
+out_dir = f"experiments/SiO2_coesite_nvt_nowrap/e{ckpt_tag}_{sampling_method}_step{inference_steps}/"
 
 os.makedirs(out_dir, exist_ok=True)
 with open(f"{out_dir}/README.md", "w") as fp:
@@ -30,7 +29,7 @@ hparams = ckpt["hyper_parameters"]
 args = hparams['args']
 args.sampling_method = sampling_method
 args.inference_steps = inference_steps
-args.data_dir = "data/MP_C_data/"
+args.data_dir = "data/SiO2/npt_1600K_1GPa/npt_coesite_dense/nvt/"
 # args.likelihood = "EJE"
 
 
@@ -39,7 +38,7 @@ dataset = EquivariantTransformerDataset_MaterialProject(args, species=[6], sim_c
 
 
 
-model = EquivariantMDGenWrapper(**hparams)
+model = EquivariantFEDWrapper(**hparams)
 print(model.model)
 model.load_state_dict(ckpt["state_dict"], strict=True)
 model.eval().to(device)
@@ -69,7 +68,8 @@ def rollout(model, batch):
 
 
 map_to_chemical_symbol = {
-    0: "C"
+    0: "O",
+    1: "Si"
 }
 
 idx_rollouts = np.arange(len(dataset))
