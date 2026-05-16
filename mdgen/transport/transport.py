@@ -514,7 +514,7 @@ class Transport:
                         # terms['loss'] = terms['loss_lattflow']
                 if self.weightfunction_x is not None:
                     loss_weight = self.weightfunction_x(x0[0] + model_output*t[:,None,None,None], model_kwargs['cell'], model_kwargs['num_atoms'], return_per_config=True).view(B,T)
-                    terms["loss_repulsive"] = (loss_weight * t[:,None]**4).sum()
+                    terms["loss_repulsive"] = (loss_weight * t[:,None]**4).mean()
                     terms['loss'] += terms['loss_repulsive']
             else:
                 _, drift_var = self.path_sampler.compute_drift(xt, t)
