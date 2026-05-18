@@ -760,7 +760,7 @@ class Sampler:
     def sample_sde_likelihood(
             self,
             *,
-            sampling_method="Euler_likelihood",
+            sampling_method="euler_likelihood",
             diffusion_form="SBDM",
             diffusion_norm=1.0,
             last_step="Mean",
@@ -824,8 +824,8 @@ class Sampler:
             xs.append(x)
 
             assert len(xs) == num_steps, "Samples does not match the number of steps"
-
-            return logprob_xs, _logprob_xs, xs[-1]
+            xs = th.stack(xs)
+            return logprob_xs, _logprob_xs, xs
 
         return _sample
 
@@ -893,7 +893,7 @@ class Sampler:
         - atol: absolute error tolerance for the solver
         - rtol: relative error tolerance for the solver
         """
-        assert not self.transport.latt_path
+
         def _likelihood_drift(x, t, model, **model_kwargs):
             x, _ = x
             eps = th.randint(2, x.size(), dtype=th.float, device=x.device) * 2 - 1
@@ -915,6 +915,36 @@ class Sampler:
             logp_grad = logp_grad.detach()
             return (drift, logp_grad)
 
+
+        def _likelihood_drift_lattpath(input_, t, model, **model_kwargs):
+            frac_, cell_, _ = input_
+            inv_cell_ = th.linalg.inv(cell_)
+            eps = th.randint(2, frac_.size(), dtype=th.float, device=frac_.device) * 2 - 1
+            if reverse:
+                t = th.ones_like(t) * (1 - t)
+            with th.enable_grad():
+                x = (frac_ @ cell_).detach().requires_grad_(True)
+                frac = x @ inv_cell_
+                assert x.requires_grad
+                ### This way doesn't accumulate the gradient through the ODE steps
+                model_kwargs['cell'] = cell_
+                if reverse:
+                    drift = self.drift(frac, t, model, **model_kwargs)
+                    drift = list(drift)
+                    drift[0] = -drift[0]
+                    drift[1] = -drift[1]
+                else:
+                    drift = self.drift(frac, t, model, **model_kwargs)
+                    drift = list(drift)
+                drift_x = drift[0] @ cell_ + frac @ drift[1]
+                grad = th.autograd.grad(th.sum(drift_x * eps), x)[0]
+                logp_grad = th.sum(grad * eps, dim=tuple(range(2, len(x.size()))))
+            
+            drift[0] = drift[0].detach()
+            drift[1] = drift[1].detach()
+            logp_grad = logp_grad.detach()
+            return (drift[0], drift[1], logp_grad)
+
         t0, t1 = self.transport.check_interval(
             self.transport.train_eps,
             self.transport.sample_eps,
@@ -924,8 +954,13 @@ class Sampler:
             last_step_size=0.0,
         )
 
+        if self.transport.latt_path:
+            drift = _likelihood_drift_lattpath
+        else:
+            drift = _likelihood_drift
+
         _ode = ode(
-            drift=_likelihood_drift,
+            drift=drift,
             t0=t0,
             t1=t1,
             sampler_type=sampling_method,
@@ -936,15 +971,17 @@ class Sampler:
         )
 
         def _sample_fn(x, model, **model_kwargs):
-            init_logp = th.zeros(x.size()[:2]).to(x)
-            input = (x, init_logp)
-            drift, delta_logp = _ode.sample(input, model, **model_kwargs)
-            # drift, delta_logp = drift[-1], delta_logp[-1]
+            init_logp = th.zeros(x[0].size()[:2]).to(x[0]) if isinstance(x, tuple) else th.zeros(x.size()[:2]).to(x)
+            if self.transport.latt_path:
+                input = (x[0], x[1], init_logp)
+            else:
+                input = (x, init_logp)
+            drift_0, drift_1, delta_logp = _ode.sample(input, model, **model_kwargs)
             delta_logp = delta_logp[-1]
 
             # prior_logp = self.transport.prior_logp(drift)
             logp =  delta_logp
-            return logp, drift
+            return logp, [drift_0, drift_1]
 
         return _sample_fn
 

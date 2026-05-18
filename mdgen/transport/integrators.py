@@ -13,10 +13,11 @@ class sde:
         t1,
         num_steps,
         sampler_type,
+        reverse_drift = None,
         score = None,
         num_corrector_step = 0,
     ):
-        assert t0 < t1, "SDE sampler has to be in forward time"
+        # assert t0 < t1, "SDE sampler has to be in forward time"
 
         self.inference_steps = num_steps
         # self.t = th.linspace(t0, t1, num_steps)
@@ -27,13 +28,14 @@ class sde:
         self.drift = drift
         self.diffusion = diffusion
         self.sampler_type = sampler_type
+        self.reverse_drift = reverse_drift
         self.score = score
         self.num_corrector_step = num_corrector_step
 
     def __Euler_Maruyama_step(self, x, mean_x, t, model, score_model, **model_kwargs):
         w_cur = th.randn(x.size()).to(x)
         t = th.ones(x.size(0)).to(x) * t
-        dw = w_cur * th.sqrt(self.dt)
+        dw = w_cur * th.sqrt(th.abs(self.dt))
         drift = self.drift(x, t, model, score_model, **model_kwargs)
         diffusion = self.diffusion(x, t)
         mean_x = x + drift * self.dt
@@ -42,6 +44,26 @@ class sde:
             for i in range(self.num_corrector_step):
                 x, mean_x = self.__corrector_step(x, t, score_model, **model_kwargs)
         return x, mean_x
+    
+
+    def __Euler_Maruyama_likelihood_step(self, x, mean_x, t, model, score_model, **model_kwargs):
+        w_cur = th.randn(x.size()).to(x)
+        t = th.ones(x.size(0)).to(x) * t
+        dw = w_cur * th.sqrt(th.abs(self.dt))
+        drift = self.drift(x, t, model, score_model, **model_kwargs)
+        diffusion = self.diffusion(x, t)
+        
+        mean_x = x + drift * self.dt
+        x_next = mean_x + th.sqrt(2 * diffusion) * dw
+        dist = th.distributions.Normal(loc=mean_x, scale=2*diffusion*th.abs(self.dt))
+        
+        _drift = self.reverse_drift(x, t, model, score_model, **model_kwargs)
+        _mean_x = x + _drift * self.dt
+        _w_cur = th.randn(x.size()).to(x)
+        _dw = _w_cur * th.sqrt(th.abs(self.dt))
+        x_prev = _mean_x + th.sqrt(2 * diffusion) * _dw
+        _dist = th.distributions.Normal(loc=_mean_x, scale=2*diffusion*th.abs(self.dt))
+        return x_next, mean_x, dist.log_prob(x_next), _dist.log_prob(x_prev)
     
     def __corrector_step(self, x, t, score_model, **model_kwargs):
         w_cur = th.randn(x.size()).to(x)
@@ -56,7 +78,7 @@ class sde:
     
     def __Heun_step(self, x, _, t, model, score_model, **model_kwargs):
         w_cur = th.randn(x.size()).to(x)
-        dw = w_cur * th.sqrt(self.dt)
+        dw = w_cur * th.sqrt(th.abs(self.dt))
         t_cur = th.ones(x.size(0)).to(x) * t
         diffusion = self.diffusion(x, t_cur)
         xhat = x + th.sqrt(2 * diffusion) * dw
@@ -69,6 +91,7 @@ class sde:
         """TODO: generalize here by adding all private functions ending with steps to it"""
         sampler_dict = {
             "euler": self.__Euler_Maruyama_step,
+            "euler_likelihood": self.__Euler_Maruyama_likelihood_step,
             "Heun": self.__Heun_step,
         }
 
@@ -93,8 +116,26 @@ class sde:
 
         return samples
 
+    def sample_likelihood(self, init, model, score_model, **model_kwargs):
+        """forward loop of sde"""
+        x = init
+        mean_x = init 
+        assert not th.allclose(mean_x, th.zeros_like(mean_x))
+        samples = []
+        logprob_samples = th.zeros(x.shape[:2]).to(x.device)
+        _logprob_samples = th.zeros(x.shape[:2]).to(x.device)
+        sampler = self.__forward_fn()
+        for ti in self.t[:-1]:
+            with th.no_grad():
+                x, mean_x, logprob_x, _logprob_x = sampler(x, mean_x, ti, model, score_model, **model_kwargs)
+                samples.append(x)
+                logprob_samples += logprob_x.sum(dim=-1).sum(dim=-1)
+                _logprob_samples += _logprob_x.sum(dim=-1).sum(dim=-1)
+                
+        return samples, logprob_samples, _logprob_samples
+
 from . import path
-from . import transport
+
 class ode:
     """ODE solver class"""
     def __init__(
@@ -125,11 +166,7 @@ class ode:
         device = x[0].device if isinstance(x, tuple) else x.device
         def _fn(t, x):
             t = th.ones(x[0].size(0)).to(device) * t if isinstance(x, tuple) else th.ones(x.size(0)).to(device) * t
-            if isinstance(x, tuple) and self.latt_path:
-                model_kwargs['cell'] = x[1]
-                model_output = self.drift(x[0], t, model, **model_kwargs)  
-            else:
-                model_output = self.drift(x, t, model, **model_kwargs)
+            model_output = self.drift(x, t, model, **model_kwargs)  
             return model_output
 
         t = self.t.to(device)

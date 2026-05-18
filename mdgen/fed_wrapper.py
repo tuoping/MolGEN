@@ -560,22 +560,38 @@ class EquivariantFEDWrapper(Wrapper):
             else:
                 raise Exception(f"Wrong likelihood parameter: {self.args.likelihood}")
         else:
-            if self.args.likelihood is not None:
-                raise Exception("Likelihood evaluation not implemented for SDE")
-            with torch.no_grad(): sample_fn = self.transport_sampler.sample_sde(num_steps=self.args.inference_steps, diffusion_form=self.args.diffusion_form, diffusion_norm=torch.tensor(self.args.diffusion_norm), score_model=partial(self.score_model.forward_inference, **prep['model_kwargs']))
-        
+            if self.args.likelihood == "FND":
+                with torch.no_grad(): sample_fn = self.transport_sampler.sample_sde_likelihood(num_steps=self.args.inference_steps, diffusion_form=self.args.diffusion_form, diffusion_norm=torch.tensor(self.args.diffusion_norm), score_model=partial(self.score_model.forward_inference, **prep['model_kwargs']) )
+                with torch.no_grad(): sample_fn_reverse = self.transport_sampler.sample_sde_likelihood(num_steps=self.args.inference_steps, diffusion_form=self.args.diffusion_form, diffusion_norm=torch.tensor(self.args.diffusion_norm), reverse=True, score_model=partial(self.score_model.forward_inference, **prep['model_kwargs']) )
+            elif self.args.likelihood is None:
+                with torch.no_grad(): sample_fn = self.transport_sampler.sample_sde(num_steps=self.args.inference_steps, diffusion_form=self.args.diffusion_form, diffusion_norm=torch.tensor(self.args.diffusion_norm), score_model=partial(self.score_model.forward_inference, **prep['model_kwargs']) )
+            else:
+                raise Exception("Wrong likelihood argument (not implemented for SDE): "+self.args.likelihood)
+
         assert not self.args.guided
         if self.transport.latt_path:
-            if self.args.likelihood is not None:
-                raise Exception("Likelihood evaluation not implemented for variable lattice")
-            samples = sample_fn(
-                (zs, cell0),
-                partial(self.model.forward_inference, **prep['model_kwargs'])
-            )
+            if self.args.likelihood == "EJE":
+                zs = zs.detach()
+                cell0 = cell0.detach()
+                samples_logp, samples = sample_fn(
+                    (zs, cell0),
+                    partial(self.model.forward_inference, **prep['model_kwargs'])
+                )                
+            else:
+                samples = sample_fn(
+                    (zs, cell0),
+                    partial(self.model.forward_inference, **prep['model_kwargs'])
+                )
         else:
             if self.args.likelihood == "EJE":
-                zs = zs.detach().requires_grad_(True)
+                zs = zs.detach()
                 samples_logp, samples = sample_fn(
+                    zs,
+                    partial(self.model.forward_inference, **prep['model_kwargs'])
+                )
+            elif self.args.likelihood == "FND":
+                zs = zs.detach()
+                samples_logp, _samples_logp, samples = sample_fn(
                     zs,
                     partial(self.model.forward_inference, **prep['model_kwargs'])
                 )
@@ -599,13 +615,22 @@ class EquivariantFEDWrapper(Wrapper):
 
             if self.transport.latt_path:
                 samples[0] = samples[0] *prep["model_kwargs"]['v_mask'] + prep["latents"]*(1-prep["model_kwargs"]['v_mask'])
-                cell_out = samples[1][-1]
-                cell_out = cell_out.detach().requires_grad_(False)
             else:
                 samples = samples *prep["model_kwargs"]['v_mask'] + prep["latents"]*(1-prep["model_kwargs"]['v_mask'])
 
             if self.args.likelihood == "EJE":
-                reverse_samples_logp, samples_zs = sample_fn_reverse(
+                if self.transport.latt_path:
+                    reverse_samples_logp, samples_zs = sample_fn_reverse(
+                            (samples[0][-1], samples[1][-1]),
+                            partial(self.model.forward_inference, **prep['model_kwargs'])
+                        )
+                else:
+                    reverse_samples_logp, samples_zs = sample_fn_reverse(
+                            samples[-1],
+                            partial(self.model.forward_inference, **prep['model_kwargs'])
+                        )
+            elif self.args.likelihood == "FND":
+                reverse_samples_logp, _reverse_samples_logp, samples_zs = sample_fn_reverse(
                         samples[-1],
                         partial(self.model.forward_inference, **prep['model_kwargs'])
                     )
@@ -618,12 +643,16 @@ class EquivariantFEDWrapper(Wrapper):
             # aa_out = batch['species']
         print('Time =', time.time()-s_time)
 
-        if self.transport.latt_path:
-            return samples[0], aa_out, samples[1]
+
+        if self.args.likelihood == "EJE":
+            return samples_logp, samples, aa_out, reverse_samples_logp, zs, samples_zs
+        elif self.args.likelihood == "FND":
+            if self.transport.latt_path:
+                raise Exception("FND for latt_path not implemented")
+            return torch.concatenate([samples_logp, _samples_logp], dim=-1), samples, aa_out, torch.concatenate([reverse_samples_logp, _reverse_samples_logp], dim=-1), zs, samples_zs
         else:
-            if self.args.likelihood == "EJE":
-                return samples_logp, samples, aa_out, reverse_samples_logp, zs, samples_zs
+            if self.transport.latt_path:
+                return samples[0], aa_out, samples[1]
             else:
                 return samples, aa_out
-
     
