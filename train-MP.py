@@ -73,23 +73,40 @@ if args.ckpt is not None:
     model.load_state_dict(checkpoint["state_dict"], strict=False )
 # assert model.transport.latt_path
 
-callbacks_fn = [
-    # ModelCheckpoint(
-    #     dirpath=os.environ["MODEL_DIR"], 
-    #     save_top_k=-1,
-    #     every_n_epochs=args.ckpt_freq,
-    # ),
-    ModelCheckpoint(
-        dirpath=os.environ["MODEL_DIR"], 
-        filename="{epoch:03d}-{step:07d}-{val_loss_path:.4f}",
-        monitor="val_loss_path",
-        save_top_k=1,
-        save_last=True
-    ),
+if "Schrodinger" in args.path_type:
+    callbacks_fn = [
+        # ModelCheckpoint(
+        #     dirpath=os.environ["MODEL_DIR"], 
+        #     save_top_k=-1,
+        #     every_n_epochs=args.ckpt_freq,
+        # ),
+        ModelCheckpoint(
+            dirpath=os.environ["MODEL_DIR"], 
+            filename="{epoch:03d}-{step:07d}-{val_loss_path:.4f}",
+            monitor="val_loss_path",
+            save_top_k=1,
+            save_last=True
+        ),
 
-    ModelSummary(max_depth=2),
-]
+        ModelSummary(max_depth=2),
+    ]
+else:
+    callbacks_fn = [
+        # ModelCheckpoint(
+        #     dirpath=os.environ["MODEL_DIR"], 
+        #     save_top_k=-1,
+        #     every_n_epochs=args.ckpt_freq,
+        # ),
+        ModelCheckpoint(
+            dirpath=os.environ["MODEL_DIR"], 
+            filename="{epoch:03d}-{step:07d}-{val_loss:.4f}",
+            monitor="val_loss",
+            save_top_k=1,
+            save_last=True
+        ),
 
+        ModelSummary(max_depth=2),
+    ]
 trainer = pl.Trainer(
     accelerator="gpu" if torch.cuda.is_available() else 'auto',
     max_epochs=args.epochs,

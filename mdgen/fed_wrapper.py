@@ -285,7 +285,8 @@ class EquivariantFEDWrapper(Wrapper):
         mean_log = get_log_mean(log)
         self.log("val_loss", mean_log['val_loss'])
         # self.log("val_loss_gen", mean_log['val_loss_gen'])
-        self.log("val_loss_path", mean_log['val_loss_path'])
+        if self.score_model is not None:
+            self.log("val_loss_path", mean_log['val_loss_path'])
         self.print_log(prefix='val', save=False)
 
     def prep_batch(self, batch):

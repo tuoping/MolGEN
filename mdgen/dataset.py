@@ -169,7 +169,11 @@ def calculate_rdf_pair(
 
     return r_values, g_r, integral_g_r
 
-from mace.calculators import MACECalculator
+try:
+    from mace.calculators import MACECalculator
+    HAS_MACE = True
+except ImportError:
+    pass
 
 class EquivariantTransformerDataset_CrCoNi(torch.utils.data.Dataset):
     def __init__(self, traj_dirname, cutoff, num_species=5, num_frames=None, random_starting_point=True, localmask=False, sim_condition=True, stage="train"):

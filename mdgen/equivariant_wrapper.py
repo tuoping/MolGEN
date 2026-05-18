@@ -249,7 +249,7 @@ class EquivariantMDGenWrapper(Wrapper):
             )
         else:
             self.score_model = None
-
+        from .model.polynomialRepulsiveEnergy import PolynomialRepulsiveEnergy
         self.transport = create_transport(
             args,
             args.path_type,
@@ -257,7 +257,8 @@ class EquivariantMDGenWrapper(Wrapper):
             train_eps=1e-5,
             sample_eps=1e-5,
             score_model=self.score_model,
-            latt_path = latt_path
+            latt_path = latt_path,
+            weightfunction_x=PolynomialRepulsiveEnergy(1)
         )
         if self.transport.latt_path:
             self.transport.mean_atomic_volume = args.mean_atomic_volume
@@ -434,6 +435,8 @@ class EquivariantMDGenWrapper(Wrapper):
         self.prefix_log("loss_flow", out_dict['loss_flow'].detach().cpu())
         if self.transport.latt_path:
             self.prefix_log('loss_lattflow', out_dict['loss_lattflow'].detach().cpu())
+        if self.transport.weightfunction_x is not None:
+            self.prefix_log('loss_repulsive', out_dict['loss_repulsive'].detach().cpu())
 
         self.prefix_log('dur', time.time() - self.last_log_time)
         if 'name' in batch:
