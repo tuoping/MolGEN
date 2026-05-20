@@ -3,11 +3,11 @@
 
 import glob
 
-ckpt_tag = "889"
+ckpt_tag = "779"
 inference_steps = 100
 
 sampling_method = "euler"
-sim_ckpt = glob.glob(f"workdir/default/epoch={ckpt_tag}-step=0*.ckpt")[0]
+sim_ckpt = glob.glob(f"workdir/tune/epoch={ckpt_tag}-step=0*.ckpt")[0]
 
 device = "cuda"
 
@@ -15,8 +15,8 @@ import os, torch, tqdm, time
 import numpy as np
 from mdgen.fed_wrapper import EquivariantFEDWrapper
 
-out_dir = f"experiments/SiO2_coesite_npt_nowrap/e{ckpt_tag}_{sampling_method}_step{inference_steps}/"
-
+out_dir = f"experiments/SiO2_quartz_npt_nowrap/e{ckpt_tag}_{sampling_method}_step{inference_steps}/"
+print("Output folder: ", out_dir)
 os.makedirs(out_dir, exist_ok=True)
 with open(f"{out_dir}/README.md", "w") as fp:
     fp.write(sim_ckpt)
@@ -84,9 +84,7 @@ all_rollout_atoms = []
 all_rollout_atoms_ref = []
 start = time.time()
 all_logp = []
-for i_rollout in range(429, len(idx_rollouts)):
-    if i_rollout % 8 == 0:
-        continue
+for i_rollout in range(0, len(idx_rollouts)):
     idx = idx_rollouts[i_rollout]
     print(i_rollout, idx)
     filename = os.path.join(out_dir, f"gentraj_{idx}.xyz")
@@ -94,11 +92,8 @@ for i_rollout in range(429, len(idx_rollouts)):
     if args.likelihood is not None:
         filename_reverse = os.path.join(out_dir, f"reverse_gentraj_{idx}.xyz")
         filename_logp = os.path.join(out_dir, f"Logp_{idx}.txt")
-        fout_logp = open(filename_logp, "a")
         filename_reverse_logp = os.path.join(out_dir, f"reverse_Logp_{idx}.txt")
-        fout_reverse_logp = open(filename_reverse_logp, "a")
         filename_zs = os.path.join(out_dir, f"Uzs_{idx}.txt")
-        fout_zs = open(filename_zs, "a")
 
     filename_ref = os.path.join(out_dir, f"reftraj_{idx}.xyz")
 
@@ -128,14 +123,11 @@ for i_rollout in range(429, len(idx_rollouts)):
                 all_pred_zs = all_pred_reverse[0]
                 pred_zs = all_pred_zs[-1]
                 pred_zs_cell = all_pred_reverse[1][-1]
-                np.savetxt(fout_logp, logp.detach().cpu().numpy() )
-                fout_logp.flush()
-                np.savetxt(fout_reverse_logp, reverse_logp.detach().cpu().numpy() )
-                fout_reverse_logp.flush()
+                np.savetxt(filename_logp, logp.detach().cpu().numpy() )
+                np.savetxt(filename_reverse_logp, reverse_logp.detach().cpu().numpy() )
                 N = all_pred_frac_pos.shape[-2]
                 sigma = (torch.ones_like(zs) * args.x0std/(N**(1./3.)))@pred_zs_cell
-                np.savetxt(fout_zs, [[( (zs@all_cell[0])**2/2/sigma**2).sum().detach().cpu().numpy(), ( (pred_zs@pred_zs_cell)**2/2/sigma**2).sum().detach().cpu().numpy()]])
-                fout_zs.flush()
+                np.savetxt(filename_zs, [[( (zs@all_cell[0])**2/2/sigma**2).sum().detach().cpu().numpy(), ( (pred_zs@pred_zs_cell)**2/2/sigma**2).sum().detach().cpu().numpy()]])
         else:
             if args.likelihood is None:
                 all_pred_frac_pos, _  = model.inference(batch)
@@ -143,14 +135,11 @@ for i_rollout in range(429, len(idx_rollouts)):
                 logp, all_pred_frac_pos, _, reverse_logp, zs, all_pred_zs = model.inference(batch)
                 pred_zs = all_pred_zs[-1]
                 cell = batch['cell']
-                np.savetxt(fout_logp, logp.detach().cpu().numpy() )
-                fout_logp.flush()
-                np.savetxt(fout_reverse_logp, reverse_logp.detach().cpu().numpy() )
-                fout_reverse_logp.flush()
+                np.savetxt(filename_logp, logp.detach().cpu().numpy() )
+                np.savetxt(filename_reverse_logp, reverse_logp.detach().cpu().numpy() )
                 N = all_pred_frac_pos.shape[-2]
                 sigma = (torch.ones_like(zs) * args.x0std/(N**(1./3.)))@cell
-                np.savetxt(fout_zs, [[( (zs@cell)**2/2/sigma**2).sum().detach().cpu().numpy(), ( (pred_zs@cell)**2/2/sigma**2).sum().detach().cpu().numpy()]])
-                fout_zs.flush()
+                np.savetxt(filename_zs, [[( (zs@cell)**2/2/sigma**2).sum().detach().cpu().numpy(), ( (pred_zs@cell)**2/2/sigma**2).sum().detach().cpu().numpy()]])
         if i_rollout == 0:
             dump_idx = range(len(all_pred_frac_pos))
         else:
