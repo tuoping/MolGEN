@@ -362,7 +362,7 @@ class EquivariantMDGenWrapper(Wrapper):
             }
         
         if (self.args.tps_condition and conditional_batch):
-            data["conditions"] = {
+            data['model_kwargs']["conditions"] = {
                         'cond_f':{
                             'x': latents[:,0,...].unsqueeze(1).expand(B,T,L,3).reshape(-1,3).to(_TORCH_FLOAT_PRECISION),             # Only using the 1st configuration as cond_f
                             "fragments_idx": batch['fragments_idx'][:,0,...].unsqueeze(1).expand(B,T,L).reshape(-1),
@@ -375,7 +375,7 @@ class EquivariantMDGenWrapper(Wrapper):
                         }
                     }
         elif (self.args.sim_condition and conditional_batch):
-            data["conditions"] = {
+            data['model_kwargs']["conditions"] = {
                         'cond_f':{
                             'x': latents[:,0,...].unsqueeze(1).expand(B,T,L,3).reshape(-1,3).to(_TORCH_FLOAT_PRECISION),             # Only using the 1st configuration as cond_f
                             "fragments_idx": batch['fragments_idx'][:,0,...].unsqueeze(1).expand(B,T,L).reshape(-1),
