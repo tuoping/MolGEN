@@ -220,25 +220,20 @@ def compute_jsd_loss(mu_t_x1, standard_bandwidth_factor, mu_theta, k_max=3):
     # diff: (B, N, K, 3)
     diff = (x - mu_t_x1[:, :, None, :] + k_vecs[None, None, :, :])   # @cell[:, None, :, :]
     sq_norms = th.sum(diff ** 2, dim=-1)  # (B, N, K)
+    logZ_P = th.logsumexp(-sq_norms / (2) * bandwidth_factor, dim=-1) # (B, N)
+    logP_ = (-sq_norms / (2) * bandwidth_factor) - logZ_P[:,:,None]  # (B, N, K)
 
-    log_weights = -sq_norms / (2) * bandwidth_factor  # (B, N, K)
-    log_weights = log_weights - log_weights.max(dim=-1, keepdim=True).values
-    weights = th.exp(log_weights)
-    Z = weights.sum(dim=-1)  # (B, N, 1)
+    pred_diff = (x - mu_theta[:, :, None, :] + k_vecs[None, None, :, :])   # @cell  # (B, None, N, 3)
+    pred_sq_norms = th.sum(pred_diff ** 2, dim=-1) # (B, N, K)
+    logZ_Q = th.logsumexp(-pred_sq_norms / (2) * bandwidth_factor, dim=-1) # (B, N)
+    logQ_ = (-pred_sq_norms) / (2) * bandwidth_factor - logZ_Q[:,:,None]  # (B, N, K)
 
-    logP_ = th.logsumexp(-sq_norms / (2) * bandwidth_factor, dim=-1) - th.log(Z)  # (B, N)
-    # subtract normalization (2*pi*var)^{3/2} cancels in ratio, keep for correctness
-    # but original code also drops the prefactor, so we follow suit
+    logm = th.logaddexp(logP_, logQ_) - th.log(th.tensor(2.0, device=mu_t_x1.device))# (B, N, K)
 
-    pred_diff = (x - mu_theta)   # @cell  # (B, N, 3)
-    logQ_ = -th.sum(pred_diff ** 2, dim=-1) / (2) * bandwidth_factor  # (B, N)
+    kl_p_m = (th.exp(logP_) * (logP_ - logm)).sum(dim=-1)  # (B,N)
+    kl_q_m = (th.exp(logQ_) * (logQ_ - logm)).sum(dim=-1)  # (B,N)
 
-    logm = th.logaddexp(logP_, logQ_) - th.log(th.tensor(2.0, device=mu_t_x1.device))
-
-    kl_p_m = (th.exp(logP_) * (logP_ - logm)).sum(dim=-1)  # (B,)
-    kl_q_m = (th.exp(logQ_) * (logQ_ - logm)).sum(dim=-1)  # (B,)
-
-    jsd = 0.5 * kl_p_m + 0.5 * kl_q_m  # (B,)
+    jsd = 0.5 * kl_p_m + 0.5 * kl_q_m  # (B,N)
     return jsd
 
 class Transport:
@@ -340,7 +335,6 @@ class Transport:
         t0, t1 = self.check_interval(self.train_eps, self.sample_eps)
         # t = th.rand((x1.shape[0],))
         t, _ = sample_t_u_shaped(shape[0], self.args.beta_sample_t, eps=0)
-        # t = th.zeros(shape[0])
         t = t*(t1-t0) + t0
         t = t.to(device)
         return t, x0, x0_mean
@@ -488,9 +482,9 @@ class Transport:
                     cell = model_kwargs['cell'].view(B*T,3,3)
                     terms['loss_l1'] = mean_flat((model_output.view(B*T,N,3)@cell - ut.view(B*T,N,3)@cell).abs(), mask.view(B*T,N,3))
                     volume = th.abs(th.det(cell))
-                    jsd = compute_jsd_loss(xt.view(B*T,N,3), 1./(self.args.x0std/(N)**(1./3.)), (x0[0]+model_output*t[:,None,None,None]).view(B*T,N,3), 3) * (volume) ** (2./3.)
-                    # jsd = compute_jsd_loss(xt.view(B*T,N,3), t*(N)**(1./3.)/self.args.x0std, (x0[0]+model_output*t[:,None,None,None]).view(B*T,N,3), 3) * (volume) ** (2./3.)
-                    terms['loss_symmkl'] = mean_flat(jsd, mask.view(B*T,N*3).mean(dim=-1)) 
+                    # jsd = compute_jsd_loss(xt.view(B*T,N,3), 1./(self.args.x0std/(N)**(1./3.)), (x0[0]+model_output*t[:,None,None,None]).view(B*T,N,3), 3) * (volume) ** (2./3.)
+                    jsd = compute_jsd_loss(xt.view(B*T,N,3), t*(N)**(1./3.)/self.args.x0std, (x0[0]+model_output*t[:,None,None,None]).view(B*T,N,3), 3) * (volume[:,None]) ** (2./3.) # (B,N)
+                    terms['loss_symmkl'] = (jsd * (mask * (t > 0.5).to(int)[:,None,None,None]).view(B*T,N,3).mean(dim=-1)).mean()
                     terms['loss_flow'] = terms['loss_symmkl'] + terms['loss_l1'] 
                 elif self.args.KL == "L1":
                     cell = model_kwargs['cell'].view(B*T,3,3)
