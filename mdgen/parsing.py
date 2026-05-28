@@ -97,7 +97,7 @@ def parse_train_args():
     group.add_argument('--design_from_traj', action='store_true')
     group.add_argument('--sim_condition', action='store_true')
     group.add_argument('--frame_interval', type=int, default=1)
-    group.add_argument('--ratio_conditonal', type=float, default=1.0)
+    group.add_argument('--ratio_conditional', type=float, default=1.0)
     group.add_argument('--cond_interval', type=int, default=None) # for superresolution
     
     ## Equivariant Transformer settings

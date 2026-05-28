@@ -43,7 +43,7 @@ args.object_aware = False
 args.design = False
 args.potential_model = False
 args.pbc = False 
-args.ratio_conditonal = 1
+args.ratio_conditional = 1
 
 os.environ["MODEL_DIR"] = os.path.join("tests_cache", args.run_name)
 

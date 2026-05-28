@@ -42,7 +42,7 @@ args.path_type = "Linear"
 args.batch_size = batch_size
 
 args.tps_condition = True
-args.ratio_conditonal = 1.
+args.ratio_conditional = 1.
 args.sim_condition = False
 # args.prediction='score'
 # args.sampling_method = "Euler"

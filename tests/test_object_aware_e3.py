@@ -37,7 +37,7 @@ args.batch_size = batch_size
 
 args.tps_condition = True
 args.sim_condition = False
-args.ratio_conditonal = 1.
+args.ratio_conditional = 1.
 # args.prediction='score'
 # args.sampling_method = "Euler"
 
