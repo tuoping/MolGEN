@@ -506,10 +506,6 @@ class Transport:
                         terms['loss_lattflow'] = mean_flat((lowertrigflow_output - lowertrigulatt).abs(), th.ones_like(lowertrigflow_output, device=lowertrigflow_output.device))
                         terms['loss'] = terms['loss_flow'] + terms['loss_lattflow']
                         # terms['loss'] = terms['loss_lattflow']
-                if self.weightfunction_x is not None:
-                    loss_weight = self.weightfunction_x(x0[0] + model_output*t[:,None,None,None], model_kwargs['cell'], model_kwargs['num_atoms'], return_per_config=True).view(B,T)
-                    terms["loss_repulsive"] = (loss_weight * t[:,None]**4).mean()
-                    terms['loss'] += terms['loss_repulsive']
             else:
                 _, drift_var = self.path_sampler.compute_drift(xt, t)
                 sigma_t, _ = self.path_sampler.compute_sigma_t(path.expand_t_like_x(t, xt))
