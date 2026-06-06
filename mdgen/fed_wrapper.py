@@ -407,7 +407,7 @@ class EquivariantFEDWrapper(Wrapper):
                         }
                     }
 
-        if self.score_model is not None or self.args.KL == "score":
+        if (self.score_model is not None) or (self.args.KL == "score"):
             data["forces"] = batch['forces'].to(_TORCH_FLOAT_PRECISION)
 
        
