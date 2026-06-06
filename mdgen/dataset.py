@@ -758,12 +758,11 @@ except ImportError:
     pass
 
 class EquivariantTransformerDataset_phasediagram(torch.utils.data.Dataset):
-    def __init__(self, args, species, localmask=False, sim_condition=False, stage="train", save_dir = None, sel_idx = None):
+    def __init__(self, args, species, num_species, localmask=False, sim_condition=False, stage="train", save_dir = None, sel_idx = None):
         traj_dir = args.data_dir
         cutoff = args.cutoff
         temperature = 300
         self.kT = temperature*8.617*10**-5
-        num_species = len(species)
         self.num_species = num_species
         type_map = {}
         type_map = {}
@@ -781,7 +780,7 @@ class EquivariantTransformerDataset_phasediagram(torch.utils.data.Dataset):
             self.calculator = DP(model="data/SiO2/DP_R2SCAN.pb")
         
             traj_filename = os.path.join(traj_dir, "dump.equi")
-            atoms_list = ase.io.read(traj_filename, index=":", format="lammps-dump-text")  
+            atoms_list = ase.io.read(traj_filename, index=":", format="lammps-dump-text")[10:]
             atom_encoder = OneHotEncoder(sparse_output=False)
             atom_encoder.fit(np.array(species).reshape(-1,1))
             
@@ -831,8 +830,38 @@ class EquivariantTransformerDataset_phasediagram(torch.utils.data.Dataset):
             torch.save([dataset[i] for i in val_idx], f'{save_dir}/val.pt')
             torch.save([dataset[i] for i in train_idx], f'{save_dir}/train.pt')
         else:
-            self.all_dataset = torch.load(os.path.join(traj_dir, f"{stage}.pt"), weights_only=False)
+            dirname = os.path.join(traj_dir, "npt_1600K_1GPa/npt_coesite_dense/npt")
+            P = 1/100.
+            T = (1600-500)/(5000.-500.)
+            dataset_1 = torch.load(os.path.join(dirname, f"{stage}.pt"), weights_only=False)
+            vol_0 = torch.linalg.det(dataset_1[0].cell_0)
+            vol = torch.stack([torch.linalg.det(data.cell) for data in dataset_1]).mean()
+            for data in dataset_1:
+                data.P = P
+                data.T = T
+                data.cell_0 = data.cell_0 * (vol/vol_0)**(1./3.)
+            
+            dirname = os.path.join(traj_dir, "npt_1600K_1GPa/npt_quartz_dense/npt")
+            P = 1/100.
+            T = (1600-500)/(5000.-500.)
+            dataset_2 = torch.load(os.path.join(dirname, f"{stage}.pt"), weights_only=False)
+            vol_0 = torch.linalg.det(dataset_2[0].cell_0)
+            vol = torch.stack([torch.linalg.det(data.cell) for data in dataset_2]).mean()
+            for data in dataset_2:
+                data.P = P
+                data.T = T
+                data.cell_0 = data.cell_0 * (vol/vol_0)**(1./3.)
 
+            self.all_dataset = dataset_1 + dataset_2         
+            # self.all_dataset = torch.load(os.path.join(traj_dir, f"{stage}.pt"), weights_only=False)
+
+            self.gibbs_sampling = False
+            if self.gibbs_sampling:
+                self.mean_energy = torch.stack([data.E for data in self.all_dataset]).mean()
+                kB = 8.617333262E-5 
+                for data in self.all_dataset:
+                    data.reduced_E = (data.E - self.mean_energy)/1600/kB
+            
 
     def __len__(self):
         return len(self.all_dataset)
@@ -845,11 +874,17 @@ class EquivariantTransformerDataset_phasediagram(torch.utils.data.Dataset):
         # assert torch.all(x>=0)
         # assert torch.all(x<=1)
         T,L,_ = x.shape
-            
-        _mask = torch.ones([T,L]) # T,L
+        
+        if self.gibbs_sampling:
+            _mask = torch.stack([-data.reduced_E for data in dataset]).exp().unsqueeze(-1).expand(-1,L)
+        else:
+            _mask = torch.ones([T,L]) # T,L
         _v_mask = _mask.unsqueeze(-1).expand(-1,-1,3) # T,L,3
         _h_mask = _mask.unsqueeze(-1).expand(-1,-1,self.num_species) # T,L,num_species
 
+        dataset_z = torch.stack([data.z for data in dataset])
+        padded_z = torch.stack([ torch.zeros((*data.z.shape[:-1], self.num_species)) for data in dataset]) # T,L,num_species
+        padded_z[:,:,:dataset_z.shape[-1]] = dataset_z
 
         if self.localmask:
             raise Exception("Yet to implement localmask")
@@ -860,7 +895,7 @@ class EquivariantTransformerDataset_phasediagram(torch.utils.data.Dataset):
 
         return {
             "name": "Material Project",
-            "species": torch.stack([data.z for data in dataset]),
+            "species": padded_z,
             "x": x,
             "x0": x0,
             "forces": torch.stack([data.forces for data in dataset]),
