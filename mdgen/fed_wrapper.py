@@ -249,7 +249,7 @@ class EquivariantFEDWrapper(Wrapper):
             )
         else:
             self.score_model = None
-
+        from .model.polynomialRepulsiveEnergy import PolynomialRepulsiveEnergy
         self.transport = create_transport(
             args,
             args.path_type,
@@ -257,7 +257,8 @@ class EquivariantFEDWrapper(Wrapper):
             train_eps=1e-5,
             sample_eps=1e-5,
             score_model=self.score_model,
-            latt_path = latt_path
+            latt_path = latt_path,
+            weightfunction_x=PolynomialRepulsiveEnergy(1.4, prefactor=10, n_pow=4)
         )
 
         self.transport_sampler = Sampler(self.transport)
@@ -354,15 +355,39 @@ class EquivariantFEDWrapper(Wrapper):
             batch['inpainting_mask'] = torch.ones(B,T,L, dtype=int, device=species.device)
             batch['inpainting_v_mask'] = torch.ones(B,T,L,3, dtype=int, device=species.device)
 
-        conditional_batch = False
+        if self.args.sim_condition:
+            cond_mask_f = torch.zeros(B, T, L, dtype=int, device=species.device)
+            cond_mask = torch.zeros(B, T, L, dtype=int, device=species.device)
+            cond_mask_f[:, 0] = 1
+            cond_mask[:, -1] = 1
+            if self.stage == "inference":
+                conditional_batch = True
+            else:
+                conditional_batch = torch.rand(1)[0] >= 1-self.args.ratio_conditional
+                # conditional_batch = True
+
+        elif self.args.tps_condition:
+            cond_mask_f = torch.zeros(B, T, L, dtype=int, device=species.device)
+            cond_mask_r = torch.zeros(B, T, L, dtype=int, device=species.device)
+            cond_mask = torch.zeros(B, T, L, dtype=int, device=species.device)
+            cond_mask_f[:, 0] = 1
+            cond_mask_r[:, -1] = 1
+            cond_mask[:, 1:-1] = 1
+            if self.stage == "inference":
+                conditional_batch = True
+            else:
+                conditional_batch = torch.rand(1)[0] >= 1-self.args.ratio_conditional
+                # conditional_batch = True
+
+        else:
+            conditional_batch = None
 
         data = {
                     "species": species.to(_TORCH_FLOAT_PRECISION),
                     "latents": latents.to(_TORCH_FLOAT_PRECISION),
                     'loss_mask': v_loss_mask.to(_TORCH_FLOAT_PRECISION),
                     'model_kwargs': {
-                        # "cv": batch['cv'].to(_TORCH_FLOAT_PRECISION),
-                        "cv": None,
+                        "cv": torch.zeros(B, T, 1, dtype=_TORCH_FLOAT_PRECISION, device=species.device),
                         "aatype": species.to(_TORCH_FLOAT_PRECISION),
                         'x1': latents.to(_TORCH_FLOAT_PRECISION),
                         'v_mask': (v_loss_mask!=0).to(int),
@@ -373,11 +398,18 @@ class EquivariantFEDWrapper(Wrapper):
                     'conditional_batch': conditional_batch
                 }
         
-        if self.score_model is not None:
+        if (self.args.sim_condition and conditional_batch):
+            data['model_kwargs']["conditions"] = {
+                        'cond_f':{
+                            'x': batch["x0"].reshape(-1,3).to(_TORCH_FLOAT_PRECISION),
+                            'cell': batch["cell0"].to(_TORCH_FLOAT_PRECISION),
+                            'mask': cond_mask_f[:,0,...].unsqueeze(1).expand(B,T,L).reshape(-1),          # Since only 1st configuration is inputed and cond_mask already masked the prediction only to the TPS, cond_mask_f here is a place_holder
+                        }
+                    }
+
+        if self.score_model is not None or self.args.KL == "score":
             data["forces"] = batch['forces'].to(_TORCH_FLOAT_PRECISION)
 
-        if conditional_batch:
-            raise Exception("Not implemented")
        
         return data
     
@@ -388,10 +420,9 @@ class EquivariantFEDWrapper(Wrapper):
         prep = self.prep_batch(batch)
 
         start = time.time()
-        
-        if self.score_model is None:
-            forces = None
-        else:
+
+        forces = None
+        if (self.score_model is not None) or (self.args.KL == "score"):
             forces = prep['forces']
         out_dict = self.transport.training_losses(
             model=self.model,
@@ -415,11 +446,15 @@ class EquivariantFEDWrapper(Wrapper):
             self.prefix_log("loss_path", out_dict['loss_dsm'].detach().cpu()+out_dict['loss_flow'].detach().cpu())
         if self.args.KL == 'symm':
             self.prefix_log('loss_symmkl', out_dict['loss_symmkl'].detach().cpu())
-            # self.prefix_log('loss_entropy', out_dict['loss_entropy'])
             self.prefix_log('loss_l1', out_dict['loss_l1'].detach().cpu())
         if self.args.KL == 'alpha':
             self.prefix_log('loss_alphadiv', out_dict['loss_alphadiv'].detach().cpu())
             self.prefix_log('loss_l1', out_dict['loss_l1'].detach().cpu())
+        if self.args.KL == 'score':
+            self.prefix_log('loss_score', out_dict['loss_score'].detach().cpu())
+            self.prefix_log('loss_l1', out_dict['loss_l1'].detach().cpu())
+        if self.args.loss_consistency:
+            self.prefix_log('loss_consistency', out_dict['loss_consistency'].detach().cpu())
 
         if self.args.potential_model:
             self.prefix_log('loss_gen', loss_gen.detach().cpu())
