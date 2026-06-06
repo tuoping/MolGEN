@@ -190,14 +190,11 @@ class Encoder_dpm(Encoder):
 
         ## Version 2
         l0 = edge_score_to_lattice_score_frac_symmetric(self.phi_l(e), edge_index, edge_vec, num_nodes)
-        ### Version 1 
-        # l0 = scatter(edge_vec[:, None, None, :] * self.phi_l(e)[:, :, None, None] / fracedge_norm[:,None,None,None] / fracedge_norm[:,None,None,None] * edge_vec[:, None, :, None], index=j, dim=0, dim_size=num_nodes)
         ### Version 3 (polar)
         # l0 = self.phi_l_polar(torch.cat([
         #     f, scatter(self.phi_s(e) * f[i], index=j, dim=0, dim_size=num_nodes)
         # ], dim=-1))
         # print(h0.shape, l0.shape)
-        # raise RuntimeError
         # Add time embedding to node features
         h0 = h0 + self.embed_time(t)
         return h0, v0, edge_attr, l0
@@ -490,7 +487,7 @@ class EquivariantTransformer_dpm(EquivariantTransformer):
                         out_cond['cond_f'] = get_pbc_distances(
                             conditions["cond_f"]["x"].view(-1, 3),
                             edge_index,
-                            cell.view(-1, 3, 3),
+                            conditions["cond_f"]["cell"].view(-1, 3, 3),
                             to_jimages,
                             num_atoms.view(-1),
                             num_bonds,
@@ -515,7 +512,7 @@ class EquivariantTransformer_dpm(EquivariantTransformer):
                         out_cond['cond_r'] = get_pbc_distances(
                             conditions["cond_r"]["x"].view(-1, 3),
                             edge_index,
-                            cell.view(-1, 3, 3),
+                            conditions["cond_r"]["cell"].view(-1, 3, 3),
                             to_jimages,
                             num_atoms.view(-1),
                             num_bonds,
@@ -558,7 +555,9 @@ class EquivariantTransformer_dpm(EquivariantTransformer):
         # else:
         assert not self.object_aware
         if cv is not None:
-            cv = torch.repeat_interleave(cv.view(-1, cv.shape[-1]), torch.ones(B*T).to(int).to(x.device)*N, dim=0)
+            # cv = torch.repeat_interleave(cv.view(-1, cv.shape[-1]), torch.ones(B*T).to(int).to(x.device)*N, dim=0)
+            cv = cv.reshape(B * T, cv.shape[-1])
+            cv = cv[:, None, :].expand(B * T, N, cv.shape[-1]).reshape(B * T * N, cv.shape[-1])
         scaler_out, vector_out, _lattice_tensor_out = self._graph_forward(species.reshape(-1,self.num_species), edge_index, edge_attr, edge_vec, t.reshape(-1,1), cv, out_cond)
         lattice_vec = cell.view(B*T,3,3)
         inv_lattice = torch.linalg.inv(lattice_vec)
