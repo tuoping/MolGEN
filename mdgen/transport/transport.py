@@ -328,8 +328,8 @@ class Transport:
                 # _x0_mean = th.rand(shape, device=device)
             else:
                 _x0_mean = self.prior_mean
-
-            x0.append(th.randn(shape, device=device)*self.args.x0std/(N**(1./3.)) + _x0_mean)
+            inv_cell = th.linalg.inv(self.prior_cell)
+            x0.append((th.randn(shape, device=device)*self.args.x0std)@inv_cell + _x0_mean)
             x0_mean.append(_x0_mean)
         
         t0, t1 = self.check_interval(self.train_eps, self.sample_eps)
@@ -371,6 +371,7 @@ class Transport:
             mask=None,
             model_kwargs=None,
             forces = None,
+            E = None,
             global_step = None
     ):
         """Loss for training the score model
@@ -434,13 +435,13 @@ class Transport:
         else:
             if self.score_model is None:
                 xt, ut = self.path_sampler.plan_fractional(t, x0[0], x1)
-
+                alpha_t, _ = self.path_sampler.compute_alpha_t(path.expand_t_like_x(t, xt))
                 if self.latt_path:
                     latt0 = self.sample_latt(x1.shape, x1.device)
                     B,T,_,_ = model_kwargs['cell'].shape
                     # latt1 = lattice_polar_decompose_torch(model_kwargs['cell'].reshape([B*T,3,3])).reshape(B*T,6)
                     latt1 = model_kwargs['cell']
-                    latt, ulatt = self.path_sampler.plan_latt(t, latt0, latt1)
+                    latt, ulatt = self.path_sampler.plan_latt_riemann(t, latt0, latt1)
                     model_kwargs['cell'] = latt
                     # model_kwargs['cell'] = lattice_polar_build_torch(latt.reshape([B*T,6])).reshape([B,T,3,3])
                     # ulatt_L = lattice_polar_build_torch(ulatt.reshape([B*T,6])).reshape([B,T,3,3])
@@ -480,7 +481,7 @@ class Transport:
             if self.model_type == ModelType.VELOCITY:
                 if self.args.KL == 'symm':
                     cell = model_kwargs['cell'].view(B*T,3,3)
-                    terms['loss_l1'] = mean_flat((model_output.view(B*T,N,3)@cell - ut.view(B*T,N,3)@cell).abs(), mask.view(B*T,N,3))
+                    terms['loss_l1'] = mean_flat((model_output.view(B*T,N,3)@cell - ut.view(B*T,N,3)@cell).norm(dim=-1), mask.view(B*T,N,3)[:,:,0])
                     volume = th.abs(th.det(cell))
                     # jsd = compute_jsd_loss(xt.view(B*T,N,3), 1./(self.args.x0std/(N)**(1./3.)), (x0[0]+model_output*t[:,None,None,None]).view(B*T,N,3), 3) * (volume) ** (2./3.)
                     jsd = compute_jsd_loss(xt.view(B*T,N,3), t*(N)**(1./3.)/self.args.x0std, (x0[0]+model_output*t[:,None,None,None]).view(B*T,N,3), 3) * (volume[:,None]) ** (2./3.) # (B,N)
@@ -488,7 +489,18 @@ class Transport:
                     terms['loss_flow'] = terms['loss_symmkl'] + terms['loss_l1'] 
                 elif self.args.KL == "L1":
                     cell = model_kwargs['cell'].view(B*T,3,3)
-                    terms['loss_flow'] = mean_flat((model_output.view(B*T,N,3)@cell - ut.view(B*T,N,3)@cell).abs(), mask.view(B*T,N,3))
+                    terms['loss_flow'] = mean_flat((model_output.view(B*T,N,3)@cell - ut.view(B*T,N,3)@cell).norm(dim=-1), mask.view(B*T,N,3)[:,:,0])
+                elif self.args.KL == "score":
+                    cell = model_kwargs['cell'].view(B*T,3,3)
+                    terms['loss_l1'] = mean_flat((model_output.view(B*T,N,3)@cell - ut.view(B*T,N,3)@cell).norm(dim=-1), mask.view(B*T,N,3)[:,:,0])
+                    score_ot = self.path_sampler.get_score_from_velocity(model_output, xt, t)
+                    if self.weightfunction_x is not None:
+                        e_repul, f_repul = self.weightfunction_x(xt, cell, model_kwargs['num_atoms'],)
+                        forces_repulsed = forces + f_repul
+                        terms['loss_score'] = mean_flat( (score_ot@cell - 1./alpha_t * forces_repulsed).norm(dim=-1) * (t**4)[:,None,None], mask[:,:,:,0]) * 0.001
+                    else:
+                        terms['loss_score'] = mean_flat( (score_ot@cell - 1./alpha_t * forces).norm(dim=-1) * (t**4)[:,None,None], mask[:,:,:,0]) * 0.001
+                    terms['loss_flow'] = terms['loss_score'] + terms['loss_l1'] 
                 else:
                     raise Exception(f"Wrong KL argument: {self.args.KL}")
                 if self.score_model is not None:
@@ -506,6 +518,30 @@ class Transport:
                         terms['loss_lattflow'] = mean_flat((lowertrigflow_output - lowertrigulatt).abs(), th.ones_like(lowertrigflow_output, device=lowertrigflow_output.device))
                         terms['loss'] = terms['loss_flow'] + terms['loss_lattflow']
                         # terms['loss'] = terms['loss_lattflow']
+                if self.args.loss_consistency:
+                    if th.randn(1).item() > 1: # True roughly 1 out of 6 times
+                        d = 1./th.randint(low=th.ceil(2/(1-t.min())).to(int).item(), high=128, size=(B,), device=xt.device)
+                        if self.latt_path:
+                            model_kwargs['cv'] = 2*d.view(B,1,1).expand(-1,T,-1)
+                            _model_output_0, _lattflow_output_0 = model(xt, t, **model_kwargs)
+                            model_kwargs['cv'] = d.view(B,1,1).expand(-1,T,-1)
+                            _model_output_1, _lattflow_output_1 = model(xt, t, **model_kwargs)
+                            model_kwargs['cv'] = d.view(B,1,1).expand(-1,T,-1)
+                            _model_output_2, _lattflow_output_2 = model(xt, t + d, **model_kwargs)
+                            terms['loss_consistency'] = ((_model_output_0 - (_model_output_1 + _model_output_2)/2.)**2).view(B,-1).mean(dim=-1) \
+                                + ((_lattflow_output_0 - (_lattflow_output_1 + _lattflow_output_2)/2.)**2).view(B,-1).mean(dim=-1)
+                        else:
+                            model_kwargs['cv'] = 2*d.view(B,1,1).expand(-1,T,-1)
+                            _model_output_0 = model(xt, t, **model_kwargs)
+                            model_kwargs['cv'] = d.view(B,1,1).expand(-1,T,-1)
+                            _model_output_1 = model(xt, t, **model_kwargs)
+                            model_kwargs['cv'] = d.view(B,1,1).expand(-1,T,-1)
+                            _model_output_2 = model(xt, t + d, **model_kwargs)
+                            terms['loss_consistency'] = ((_model_output_0 - (_model_output_1 + _model_output_2)/2.)**2).view(B,-1).mean(dim=-1)
+                        terms['loss'] += terms['loss_consistency']
+                    else:
+                        terms['loss_consistency'] = th.zeros(B, device = xt.device)
+
             else:
                 _, drift_var = self.path_sampler.compute_drift(xt, t)
                 sigma_t, _ = self.path_sampler.compute_sigma_t(path.expand_t_like_x(t, xt))
