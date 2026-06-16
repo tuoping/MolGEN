@@ -221,17 +221,17 @@ def compute_jsd_loss(mu_t_x1, standard_bandwidth_factor, mu_theta, k_max=3):
     diff = (x - mu_t_x1[:, :, None, :] + k_vecs[None, None, :, :])   # @cell[:, None, :, :]
     sq_norms = th.sum(diff ** 2, dim=-1)  # (B, N, K)
     logZ_P = th.logsumexp(-sq_norms / (2) * bandwidth_factor, dim=-1) # (B, N)
-    logP_ = (-sq_norms / (2) * bandwidth_factor) - logZ_P[:,:,None]  # (B, N, K)
+    logP_ = (-sq_norms / (2) * bandwidth_factor) # - logZ_P[:,:,None]  # (B, N, K)
 
     pred_diff = (x - mu_theta[:, :, None, :] + k_vecs[None, None, :, :])   # @cell  # (B, None, N, 3)
     pred_sq_norms = th.sum(pred_diff ** 2, dim=-1) # (B, N, K)
     logZ_Q = th.logsumexp(-pred_sq_norms / (2) * bandwidth_factor, dim=-1) # (B, N)
-    logQ_ = (-pred_sq_norms) / (2) * bandwidth_factor - logZ_Q[:,:,None]  # (B, N, K)
+    logQ_ = (-pred_sq_norms) / (2) * bandwidth_factor # - logZ_Q[:,:,None]  # (B, N, K)
 
     logm = th.logaddexp(logP_, logQ_) - th.log(th.tensor(2.0, device=mu_t_x1.device))# (B, N, K)
 
-    kl_p_m = (th.exp(logP_) * (logP_ - logm)).sum(dim=-1)  # (B,N)
-    kl_q_m = (th.exp(logQ_) * (logQ_ - logm)).sum(dim=-1)  # (B,N)
+    kl_p_m = (th.exp(logP_-logZ_P[:,:,None]) * (logP_ - logQ_)).sum(dim=-1)  # (B,N)
+    kl_q_m = (th.exp(logQ_-logZ_Q[:,:,None]) * (logQ_ - logm)).sum(dim=-1)  # (B,N)
 
     jsd = 0.5 * kl_p_m + 0.5 * kl_q_m  # (B,N)
     return jsd
@@ -307,7 +307,7 @@ class Transport:
 
         return t0, t1
 
-    def sample(self, shape, device):
+    def sample(self, shape, device, x0std):
         """Sampling x0 & t based on shape of x1 (if needed)
           Args:
             x1 - data point; [batch, *dim]
@@ -329,7 +329,7 @@ class Transport:
             else:
                 _x0_mean = self.prior_mean
             inv_cell = th.linalg.inv(self.prior_cell)
-            x0.append((th.randn(shape, device=device)*self.args.x0std)@inv_cell + _x0_mean)
+            x0.append((th.randn(shape, device=device)*x0std[:,:,None,None])@inv_cell + _x0_mean)
             x0_mean.append(_x0_mean)
         
         t0, t1 = self.check_interval(self.train_eps, self.sample_eps)
@@ -372,6 +372,7 @@ class Transport:
             model_kwargs=None,
             forces = None,
             E = None,
+            x0std = None,
             global_step = None
     ):
         """Loss for training the score model
@@ -394,7 +395,7 @@ class Transport:
             model_kwargs = {}
         B, T, N, C = x1.shape
         ### normal sampler of t
-        t, x0, x0_mean = self.sample(x1.shape, x1.device)
+        t, x0, x0_mean = self.sample(x1.shape, x1.device, x0std)
         ### OT in the atom number dimension
         if self.prior_mean is None:
             x1 = x1.view(B*T, N, C)
@@ -479,35 +480,37 @@ class Transport:
         terms['x0'] = x0
         if not (self.args.design):
             if self.model_type == ModelType.VELOCITY:
-                if self.args.KL == 'symm':
-                    cell = model_kwargs['cell'].view(B*T,3,3)
-                    terms['loss_l1'] = mean_flat((model_output.view(B*T,N,3)@cell - ut.view(B*T,N,3)@cell).norm(dim=-1), mask.view(B*T,N,3)[:,:,0])
-                    volume = th.abs(th.det(cell))
-                    # jsd = compute_jsd_loss(xt.view(B*T,N,3), 1./(self.args.x0std/(N)**(1./3.)), (x0[0]+model_output*t[:,None,None,None]).view(B*T,N,3), 3) * (volume) ** (2./3.)
-                    jsd = compute_jsd_loss(xt.view(B*T,N,3), t*(N)**(1./3.)/self.args.x0std, (x0[0]+model_output*t[:,None,None,None]).view(B*T,N,3), 3) * (volume[:,None]) ** (2./3.) # (B,N)
-                    terms['loss_symmkl'] = (jsd * (mask * (t > 0.5).to(int)[:,None,None,None]).view(B*T,N,3).mean(dim=-1)).mean()
-                    terms['loss_flow'] = terms['loss_symmkl'] + terms['loss_l1'] 
-                elif self.args.KL == "L1":
-                    cell = model_kwargs['cell'].view(B*T,3,3)
-                    terms['loss_flow'] = mean_flat((model_output.view(B*T,N,3)@cell - ut.view(B*T,N,3)@cell).norm(dim=-1), mask.view(B*T,N,3)[:,:,0])
-                elif self.args.KL == "score":
-                    cell = model_kwargs['cell'].view(B*T,3,3)
-                    terms['loss_l1'] = mean_flat((model_output.view(B*T,N,3)@cell - ut.view(B*T,N,3)@cell).norm(dim=-1), mask.view(B*T,N,3)[:,:,0])
-                    score_ot = self.path_sampler.get_score_from_velocity(model_output, xt, t)
-                    if self.weightfunction_x is not None:
-                        e_repul, f_repul = self.weightfunction_x(xt, cell, model_kwargs['num_atoms'],)
-                        forces_repulsed = forces + f_repul
-                        terms['loss_score'] = mean_flat( (score_ot@cell - 1./alpha_t * forces_repulsed).norm(dim=-1) * (t**4)[:,None,None], mask[:,:,:,0]) * 0.001
-                    else:
-                        terms['loss_score'] = mean_flat( (score_ot@cell - 1./alpha_t * forces).norm(dim=-1) * (t**4)[:,None,None], mask[:,:,:,0]) * 0.001
-                    terms['loss_flow'] = terms['loss_score'] + terms['loss_l1'] 
-                else:
-                    raise Exception(f"Wrong KL argument: {self.args.KL}")
+                # if self.args.KL == 'symm':
+                match self.args.KL:
+                    case "symm":
+                        cell = model_kwargs['cell'].view(B*T,3,3)
+                        terms['loss_l1'] = mean_flat((model_output.view(B*T,N,3)@cell - ut.view(B*T,N,3)@cell).norm(dim=-1), mask.view(B*T,N,3)[:,:,0])
+                        volume = th.abs(th.det(cell))
+                        
+                        jsd = compute_jsd_loss(xt.view(B*T,N,3), t, (x0[0]+model_output*t[:,None,None,None]).view(B*T,N,3), 3)  # (B,N)
+                        terms['loss_symmkl'] = mean_flat(jsd, mask.view(B*T,N,3)[:,:,0])
+                        terms['loss_flow'] = terms['loss_symmkl'] + terms['loss_l1'] 
+                    case "L1":
+                        cell = model_kwargs['cell'].view(B*T,3,3)
+                        terms['loss_flow'] = mean_flat((model_output.view(B*T,N,3)@cell - ut.view(B*T,N,3)@cell).norm(dim=-1), mask.view(B*T,N,3)[:,:,0])
+                    case "score":
+                        cell = model_kwargs['cell'].view(B*T,3,3)
+                        terms['loss_l1'] = mean_flat((model_output.view(B*T,N,3)@cell - ut.view(B*T,N,3)@cell).norm(dim=-1), mask.view(B*T,N,3)[:,:,0])
+                        score_ot = self.path_sampler.get_score_from_velocity(model_output, xt, t)
+                        if self.weightfunction_x is not None:
+                            e_repul, f_repul = self.weightfunction_x(xt, cell, model_kwargs['num_atoms'],)
+                            forces_repulsed = forces + f_repul
+                            terms['loss_score'] = mean_flat( (score_ot@cell - 1./alpha_t * forces_repulsed).norm(dim=-1) * (t**4)[:,None,None], mask[:,:,:,0]) * 0.001
+                        else:
+                            terms['loss_score'] = mean_flat( (score_ot@cell - 1./alpha_t * forces).norm(dim=-1) * (t**4)[:,None,None], mask[:,:,:,0]) * 0.001
+                        terms['loss_flow'] = terms['loss_score'] + terms['loss_l1'] 
+                    case _:
+                        raise Exception(f"Wrong KL argument: {self.args.KL}")
+                    
                 if self.score_model is not None:
                     cell = model_kwargs['cell']
                     terms['loss_dsm'] = mean_flat(((lambda_t[:,None,None,None]*score_model_output + eps)**2)@cell, mask)
-                    # terms['loss_tsm_0'] = mean_flat( ((score_model_output - 1./sigma_t*grad_log_normal_iso_3d(x0[0], mu=x0_mean[0], sigma=th.sqrt(2*diffusion * 1e-4)))**2 * (t < 0.5).to(th.int)[:,None,None,None])@cell, mask)
-                    terms['loss_tsm_0'] = mean_flat( ((score_model_output - 1./sigma_t*grad_log_normal_iso_3d(x0[0], mu=x0_mean[0], sigma=self.args.x0std/(N)**(1./3.)))**2 * (t < 0.5).to(th.int)[:,None,None,None])@cell, mask) 
+                    # terms['loss_tsm_0'] = mean_flat( ((score_model_output - 1./sigma_t*grad_log_normal_iso_3d(x0[0], mu=x0_mean[0], sigma=x0std/(N)**(1./3.)))**2 * (t < 0.5).to(th.int)[:,None,None,None])@cell, mask) 
                     terms['loss_tsm_1'] = mean_flat( ((score_model_output - 1./alpha_t*forces)**2 * (t > 0.5).to(th.int)[:,None,None,None])@cell, mask)
                     terms['loss'] = terms['loss_flow'] + terms['loss_dsm'] + terms['loss_tsm_0'] + terms["loss_tsm_1"]
                 else:
@@ -518,24 +521,25 @@ class Transport:
                         terms['loss_lattflow'] = mean_flat((lowertrigflow_output - lowertrigulatt).abs(), th.ones_like(lowertrigflow_output, device=lowertrigflow_output.device))
                         terms['loss'] = terms['loss_flow'] + terms['loss_lattflow']
                         # terms['loss'] = terms['loss_lattflow']
+
                 if self.args.loss_consistency:
-                    if th.randn(1).item() > 1: # True roughly 1 out of 6 times
+                    if th.randn(1).item() > 1 and th.ceil(2/(1-t.min())).to(int).item() < 128: # True roughly 1 out of 6 times
                         d = 1./th.randint(low=th.ceil(2/(1-t.min())).to(int).item(), high=128, size=(B,), device=xt.device)
                         if self.latt_path:
-                            model_kwargs['cv'] = 2*d.view(B,1,1).expand(-1,T,-1)
+                            model_kwargs['dt'] = 2*d.view(B,1,1).expand(-1,T,-1)
                             _model_output_0, _lattflow_output_0 = model(xt, t, **model_kwargs)
-                            model_kwargs['cv'] = d.view(B,1,1).expand(-1,T,-1)
+                            model_kwargs['dt'] = d.view(B,1,1).expand(-1,T,-1)
                             _model_output_1, _lattflow_output_1 = model(xt, t, **model_kwargs)
-                            model_kwargs['cv'] = d.view(B,1,1).expand(-1,T,-1)
+                            model_kwargs['dt'] = d.view(B,1,1).expand(-1,T,-1)
                             _model_output_2, _lattflow_output_2 = model(xt, t + d, **model_kwargs)
                             terms['loss_consistency'] = ((_model_output_0 - (_model_output_1 + _model_output_2)/2.)**2).view(B,-1).mean(dim=-1) \
                                 + ((_lattflow_output_0 - (_lattflow_output_1 + _lattflow_output_2)/2.)**2).view(B,-1).mean(dim=-1)
                         else:
-                            model_kwargs['cv'] = 2*d.view(B,1,1).expand(-1,T,-1)
+                            model_kwargs['dt'] = 2*d.view(B,1,1).expand(-1,T,-1)
                             _model_output_0 = model(xt, t, **model_kwargs)
-                            model_kwargs['cv'] = d.view(B,1,1).expand(-1,T,-1)
+                            model_kwargs['dt'] = d.view(B,1,1).expand(-1,T,-1)
                             _model_output_1 = model(xt, t, **model_kwargs)
-                            model_kwargs['cv'] = d.view(B,1,1).expand(-1,T,-1)
+                            model_kwargs['dt'] = d.view(B,1,1).expand(-1,T,-1)
                             _model_output_2 = model(xt, t + d, **model_kwargs)
                             terms['loss_consistency'] = ((_model_output_0 - (_model_output_1 + _model_output_2)/2.)**2).view(B,-1).mean(dim=-1)
                         terms['loss'] += terms['loss_consistency']
@@ -1006,14 +1010,18 @@ class Sampler:
             init_logp = th.zeros(x[0].size()[:2]).to(x[0]) if isinstance(x, tuple) else th.zeros(x.size()[:2]).to(x)
             if self.transport.latt_path:
                 input = (x[0], x[1], init_logp)
+                drift_0, drift_1, delta_logp = _ode.sample(input, model, **model_kwargs)
             else:
                 input = (x, init_logp)
-            drift_0, drift_1, delta_logp = _ode.sample(input, model, **model_kwargs)
+                drift, delta_logp = _ode.sample(input, model, **model_kwargs)
+            
             delta_logp = delta_logp[-1]
-
             # prior_logp = self.transport.prior_logp(drift)
             logp =  delta_logp
-            return logp, [drift_0, drift_1]
+            if self.transport.latt_path:
+                return logp, [drift_0, drift_1]
+            else:
+                return logp, drift
 
         return _sample_fn
 

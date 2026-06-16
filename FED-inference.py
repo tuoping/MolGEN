@@ -3,11 +3,12 @@
 
 import glob
 
-ckpt_tag = "779"
+ckpt_tag = 229
 inference_steps = 100
 
 sampling_method = "euler"
-sim_ckpt = glob.glob(f"workdir/tune/epoch={ckpt_tag}-step=0*.ckpt")[0]
+sim_ckpt = glob.glob("workdir/fixlatt/run5.bk004.Tcv/epoch=%03d-step=*-val_loss=*.ckpt"%ckpt_tag)[0]
+# sim_ckpt = "workdir/fixlatt/run4.bk003.Tcv/last.ckpt"
 
 device = "cuda"
 
@@ -15,7 +16,7 @@ import os, torch, tqdm, time
 import numpy as np
 from mdgen.fed_wrapper import EquivariantFEDWrapper
 
-out_dir = f"experiments/SiO2_quartz_npt_nowrap/e{ckpt_tag}_{sampling_method}_step{inference_steps}/"
+out_dir = f"experiments/smallcell_SiO2_nvt_nowrap/test_coesite_x0std0.138/0K0GPa/Tcv3_e{ckpt_tag}_{sampling_method}_step{inference_steps}/"
 print("Output folder: ", out_dir)
 os.makedirs(out_dir, exist_ok=True)
 with open(f"{out_dir}/README.md", "w") as fp:
@@ -29,12 +30,12 @@ hparams = ckpt["hyper_parameters"]
 args = hparams['args']
 args.sampling_method = sampling_method
 args.inference_steps = inference_steps
-args.data_dir = "data/SiO2/npt_1600K_1GPa/npt_coesite_dense/nvt/"
-args.likelihood = "EJE"
+args.data_dir = "data/SiO2/npt_0K_0GPa/npt_coesite_dense/npt/"
+args.likelihood = None # "EJE"
 
 
 from mdgen.dataset import EquivariantTransformerDataset_phasediagram
-dataset = EquivariantTransformerDataset_phasediagram(args, species=[14, 8], sim_condition=False, stage="test")
+dataset = EquivariantTransformerDataset_phasediagram(args, species=[14, 8], num_species=args.num_species, sim_condition=False, stage="test")
 
 
 
@@ -84,22 +85,24 @@ all_rollout_atoms = []
 all_rollout_atoms_ref = []
 start = time.time()
 all_logp = []
-for i_rollout in range(0, len(idx_rollouts)):
-    idx = idx_rollouts[i_rollout]
+for i_rollout in range(0, 5):
+    # idx = idx_rollouts[i_rollout]
+    idx = i_rollout
     print(i_rollout, idx)
     filename = os.path.join(out_dir, f"gentraj_{idx}.xyz")
+    filename_ref = os.path.join(out_dir, f"reftraj_{idx}.xyz")
+    for f in [filename, filename_ref, ]:
+        if os.path.exists(f):
+            os.remove(f)
 
     if args.likelihood is not None:
         filename_reverse = os.path.join(out_dir, f"reverse_gentraj_{idx}.xyz")
         filename_logp = os.path.join(out_dir, f"Logp_{idx}.txt")
         filename_reverse_logp = os.path.join(out_dir, f"reverse_Logp_{idx}.txt")
         filename_zs = os.path.join(out_dir, f"Uzs_{idx}.txt")
-
-    filename_ref = os.path.join(out_dir, f"reftraj_{idx}.xyz")
-
-    for f in [filename, filename_ref, filename_reverse, filename_logp, filename_reverse_logp, filename_zs]:
-        if os.path.exists(f):
-            os.remove(f)
+        for f in [filename_reverse, filename_logp, filename_reverse_logp, filename_zs]:
+            if os.path.exists(f):
+                os.remove(f)
 
     for i_sample in range(1):
         item = dataset.__getitem__(idx)

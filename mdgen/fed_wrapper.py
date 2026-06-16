@@ -387,12 +387,14 @@ class EquivariantFEDWrapper(Wrapper):
                     "latents": latents.to(_TORCH_FLOAT_PRECISION),
                     'loss_mask': v_loss_mask.to(_TORCH_FLOAT_PRECISION),
                     'model_kwargs': {
-                        "cv": torch.zeros(B, T, 1, dtype=_TORCH_FLOAT_PRECISION, device=species.device),
+                        # "cv": torch.zeros(B, T, 1, dtype=_TORCH_FLOAT_PRECISION, device=species.device),
+                        "cv": batch['cv'].view(B,T,1).to(_TORCH_FLOAT_PRECISION),
                         "aatype": species.to(_TORCH_FLOAT_PRECISION),
                         'x1': latents.to(_TORCH_FLOAT_PRECISION),
                         'v_mask': (v_loss_mask!=0).to(int),
                         "cell": batch['cell'].to(_TORCH_FLOAT_PRECISION),
                         "num_atoms": batch["num_atoms"],
+                        "dt": torch.zeros(B,T,1, dtype=_TORCH_FLOAT_PRECISION, device=species.device),
                         "conditions": None
                     },
                     'conditional_batch': conditional_batch
@@ -410,7 +412,7 @@ class EquivariantFEDWrapper(Wrapper):
         if (self.score_model is not None) or (self.args.KL == "score"):
             data["forces"] = batch['forces'].to(_TORCH_FLOAT_PRECISION)
 
-       
+        data['x0std'] = batch['x0std'].to(_TORCH_FLOAT_PRECISION)
         return data
     
     def general_step(self, batch, stage='train'):
@@ -424,6 +426,9 @@ class EquivariantFEDWrapper(Wrapper):
         forces = None
         if (self.score_model is not None) or (self.args.KL == "score"):
             forces = prep['forces']
+        x0std = self.args.x0std
+        if "x0std" in prep:
+            x0std = prep['x0std']
         out_dict = self.transport.training_losses(
             model=self.model,
             x1=prep['latents'],
@@ -431,6 +436,7 @@ class EquivariantFEDWrapper(Wrapper):
             mask=prep['loss_mask'],
             model_kwargs=prep['model_kwargs'],
             forces = forces,
+            x0std = x0std,
             global_step = self.current_epoch
         )
         self.prefix_log('model_dur', time.time() - start)
@@ -588,56 +594,66 @@ class EquivariantFEDWrapper(Wrapper):
                 cell0 = self.transport.sample_latt(zs.shape, self.device)
         self.integration_step = 0
         if self.score_model is None:
-            if self.args.likelihood == "EJE":
-                sample_fn = self.transport_sampler.sample_ode_likelihood(sampling_method=self.args.sampling_method, num_steps=self.args.inference_steps)
-                sample_fn_reverse = self.transport_sampler.sample_ode_likelihood(sampling_method=self.args.sampling_method, num_steps=self.args.inference_steps, reverse=True)
-            elif self.args.likelihood is None:
-                with torch.no_grad(): sample_fn = self.transport_sampler.sample_ode(sampling_method=self.args.sampling_method, num_steps=self.args.inference_steps)  # default to ode
-            else:
-                raise Exception(f"Wrong likelihood parameter: {self.args.likelihood}")
+            # if self.args.likelihood == "EJE":
+            match self.args.likelihood:
+                case "EJE":
+                    sample_fn = self.transport_sampler.sample_ode_likelihood(sampling_method=self.args.sampling_method, num_steps=self.args.inference_steps)
+                    sample_fn_reverse = self.transport_sampler.sample_ode_likelihood(sampling_method=self.args.sampling_method, num_steps=self.args.inference_steps, reverse=True)
+                case None:
+                    with torch.no_grad(): sample_fn = self.transport_sampler.sample_ode(sampling_method=self.args.sampling_method, num_steps=self.args.inference_steps)  # default to ode
+                case _:
+                    raise Exception(f"Wrong likelihood parameter: {self.args.likelihood}")
         else:
-            if self.args.likelihood == "FND":
-                with torch.no_grad(): sample_fn = self.transport_sampler.sample_sde_likelihood(num_steps=self.args.inference_steps, diffusion_form=self.args.diffusion_form, diffusion_norm=torch.tensor(self.args.diffusion_norm), score_model=partial(self.score_model.forward_inference, **prep['model_kwargs']) )
-                with torch.no_grad(): sample_fn_reverse = self.transport_sampler.sample_sde_likelihood(num_steps=self.args.inference_steps, diffusion_form=self.args.diffusion_form, diffusion_norm=torch.tensor(self.args.diffusion_norm), reverse=True, score_model=partial(self.score_model.forward_inference, **prep['model_kwargs']) )
-            elif self.args.likelihood is None:
-                with torch.no_grad(): sample_fn = self.transport_sampler.sample_sde(num_steps=self.args.inference_steps, diffusion_form=self.args.diffusion_form, diffusion_norm=torch.tensor(self.args.diffusion_norm), score_model=partial(self.score_model.forward_inference, **prep['model_kwargs']) )
-            else:
-                raise Exception("Wrong likelihood argument (not implemented for SDE): "+self.args.likelihood)
+            # if self.args.likelihood == "FND":
+            match self.args.likelihood:
+                case "FND":
+                    with torch.no_grad(): sample_fn = self.transport_sampler.sample_sde_likelihood(num_steps=self.args.inference_steps, diffusion_form=self.args.diffusion_form, diffusion_norm=torch.tensor(self.args.diffusion_norm), score_model=partial(self.score_model.forward_inference, **prep['model_kwargs']) )
+                    with torch.no_grad(): sample_fn_reverse = self.transport_sampler.sample_sde_likelihood(num_steps=self.args.inference_steps, diffusion_form=self.args.diffusion_form, diffusion_norm=torch.tensor(self.args.diffusion_norm), reverse=True, score_model=partial(self.score_model.forward_inference, **prep['model_kwargs']) )
+                case None:
+                    with torch.no_grad(): sample_fn = self.transport_sampler.sample_sde(num_steps=self.args.inference_steps, diffusion_form=self.args.diffusion_form, diffusion_norm=torch.tensor(self.args.diffusion_norm), score_model=partial(self.score_model.forward_inference, **prep['model_kwargs']) )
+                case _:
+                    raise Exception("Wrong likelihood argument (not implemented for SDE): "+self.args.likelihood)
 
         assert not self.args.guided
         if self.transport.latt_path:
-            if self.args.likelihood == "EJE":
-                zs = zs.detach()
-                cell0 = cell0.detach()
-                samples_logp, samples = sample_fn(
-                    (zs, cell0),
-                    partial(self.model.forward_inference, **prep['model_kwargs'])
-                )                
-            else:
-                samples = sample_fn(
-                    (zs, cell0),
-                    partial(self.model.forward_inference, **prep['model_kwargs'])
-                )
+            zs = zs.detach()
+            cell0 = cell0.detach()
+            
+            match self.args.likelihood:
+                case "EJE":
+                    samples_logp, samples = sample_fn(
+                        (zs, cell0),
+                        partial(self.model.forward_inference, **prep['model_kwargs'])
+                    )                
+                case _:
+                    with torch.no_grad(): 
+                        samples = sample_fn(
+                            (zs, cell0),
+                            partial(self.model.forward_inference, **prep['model_kwargs'])
+                        )
         else:
-            if self.args.likelihood == "EJE":
-                zs = zs.detach()
-                samples_logp, samples = sample_fn(
-                    zs,
-                    partial(self.model.forward_inference, **prep['model_kwargs'])
-                )
-            elif self.args.likelihood == "FND":
-                zs = zs.detach()
-                samples_logp, _samples_logp, samples = sample_fn(
-                    zs,
-                    partial(self.model.forward_inference, **prep['model_kwargs'])
-                )
-            elif self.args.likelihood is None:
-                samples = sample_fn(
-                    zs,
-                    partial(self.model.forward_inference, **prep['model_kwargs'])
-                )
-            else:
-                raise Exception(f"Wrong likelihood parameter: {self.args.likelihood}")
+            zs = zs.detach()
+            match self.args.likelihood:
+                case "EJE":
+                    
+                    samples_logp, samples = sample_fn(
+                        zs,
+                        partial(self.model.forward_inference, **prep['model_kwargs'])
+                    )
+                case "FND":
+                    
+                    samples_logp, _samples_logp, samples = sample_fn(
+                        zs,
+                        partial(self.model.forward_inference, **prep['model_kwargs'])
+                    )
+                case None:
+                    with torch.no_grad(): 
+                        samples = sample_fn(
+                            zs,
+                            partial(self.model.forward_inference, **prep['model_kwargs'])
+                        )
+                case _:
+                    raise Exception(f"Wrong likelihood parameter: {self.args.likelihood}")
 
         
         if self.args.design:
@@ -654,22 +670,24 @@ class EquivariantFEDWrapper(Wrapper):
             else:
                 samples = samples *prep["model_kwargs"]['v_mask'] + prep["latents"]*(1-prep["model_kwargs"]['v_mask'])
 
-            if self.args.likelihood == "EJE":
-                if self.transport.latt_path:
-                    reverse_samples_logp, samples_zs = sample_fn_reverse(
-                            (samples[0][-1], samples[1][-1]),
-                            partial(self.model.forward_inference, **prep['model_kwargs'])
-                        )
-                else:
-                    reverse_samples_logp, samples_zs = sample_fn_reverse(
+            # if self.args.likelihood == "EJE":
+            match self.args.likelihood:
+                case "EJE":
+                    if self.transport.latt_path:
+                        reverse_samples_logp, samples_zs = sample_fn_reverse(
+                                (samples[0][-1], samples[1][-1]),
+                                partial(self.model.forward_inference, **prep['model_kwargs'])
+                            )
+                    else:
+                        reverse_samples_logp, samples_zs = sample_fn_reverse(
+                                samples[-1],
+                                partial(self.model.forward_inference, **prep['model_kwargs'])
+                            )
+                case "FND":
+                    reverse_samples_logp, _reverse_samples_logp, samples_zs = sample_fn_reverse(
                             samples[-1],
                             partial(self.model.forward_inference, **prep['model_kwargs'])
                         )
-            elif self.args.likelihood == "FND":
-                reverse_samples_logp, _reverse_samples_logp, samples_zs = sample_fn_reverse(
-                        samples[-1],
-                        partial(self.model.forward_inference, **prep['model_kwargs'])
-                    )
 
         if self.args.design:
             aa_out = torch.argmax(logits, -1)
@@ -680,15 +698,17 @@ class EquivariantFEDWrapper(Wrapper):
         print('Time =', time.time()-s_time)
 
 
-        if self.args.likelihood == "EJE":
-            return samples_logp, samples, aa_out, reverse_samples_logp, zs, samples_zs
-        elif self.args.likelihood == "FND":
-            if self.transport.latt_path:
-                raise Exception("FND for latt_path not implemented")
-            return torch.concatenate([samples_logp, _samples_logp], dim=-1), samples, aa_out, torch.concatenate([reverse_samples_logp, _reverse_samples_logp], dim=-1), zs, samples_zs
-        else:
-            if self.transport.latt_path:
-                return samples[0], aa_out, samples[1]
-            else:
-                return samples, aa_out
+        # if self.args.likelihood == "EJE":
+        match self.args.likelihood:
+            case "EJE":
+                return samples_logp, samples, aa_out, reverse_samples_logp, zs, samples_zs
+            case "FND":
+                if self.transport.latt_path:
+                    raise Exception("FND for latt_path not implemented")
+                return torch.concatenate([samples_logp, _samples_logp], dim=-1), samples, aa_out, torch.concatenate([reverse_samples_logp, _reverse_samples_logp], dim=-1), zs, samples_zs
+            case _:
+                if self.transport.latt_path:
+                    return samples[0], aa_out, samples[1]
+                else:
+                    return samples, aa_out
     

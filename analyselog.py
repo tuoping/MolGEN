@@ -70,7 +70,7 @@ def plot_1losses(dir_dir_b1024, key="\'train_loss\'", c_key=None, after_epoch=No
     alltrainlosses_dir_b1024 = np.array(alltrainlosses_dir_b1024)
     np.save(key, np.vstack([alltrainsteps_dir_b1024, alltrainlosses_dir_b1024]))
     before_idx = None
-    after_idx = None
+    after_idx = 0
     if len(alltrainlosses_dir_b1024) != 0:
         if after_epoch is not None and after_epoch != "None":
             after_idx = np.where(np.array(alltrainsteps_dir_b1024)>=float(after_epoch))[0][0]
@@ -92,12 +92,12 @@ def plot_1losses(dir_dir_b1024, key="\'train_loss\'", c_key=None, after_epoch=No
     print("positive_idx = ", positive_idx)
     print("negative_idx = ", negative_idx)
     print("allcolor = ", allcolor)
-    print("alltrainsteps_dir_b1024 = ", alltrainsteps_dir_b1024[after_idx:before_idx])
-    print("alltrainlosses_dir_b1024 = ", alltrainlosses_dir_b1024[after_idx:before_idx])
     if len(positive_idx) > len(negative_idx):
-        plt.scatter(np.array(alltrainsteps_dir_b1024[after_idx:before_idx])[positive_idx], np.array(alltrainlosses_dir_b1024[after_idx:before_idx])[positive_idx], c=allcolor[positive_idx], label="$L>0$", marker="x")
-        # plt.scatter(np.arange(len(positive_idx))+after_idx, np.array(alltrainlosses_dir_b1024[after_idx:before_idx])[positive_idx], c=allcolor[positive_idx], label="$L>0$", marker="x")
+        print("alltrainsteps_dir_b1024 = ", alltrainsteps_dir_b1024[after_idx:before_idx][positive_idx])
+        print("alltrainlosses_dir_b1024 = ", alltrainlosses_dir_b1024[after_idx:before_idx][positive_idx])
+        plt.scatter(alltrainsteps_dir_b1024[after_idx:before_idx][positive_idx], np.array(alltrainlosses_dir_b1024[after_idx:before_idx])[positive_idx], c=allcolor[positive_idx], label="$L>0$", marker="x")
         cbar = plt.colorbar()
+    '''
     print("negative alltrainsteps_dir_b1024 = ", alltrainsteps_dir_b1024[after_idx:before_idx][negative_idx])
     print("negative alltrainlosses_dir_b1024 = ", alltrainlosses_dir_b1024[after_idx:before_idx][negative_idx])
     print("negative allcolor = ", allcolor[negative_idx])
@@ -106,6 +106,7 @@ def plot_1losses(dir_dir_b1024, key="\'train_loss\'", c_key=None, after_epoch=No
         # plt.scatter(np.arange(len(negative_idx)), np.array(alltrainlosses_dir_b1024[after_idx:before_idx])[negative_idx], c=allcolor[negative_idx], label="$L<0$", marker="o", s=10)
         cbar = plt.colorbar()
     # cbar.set_label("Ratio of conditional training per batch", fontsize=font['size']-4)
+    '''
     if len(positive_idx) > 0:
         plt.axhline(np.array(alltrainlosses_dir_b1024[after_idx:before_idx])[positive_idx][-1], ls="--", c='k')
     if len(negative_idx) > 0:
@@ -133,10 +134,5 @@ parser.add_argument("--key",  type=str, default="val_loss")
 args = parser.parse_args()
 
 dir = f"./"
-plot_1losses(dir, key="\'train_loss\'", after_epoch=args.after_epoch, before_epoch=args.before_epoch, ymin=args.ymin_train, ymax=args.ymax_train)
-if 'train' in args.key:
-    plot_1losses(dir, key=f"\'{args.key}\'", after_epoch=args.after_epoch, before_epoch=args.before_epoch, ymin=args.ymin_val, ymax=args.ymax_val)
-elif 'val' in args.key:
-    plot_1losses(dir, key=f"\'{args.key}\'", after_epoch=args.after_epoch, before_epoch=args.before_epoch, ymin=args.ymin_val, ymax=args.ymax_val)
-else:
-    plot_1losses(dir, key=f"\'{args.key}\'", after_epoch=args.after_epoch, before_epoch=args.before_epoch, ymin=args.ymin_val, ymax=args.ymax_val)
+# plot_1losses(dir, key="\'train_loss\'", after_epoch=args.after_epoch, before_epoch=args.before_epoch, ymin=args.ymin_train, ymax=args.ymax_train)
+plot_1losses(dir, key=f"\'{args.key}\'", after_epoch=args.after_epoch, before_epoch=args.before_epoch, ymin=args.ymin_val, ymax=args.ymax_val)

@@ -122,6 +122,10 @@ class Encoder_dpm(Encoder):
             GaussianRandomFourierFeatures(node_dim, input_dim=cv_dim),
             MLP([node_dim, edge_dim, node_dim], act=nn.SiLU()),
         )
+        self.embed_dt = nn.Sequential(
+            GaussianRandomFourierFeatures(node_dim, input_dim=1),
+            MLP([node_dim, edge_dim, node_dim], act=nn.SiLU()),
+        )
         if object_aware:
             self.phi_s_cross = MLP([node_dim*2, edge_dim, node_dim], act=nn.SiLU())
             self.phi_h_cross = MLP([node_dim*2, edge_dim, node_dim], act=nn.SiLU())
@@ -351,7 +355,7 @@ class EquivariantTransformer_dpm(EquivariantTransformer):
             print("WARNING:: tps_condition not implemented for when species of the TS is different from the R or P")
 
 
-    def _graph_forward(self, species: Tensor, edge_index: Tensor, edge_attr: Tensor, edge_vec: Tensor, t: Tensor, cv: Tensor=None, out_cond=None, sub_graph_mask=None) -> Tuple[Tensor, Tensor]:
+    def _graph_forward(self, species: Tensor, edge_index: Tensor, edge_attr: Tensor, edge_vec: Tensor, t: Tensor, dt: Tensor=None, cv: Tensor=None, out_cond=None, sub_graph_mask=None) -> Tuple[Tensor, Tensor]:
         num_edges = edge_index.shape[1]
         if (self.tps_condition or self.sim_condition) and out_cond is not None:
             if self.pbc:
@@ -381,7 +385,7 @@ class EquivariantTransformer_dpm(EquivariantTransformer):
         else:
             h, v, edge_attr, l = self.encoder(species, edge_index, edge_attr, edge_vec, t, sub_graph_mask)
         if cv is not None:
-            h = h + self.encoder.embed_cv(cv)
+            h = h + self.encoder.embed_cv(cv) + self.encoder.embed_dt(dt)
 
         def _filter_edges(_edge_index, _edge_attr, _edge_vec, _mask: torch.Tensor):
                 # mask: [E] in {0,1}
@@ -408,6 +412,7 @@ class EquivariantTransformer_dpm(EquivariantTransformer):
     def inference(self, x: Tensor, t: Tensor, cv: Tensor=None,
                 cell=None, 
                 num_atoms=None,
+                dt=None,
                 conditions=None, 
                 aatype=None, fragments_idx = None):
         B, T, N, _ = x.shape
@@ -544,11 +549,12 @@ class EquivariantTransformer_dpm(EquivariantTransformer):
         else:
             aatype = torch.zeros([B,T,N], dtype=torch.long, device=x.device)
             species = torch.nn.functional.one_hot(aatype, num_classes=self.num_species).to(torch.float)
-        # edge_attr = self.scalarize(x.view(-1,3), edge_index, edge_vec, cell.view(-1,3,3), to_jimages, num_bonds)
+
         edge_attr = self.edge_block(self.embed_atom(species.view(-1, self.num_species)), edge_index, edge_vec)
         edge_attr = msg_to_invariants_from_irreps(edge_attr, self.edge_block.msg_irreps)
 
         t = t.unsqueeze(-1).unsqueeze(1).expand(-1,T,-1).unsqueeze(2).expand(-1,-1,N,-1)
+
         # if self.object_aware:
         #     assert cv is None
         #     scaler_out, vector_out = self._graph_forward(species.reshape(-1,self.num_species), edge_index, edge_attr, edge_vec, t.reshape(-1,1), out_cond, sub_graph_mask=sub_graph_mask)
@@ -558,13 +564,14 @@ class EquivariantTransformer_dpm(EquivariantTransformer):
             # cv = torch.repeat_interleave(cv.view(-1, cv.shape[-1]), torch.ones(B*T).to(int).to(x.device)*N, dim=0)
             cv = cv.reshape(B * T, cv.shape[-1])
             cv = cv[:, None, :].expand(B * T, N, cv.shape[-1]).reshape(B * T * N, cv.shape[-1])
-        scaler_out, vector_out, _lattice_tensor_out = self._graph_forward(species.reshape(-1,self.num_species), edge_index, edge_attr, edge_vec, t.reshape(-1,1), cv, out_cond)
+
+        dt = dt.unsqueeze(2).expand(-1,-1,N,-1)
+        scaler_out, vector_out, _lattice_tensor_out = self._graph_forward(species.reshape(-1,self.num_species), edge_index, edge_attr, edge_vec, t.reshape(-1,1), dt.reshape(-1,1), cv, out_cond)
         lattice_vec = cell.view(B*T,3,3)
         inv_lattice = torch.linalg.inv(lattice_vec)
         vector_out = vector_out.view(B*T,N,3)
         frac_vector_out = vector_out @ inv_lattice
         if self.design:
-            # return torch.hstack([vector_out, scaler_out]).view(B, T, N, -1)
             return scaler_out.view(B, T, N, -1)
         elif self.potential_model:
             return scaler_out.reshape(B, T, N, -1)
@@ -574,13 +581,14 @@ class EquivariantTransformer_dpm(EquivariantTransformer):
     def forward(self, x: Tensor, t: Tensor, cv: Tensor=None,
                 cell=None, 
                 num_atoms=None,
+                dt=None,
                 conditions=None,
                 aatype=None, x_latt=None, x1=None, v_mask=None, fragments_idx = None):
         if self.design:
             x_ = x_latt
             aatype_ = x
             if v_mask is not None: x_ = x_*v_mask+x1*(1-v_mask)
-            scaler_out = self.inference(x_, t, cell, num_atoms, conditions, aatype_, fragments_idx=fragments_idx)
+            scaler_out = self.inference(x_, t, cell, num_atoms, dt, conditions, aatype_, fragments_idx=fragments_idx)
             return scaler_out*v_mask
         elif self.potential_model:
             if v_mask is not None:
@@ -590,16 +598,17 @@ class EquivariantTransformer_dpm(EquivariantTransformer):
             return scaler_out
         elif self.latt_path:
             if v_mask is not None: x = x*v_mask+x1*(1-v_mask)
-            vector_out, lattice_tensor_out = self.inference(x, t, cv, cell, num_atoms, conditions, aatype, fragments_idx=fragments_idx)
+            vector_out, lattice_tensor_out = self.inference(x, t, cv, cell, num_atoms, dt, conditions, aatype, fragments_idx=fragments_idx)
             return vector_out*v_mask, lattice_tensor_out
         else:
             if v_mask is not None: x = x*v_mask+x1*(1-v_mask)
-            vector_out, lattice_tensor_out = self.inference(x, t, cv, cell, num_atoms, conditions, aatype, fragments_idx=fragments_idx)
+            vector_out, lattice_tensor_out = self.inference(x, t, cv, cell, num_atoms, dt, conditions, aatype, fragments_idx=fragments_idx)
             return vector_out*v_mask
 
     def forward_inference(self, x: Tensor, t: Tensor, cv: Tensor=None,
                 cell=None, 
                 num_atoms=None,
+                dt=None,
                 conditions=None,
                 aatype=None, x_latt=None, x1=None, v_mask=None, fragments_idx = None):
         if self.design:
@@ -607,7 +616,7 @@ class EquivariantTransformer_dpm(EquivariantTransformer):
             aatype_ = x
             if v_mask is not None:
                 x_ = x_*v_mask+x1*(1-v_mask)
-            scaler_out = self.inference(x_, t, cell, num_atoms, conditions, aatype_, fragments_idx=fragments_idx)
+            scaler_out = self.inference(x_, t, cell, num_atoms, dt, conditions, aatype_, fragments_idx=fragments_idx)
             return scaler_out*v_mask
         elif self.potential_model:
             if v_mask is not None:
@@ -616,11 +625,11 @@ class EquivariantTransformer_dpm(EquivariantTransformer):
             return scaler_out
         elif self.latt_path:
             x = x*v_mask+x1*(1-v_mask)
-            vector_out, lattice_tensor_out = self.inference(x, t, cv, cell, num_atoms, conditions, aatype, fragments_idx=fragments_idx)
+            vector_out, lattice_tensor_out = self.inference(x, t, cv, cell, num_atoms, dt, conditions, aatype, fragments_idx=fragments_idx)
             return vector_out*v_mask, lattice_tensor_out
         else:
             x = x*v_mask+x1*(1-v_mask)
-            vector_out, lattice_tensor_out = self.inference(x, t, cv, cell, num_atoms, conditions, aatype, fragments_idx=fragments_idx)
+            vector_out, lattice_tensor_out = self.inference(x, t, cv, cell, num_atoms, dt, conditions, aatype, fragments_idx=fragments_idx)
             return vector_out*v_mask
 
 
