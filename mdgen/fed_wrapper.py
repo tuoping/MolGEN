@@ -562,6 +562,9 @@ class EquivariantFEDWrapper(Wrapper):
 
         latents = prep['latents']
         B, T, N, D = latents.shape
+        x0std = self.args.x0std
+        if "x0std" in prep:
+            x0std = prep['x0std']
 
         if self.args.design:
             # zs_continuous = torch.randn(B, T, N, self.latent_dim - self.args.num_species, device=latents.device)
@@ -588,8 +591,9 @@ class EquivariantFEDWrapper(Wrapper):
             # g = (torch.arange(m, device=self.device) + 0.5) / m
             # X, Y, Z = torch.meshgrid(g, g, g, indexing='ij')
             # zs =  torch.stack([X.reshape(-1), Y.reshape(-1), Z.reshape(-1)], dim=1)[:N].unsqueeze(0).expand(T, -1, -1).unsqueeze(0).expand(B, -1, -1, -1)
-            _, zs, _ = self.transport.sample(latents.shape, self.device)
+            _, zs, zs_mean = self.transport.sample(latents.shape, self.device, x0std)
             zs = zs[0]
+            zs_mean = zs_mean[0]
             if self.transport.latt_path:
                 cell0 = self.transport.sample_latt(zs.shape, self.device)
         self.integration_step = 0
@@ -701,7 +705,7 @@ class EquivariantFEDWrapper(Wrapper):
         # if self.args.likelihood == "EJE":
         match self.args.likelihood:
             case "EJE":
-                return samples_logp, samples, aa_out, reverse_samples_logp, zs, samples_zs
+                return samples_logp, samples, aa_out, reverse_samples_logp, zs-zs_mean, samples_zs-zs_mean
             case "FND":
                 if self.transport.latt_path:
                     raise Exception("FND for latt_path not implemented")

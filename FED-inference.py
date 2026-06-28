@@ -3,12 +3,12 @@
 
 import glob
 
-ckpt_tag = 229
+ckpt_tag = 111
 inference_steps = 100
 
 sampling_method = "euler"
-sim_ckpt = glob.glob("workdir/fixlatt/run5.bk004.Tcv/epoch=%03d-step=*-val_loss=*.ckpt"%ckpt_tag)[0]
-# sim_ckpt = "workdir/fixlatt/run4.bk003.Tcv/last.ckpt"
+# sim_ckpt = glob.glob("workdir/fixlatt/run10.bk006.Tcv_l1/epoch=%03d-step=*-val_loss=*.ckpt"%ckpt_tag)[0]
+sim_ckpt = "workdir/fixlatt/run10.bk006.Tcv_l1/last.ckpt"
 
 device = "cuda"
 
@@ -16,7 +16,7 @@ import os, torch, tqdm, time
 import numpy as np
 from mdgen.fed_wrapper import EquivariantFEDWrapper
 
-out_dir = f"experiments/smallcell_SiO2_nvt_nowrap/test_coesite_x0std0.138/0K0GPa/Tcv3_e{ckpt_tag}_{sampling_method}_step{inference_steps}/"
+out_dir = f"experiments/smallcell_SiO2_nvt_nowrap/test_quartz_x0std0.138/Tcv3l1_r10e{ckpt_tag}_{sampling_method}_step{inference_steps}/"
 print("Output folder: ", out_dir)
 os.makedirs(out_dir, exist_ok=True)
 with open(f"{out_dir}/README.md", "w") as fp:
@@ -30,12 +30,12 @@ hparams = ckpt["hyper_parameters"]
 args = hparams['args']
 args.sampling_method = sampling_method
 args.inference_steps = inference_steps
-args.data_dir = "data/SiO2/npt_0K_0GPa/npt_coesite_dense/npt/"
-args.likelihood = None # "EJE"
+args.data_dir = "data/SiO2/npt_1600K_1GPa/npt_quartz_dense/npt/"
+args.likelihood = "EJE"
 
 
 from mdgen.dataset import EquivariantTransformerDataset_phasediagram
-dataset = EquivariantTransformerDataset_phasediagram(args, species=[14, 8], num_species=args.num_species, sim_condition=False, stage="test")
+dataset = EquivariantTransformerDataset_phasediagram(args, species=[14, 8], num_species=args.num_species, sim_condition=False, stage="test", T=1600)
 
 
 
@@ -129,7 +129,7 @@ for i_rollout in range(0, 5):
                 np.savetxt(filename_logp, logp.detach().cpu().numpy() )
                 np.savetxt(filename_reverse_logp, reverse_logp.detach().cpu().numpy() )
                 N = all_pred_frac_pos.shape[-2]
-                sigma = (torch.ones_like(zs) * args.x0std/(N**(1./3.)))@pred_zs_cell
+                sigma = (torch.ones_like(zs) * np.sqrt(args.x0std))
                 np.savetxt(filename_zs, [[( (zs@all_cell[0])**2/2/sigma**2).sum().detach().cpu().numpy(), ( (pred_zs@pred_zs_cell)**2/2/sigma**2).sum().detach().cpu().numpy()]])
         else:
             if args.likelihood is None:
@@ -137,11 +137,11 @@ for i_rollout in range(0, 5):
             else:
                 logp, all_pred_frac_pos, _, reverse_logp, zs, all_pred_zs = model.inference(batch)
                 pred_zs = all_pred_zs[-1]
-                cell = batch['cell']
+                cell = batch['cell0']
                 np.savetxt(filename_logp, logp.detach().cpu().numpy() )
                 np.savetxt(filename_reverse_logp, reverse_logp.detach().cpu().numpy() )
                 N = all_pred_frac_pos.shape[-2]
-                sigma = (torch.ones_like(zs) * args.x0std/(N**(1./3.)))@cell
+                sigma = (torch.ones_like(zs) * np.sqrt(args.x0std))
                 np.savetxt(filename_zs, [[( (zs@cell)**2/2/sigma**2).sum().detach().cpu().numpy(), ( (pred_zs@cell)**2/2/sigma**2).sum().detach().cpu().numpy()]])
         if i_rollout == 0:
             dump_idx = range(len(all_pred_frac_pos))
@@ -154,7 +154,7 @@ for i_rollout in range(0, 5):
                 cell_out = all_cell[idx_traj]
                 pred_pos = pred_frac_pos[0] @ cell_out[0][0]
             else:
-                cell_out = batch['cell']
+                cell_out = batch['cell0']
                 pred_pos = pred_frac_pos[0] @ cell_out[0][0]
 
             atoms = Atoms(formula, positions=pred_pos.detach().cpu().numpy(), cell=cell_out[0][0].detach().cpu().numpy(), pbc=[1,1,1])
@@ -172,7 +172,7 @@ for i_rollout in range(0, 5):
                     cell_out = all_pred_reverse[1][idx_traj]
                     pred_pos = pred_frac_pos[0] @ cell_out[0][0]
                 else:
-                    cell_out = batch['cell']
+                    cell_out = batch['cell0']
                     pred_pos = pred_frac_pos[0] @ cell_out[0][0]
 
                 atoms = Atoms(formula, positions=pred_pos.detach().cpu().numpy(), cell=cell_out[0][0].detach().cpu().numpy(), pbc=[1,1,1])
