@@ -929,31 +929,75 @@ class Sampler:
         - atol: absolute error tolerance for the solver
         - rtol: relative error tolerance for the solver
         """
+        K_hutchinson_probe = self.transport.args.K_hutchinson_probe
+        K_hutchinson_probe_chunk = self.transport.args.K_hutchinson_probe_chunk
 
         def _likelihood_drift(x, t, model, **model_kwargs):
-            x, _ = x
-            eps = th.randint(2, x.size(), dtype=th.float, device=x.device) * 2 - 1
+            x, _, _ = x
+            B = x.shape[0]
             if reverse:
                 t = th.ones_like(t) * (1 - t)
+
+            # for k in range(K_hutchinson_probe):
+            logp_grad_samples_list = []
+            drift0 = None
             with th.enable_grad():
-                # x.requires_grad = True
-                x = x.detach().requires_grad_(True)
-                assert x.requires_grad
-                ### This way doesn't accumulate the gradient through the ODE steps
-                if reverse:
-                    drift = -self.drift(x, t, model, **model_kwargs)
-                else:
-                    drift = self.drift(x, t, model, **model_kwargs)
-                cell = self.transport.prior_cell
-                grad = th.autograd.grad(th.sum( (drift@cell) * eps), x)[0]
-                logp_grad = th.sum(grad * eps, dim=tuple(range(2, len(x.size()))))
-            drift = drift.detach()
-            logp_grad = logp_grad.detach()
-            return (drift, logp_grad)
+                for k0 in range(0, K_hutchinson_probe, K_hutchinson_probe_chunk):
+                    K_now = min(K_hutchinson_probe_chunk, K_hutchinson_probe - k0)
+            
+                    x_rep = (
+                        x.detach()
+                         .unsqueeze(0)
+                         .repeat((K_now,) + (1,) * x.dim())
+                         .reshape(K_now * B, *x.shape[1:])
+                         .requires_grad_(True)
+                    )
+            
+                    eps = th.randint(2, x_rep.size(), dtype=th.float, device=x.device) * 2 - 1
+            
+                    t_rep = (
+                        t.detach()
+                         .unsqueeze(0)
+                         .repeat((K_now,) + (1,) * t.dim())
+                         .reshape(K_now * B,)
+                         .requires_grad_(False)
+                    )
+            
+                    ### This way doesn't accumulate the gradient through the ODE steps
+                    if reverse:
+                        drift = -self.drift(x_rep, t_rep, model, **model_kwargs)
+                    else:
+                        drift = self.drift(x_rep, t_rep, model, **model_kwargs)
+            
+                    if drift0 is None:
+                        # first probe copy, original batch
+                        drift0 = drift[:B].detach()
+            
+                    grad = th.autograd.grad(th.sum((drift) * eps), x_rep)[0]
+            
+                    logp_grad = th.sum(
+                        grad * eps,
+                        dim=tuple(range(2, len(x_rep.size())))
+                    )
+            
+                    # [K_now * B] -> [K_now, B]
+                    logp_grad = logp_grad.reshape(K_now, B)
+            
+                    logp_grad_samples_list.append(logp_grad.detach())
+            
+            logp_grad_samples = th.cat(logp_grad_samples_list, dim=0)  # [K, B]
+
+            drift = drift0.unsqueeze(0).detach()
+            logp_grad_mean = logp_grad_samples.mean(dim=0)
+            if K_hutchinson_probe > 1:
+                logp_grad_var = logp_grad_samples.var(dim=0)/K_hutchinson_probe
+            else:
+                logp_grad_var = th.zeros_like(logp_grad_mean, device=x.device)
+            return (drift, logp_grad_mean, logp_grad_var)
 
 
         def _likelihood_drift_lattpath(input_, t, model, **model_kwargs):
-            frac_, cell_, _ = input_
+            frac_, cell_, _, _ = input_
             inv_cell_ = th.linalg.inv(cell_)
             eps = th.randint(2, frac_.size(), dtype=th.float, device=frac_.device) * 2 - 1
             if reverse:
@@ -979,7 +1023,8 @@ class Sampler:
             drift[0] = drift[0].detach()
             drift[1] = drift[1].detach()
             logp_grad = logp_grad.detach()
-            return (drift[0], drift[1], logp_grad)
+            logp_grad_var = th.zeros_like(logp_grad, device=x.device)
+            return (drift[0], drift[1], logp_grad, logp_grad_var)
 
         t0, t1 = self.transport.check_interval(
             self.transport.train_eps,
@@ -1008,20 +1053,28 @@ class Sampler:
 
         def _sample_fn(x, model, **model_kwargs):
             init_logp = th.zeros(x[0].size()[:2]).to(x[0]) if isinstance(x, tuple) else th.zeros(x.size()[:2]).to(x)
+            init_logp_var = th.zeros(x[0].size()[:2]).to(x[0]) if isinstance(x, tuple) else th.zeros(x.size()[:2]).to(x)
             if self.transport.latt_path:
-                input = (x[0], x[1], init_logp)
-                drift_0, drift_1, delta_logp = _ode.sample(input, model, **model_kwargs)
+                input = (x[0], x[1], init_logp, init_logp_var)
+                drift_0, drift_1, delta_logp, delta_logp_var = _ode.sample(input, model, **model_kwargs)
             else:
-                input = (x, init_logp)
-                drift, delta_logp = _ode.sample(input, model, **model_kwargs)
+                input = (x, init_logp, init_logp_var)
+                drift, delta_logp, delta_logp_var = _ode.sample(input, model, **model_kwargs)
             
             delta_logp = delta_logp[-1]
             # prior_logp = self.transport.prior_logp(drift)
             logp =  delta_logp
-            if self.transport.latt_path:
-                return logp, [drift_0, drift_1]
+            step_size = (t1-t0)/num_steps
+            if sampling_method == "rk4":
+                logp_var = delta_logp_var[-1] * step_size * 5/18
+            elif sampling_method == 'euler': 
+                logp_var = delta_logp_var[-1] * step_size
             else:
-                return logp, drift
+                raise Exception(f"Variance evaluation not implemented for sampling_method: {sampling_method}")
+            if self.transport.latt_path:
+                return logp, [drift_0, drift_1], logp_var
+            else:
+                return logp, drift, logp_var
 
         return _sample_fn
 

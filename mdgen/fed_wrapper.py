@@ -403,9 +403,9 @@ class EquivariantFEDWrapper(Wrapper):
         if (self.args.sim_condition and conditional_batch):
             data['model_kwargs']["conditions"] = {
                         'cond_f':{
-                            'x': batch["x0"].reshape(-1,3).to(_TORCH_FLOAT_PRECISION),
+                            'x': batch["x0"].to(_TORCH_FLOAT_PRECISION),
                             'cell': batch["cell0"].to(_TORCH_FLOAT_PRECISION),
-                            'mask': cond_mask_f[:,0,...].unsqueeze(1).expand(B,T,L).reshape(-1),          # Since only 1st configuration is inputed and cond_mask already masked the prediction only to the TPS, cond_mask_f here is a place_holder
+                            'mask': cond_mask_f[:,0,...].unsqueeze(1).expand(B,T,L),          # Since only 1st configuration is inputed and cond_mask already masked the prediction only to the TPS, cond_mask_f here is a place_holder
                         }
                     }
 
@@ -619,13 +619,44 @@ class EquivariantFEDWrapper(Wrapper):
                     raise Exception("Wrong likelihood argument (not implemented for SDE): "+self.args.likelihood)
 
         assert not self.args.guided
+
+
+        K_hutchinson_probe = self.args.K_hutchinson_probe
+        K_hutchinson_probe_chunk = self.args.K_hutchinson_probe_chunk
+        assert K_hutchinson_probe % K_hutchinson_probe_chunk == 0
+        def extend_kwargs(kargs):
+            _kargs = {}
+            for k in kargs.keys():
+                _v = kargs[k]
+                if isinstance(_v, dict):
+                    _kargs[k] = {}
+                    for _k in _v.keys():
+                        _kargs[k][_k] = {}
+                        for _k_2 in _v[_k].keys():
+                            _kargs[k][_k][_k_2] = (
+                                _v[_k][_k_2].detach()
+                                 .unsqueeze(0)
+                                 .repeat((K_hutchinson_probe_chunk,) + (1,) * _v[_k][_k_2].dim())
+                                 .reshape(K_hutchinson_probe_chunk * B, *_v[_k][_k_2].shape[1:])
+                                 .requires_grad_(False)
+                            )
+                else:
+                    _kargs[k] = (
+                        _v.detach()
+                         .unsqueeze(0)
+                         .repeat((K_hutchinson_probe_chunk,) + (1,) * _v.dim())
+                         .reshape(K_hutchinson_probe_chunk * B, *_v.shape[1:])
+                         .requires_grad_(False)
+                    )
+            return _kargs
+
         if self.transport.latt_path:
             zs = zs.detach()
             cell0 = cell0.detach()
             
             match self.args.likelihood:
                 case "EJE":
-                    samples_logp, samples = sample_fn(
+                    samples_logp, samples, samples_logp_var = sample_fn(
                         (zs, cell0),
                         partial(self.model.forward_inference, **prep['model_kwargs'])
                     )                
@@ -639,10 +670,10 @@ class EquivariantFEDWrapper(Wrapper):
             zs = zs.detach()
             match self.args.likelihood:
                 case "EJE":
-                    
-                    samples_logp, samples = sample_fn(
+                    _model_kwargs = extend_kwargs(prep['model_kwargs'])
+                    samples_logp, samples, samples_logp_var = sample_fn(
                         zs,
-                        partial(self.model.forward_inference, **prep['model_kwargs'])
+                        partial(self.model.forward_inference, **_model_kwargs)
                     )
                 case "FND":
                     
@@ -678,14 +709,14 @@ class EquivariantFEDWrapper(Wrapper):
             match self.args.likelihood:
                 case "EJE":
                     if self.transport.latt_path:
-                        reverse_samples_logp, samples_zs = sample_fn_reverse(
+                        reverse_samples_logp, samples_zs, reverse_samples_logp_var = sample_fn_reverse(
                                 (samples[0][-1], samples[1][-1]),
                                 partial(self.model.forward_inference, **prep['model_kwargs'])
                             )
                     else:
-                        reverse_samples_logp, samples_zs = sample_fn_reverse(
+                        reverse_samples_logp, samples_zs, reverse_samples_logp_var = sample_fn_reverse(
                                 samples[-1],
-                                partial(self.model.forward_inference, **prep['model_kwargs'])
+                                partial(self.model.forward_inference, **_model_kwargs)
                             )
                 case "FND":
                     reverse_samples_logp, _reverse_samples_logp, samples_zs = sample_fn_reverse(
@@ -705,7 +736,7 @@ class EquivariantFEDWrapper(Wrapper):
         # if self.args.likelihood == "EJE":
         match self.args.likelihood:
             case "EJE":
-                return samples_logp, samples, aa_out, reverse_samples_logp, zs-zs_mean, samples_zs-zs_mean
+                return (samples_logp, samples_logp_var), samples, aa_out, (reverse_samples_logp, reverse_samples_logp_var), zs-zs_mean, samples_zs-zs_mean
             case "FND":
                 if self.transport.latt_path:
                     raise Exception("FND for latt_path not implemented")

@@ -73,6 +73,8 @@ def parse_train_args():
     group.add_argument("--prediction", type=str, default="velocity", choices=["velocity", "score", "noise"])
     group.add_argument("--KL", type=str, default="L1", choices=['forward', 'reverse', 'symm', "L2", 'L1', 'alpha', 'score'])
     group.add_argument("--sampling_method", type=str, default="dopri5", choices=["dopri5", 'rk4', "euler", "Heun"])
+    group.add_argument('--K_hutchinson_probe', type=float, default=4)
+    group.add_argument('--K_hutchinson_probe_chunk', type=float, default=2)
     group.add_argument('--alpha_max', type=float, default=8)
     group.add_argument('--discrete_loss_weight', type=float, default=0.5)
     group.add_argument("--dirichlet_flow_temp", type=float, default=1.0)
