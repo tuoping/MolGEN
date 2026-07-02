@@ -449,11 +449,11 @@ class Transport:
                 assert self.args.weight_loss_var_x0 == 0
             else:
                 assert self.args.weight_loss_var_x0 == 0
-                diffusion = self.path_sampler.compute_diffusion(x1, t, self.args.diffusion_form, self.args.diffusion_norm, cell=self.prior_cell)  # the input x here is not used
-                xt, ut, eps = self.path_sampler.plan_schrodinger_bridge_fractional(t, x0[0], x1, diffusion)
+                diffusion = self.path_sampler.compute_diffusion(x1, t, self.args.diffusion_form, self.args.diffusion_norm)  # the input x here is not used
+                xt, ut, eps = self.path_sampler.plan_schrodinger_bridge_fractional(t, x0[0], x1, diffusion, cell=self.prior_cell)
                 alpha_t, _ = self.path_sampler.compute_alpha_t(path.expand_t_like_x(t, xt))
                 sigma_t, _ = self.path_sampler.compute_sigma_t(path.expand_t_like_x(t, xt))
-                lambda_t = self.path_sampler.compute_lambda_schrodinger_bridge(t, diffusion)
+                lambda_t = self.path_sampler.compute_lambda_schrodinger_bridge(t, diffusion, cell=self.prior_cell)
 
         
         assert t.shape == (B,)
@@ -667,12 +667,13 @@ class Sampler:
     ):
 
         def diffusion_fn(x, t):
-            diffusion = self.transport.path_sampler.compute_diffusion(x, t, form=diffusion_form, norm=diffusion_norm, cell=self.transport.prior_cell)
+            diffusion = self.transport.path_sampler.compute_diffusion(x, t, form=diffusion_form, norm=diffusion_norm)
             return diffusion
 
+        inv_cell = th.linalg.inv(self.transport.prior_cell)
         sde_drift = \
                 lambda x, t, model, score_model, **kwargs: \
-                    self.drift(x, t, model, **kwargs) + diffusion_fn(x, t) * self.score(x, t, score_model, **kwargs)
+                    self.drift(x, t, model, **kwargs) + diffusion_fn(x, t) * self.score(x, t, score_model, **kwargs)@inv_cell@inv_cell.transpose(-1, -2)
 
         sde_diffusion = diffusion_fn
 
@@ -691,9 +692,10 @@ class Sampler:
             diffusion = self.transport.path_sampler.compute_diffusion(x, t, form=diffusion_form, norm=diffusion_norm, cell=self.transport.prior_cell)
             return diffusion
 
+        inv_cell = th.linalg.inv(self.transport.prior_cell)
         sde_drift = \
                 lambda x, t, model, score_model, **kwargs: \
-                    -self.drift(x, 1-t, model, **kwargs) + diffusion_fn(x, t) * self.score(x, 1-t, score_model, **kwargs)
+                    -self.drift(x, 1-t, model, **kwargs) + diffusion_fn(x, t) * self.score(x, 1-t, score_model, **kwargs)@inv_cell@inv_cell.transpose(-1, -2)
 
         return sde_drift
 
@@ -776,6 +778,7 @@ class Sampler:
             t1=t1,
             num_steps=num_steps,
             sampler_type=sampling_method,
+            cell=self.transport.prior_cell
         )
 
         last_step_fn = self.__get_last_step(sde_drift, last_step=last_step, last_step_size=last_step_size)
@@ -847,7 +850,8 @@ class Sampler:
             t1=t1,
             num_steps=num_steps,
             sampler_type=sampling_method,
-            reverse_drift = reverse_sde_drift
+            reverse_drift = reverse_sde_drift,
+            cell=self.transport.prior_cell
         )
 
         last_step_fn = self.__get_last_step(sde_drift, last_step=last_step, last_step_size=last_step_size)

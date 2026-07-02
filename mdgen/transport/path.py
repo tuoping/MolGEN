@@ -114,7 +114,7 @@ class ICPlan:
 
         return -drift, diffusion
 
-    def compute_diffusion(self, x, t, form="constant", norm=1.0, cell=th.eye(3).unsqueeze(0).unsqueeze(0)):
+    def compute_diffusion(self, x, t, form="constant", norm=1.0):
         """Compute the diffusion term of the SDE
         Args:
           x: [batch_dim, ...], data point
@@ -123,9 +123,8 @@ class ICPlan:
           norm: float, norm of the diffusion term
         """
         t = expand_t_like_x(t, x)
-        inv_cell = th.linalg.inv(cell)
         choices = {
-            "constant": norm * inv_cell,
+            "constant": norm * th.ones_like(t),
             "SBDM": norm * self.compute_drift(x, t)[1],
             "sigma": norm * self.compute_sigma_t(t)[0],
             "linear": norm * (1 - t),
@@ -232,9 +231,10 @@ class ICPlan:
         ulatt = velocity_gl3(latt0, latt1, t)
         return latt, ulatt
     
-    def compute_marginal_std(self, t, diffusion):
+    def compute_marginal_std(self, t, diffusion, cell=th.eye(3).unsqueeze(0).unsqueeze(0)):
         """Compute the marginal standard deviation of the time-dependent density p_t"""
-        return th.sqrt(2*diffusion) * th.sqrt(t*(1-t))[:,None,None,None]
+        inv_cell = th.linalg.inv(cell)
+        return (th.sqrt(2*diffusion) * th.sqrt(t*(1-t))[:,None,None,None]) * inv_cell
 
     def sample_xt_schrodinger_bridge(self, x0, x1, t, epsilon, diffusion):
         """
@@ -311,11 +311,11 @@ class ICPlan:
         return xt, ut, epsilon
     
     
-    def plan_schrodinger_bridge_fractional(self, t, x0, x1, diffusion):
+    def plan_schrodinger_bridge_fractional(self, t, x0, x1, diffusion, cell):
         B,T,N,_ = x0.shape
         epsilon = th.randn_like(x0)
         mu_t = x0 + t[:,None,None,None]*(wrap_frac_pos(x1 - x0 - 0.5) - 0.5)
-        std_t = self.compute_marginal_std(t, diffusion)
+        std_t = self.compute_marginal_std(t, diffusion, cell)
         xt = mu_t + epsilon@std_t
 
         sigma_t_prime_over_sigma_t = (1 - 2 * t) / (2 * t * (1 - t) + 1e-8)
@@ -326,7 +326,7 @@ class ICPlan:
         ut = compute_weighted((epsilon@std_t).view(B*T,N,3), std_t, ut_k).view(B,T,N,3)
         return xt, ut, epsilon
 
-    def compute_lambda_schrodinger_bridge(self, t, diffusion):
+    def compute_lambda_schrodinger_bridge(self, t, diffusion, cell=th.eye(3).unsqueeze(0).unsqueeze(0)):
         '''
         Compute the lambda function for the Schrodinger bridge.
         Diffusion rate: g(t) = sqrt(2 * diffusion)
@@ -342,7 +342,7 @@ class ICPlan:
         lambda_t : FloatTensor, shape (bs)
             lambda function at time t
         '''
-        std_t = self.compute_marginal_std(t, diffusion)
+        std_t = self.compute_marginal_std(t, diffusion, cell)
         # std_t = th.sqrt(2*diffusion) * th.sqrt(t*(1-t))
         return 2*std_t/(2*diffusion + 1e-20)
 

@@ -15,6 +15,7 @@ class sde:
         sampler_type,
         reverse_drift = None,
         score = None,
+        cell = th.eye(3).unsqueeze(0).unsqueeze(0),
         num_corrector_step = 0,
     ):
         # assert t0 < t1, "SDE sampler has to be in forward time"
@@ -31,11 +32,12 @@ class sde:
         self.reverse_drift = reverse_drift
         self.score = score
         self.num_corrector_step = num_corrector_step
+        self.cell = cell
 
     def __Euler_Maruyama_step(self, x, mean_x, t, model, score_model, **model_kwargs):
         w_cur = th.randn(x.size()).to(x)
         t = th.ones(x.size(0)).to(x) * t
-        dw = w_cur * th.sqrt(th.abs(self.dt))
+        dw = w_cur * th.sqrt(th.abs(self.dt)) @ th.linalg.inv(self.cell)
         drift = self.drift(x, t, model, score_model, **model_kwargs)
         diffusion = self.diffusion(x, t)
         mean_x = x + drift * self.dt
@@ -49,20 +51,23 @@ class sde:
     def __Euler_Maruyama_likelihood_step(self, x, mean_x, t, model, score_model, **model_kwargs):
         w_cur = th.randn(x.size()).to(x)
         t = th.ones(x.size(0)).to(x) * t
-        dw = w_cur * th.sqrt(th.abs(self.dt))
+        inv_cell = th.linalg.inv(self.cell)
+        dw = w_cur * th.sqrt(th.abs(self.dt)) @ inv_cell
         drift = self.drift(x, t, model, score_model, **model_kwargs)
         diffusion = self.diffusion(x, t)
         
         mean_x = x + drift * self.dt
         x_next = mean_x + th.sqrt(2 * diffusion) * dw
-        dist = th.distributions.Normal(loc=mean_x, scale=2*diffusion*th.abs(self.dt))
+        dist = th.distributions.MultivariateNormal(loc=mean_x, 
+                                                   covariance_matrix= th.sqrt(2*diffusion*th.abs(self.dt))*inv_cell.transpose(-1, -2) @ inv_cell)
         
         _drift = self.reverse_drift(x, t, model, score_model, **model_kwargs)
         _mean_x = x + _drift * self.dt
         _w_cur = th.randn(x.size()).to(x)
         _dw = _w_cur * th.sqrt(th.abs(self.dt))
         x_prev = _mean_x + th.sqrt(2 * diffusion) * _dw
-        _dist = th.distributions.Normal(loc=_mean_x, scale=2*diffusion*th.abs(self.dt))
+        _dist = th.distributions.Normal(loc=_mean_x, 
+                                        covariance_matrix= th.sqrt(2*diffusion*th.abs(self.dt))*inv_cell.transpose(-1, -2) @ inv_cell)
         return x_next, mean_x, dist.log_prob(x_next), _dist.log_prob(x_prev)
     
     def __corrector_step(self, x, t, score_model, **model_kwargs):
