@@ -52,7 +52,7 @@ def velocity_gl3(L0: th.Tensor, L1: th.Tensor, t: th.Tensor) -> th.Tensor:
     return u_Lt   
 
 
-def compute_weighted(dx, standard_bandwidth_factor, f_x, k_max=3):
+def compute_weighted(dx, std_t, f_x, k_max=3):
     """
     Monte Carlo estimate of the full JSD:
     JSD(p || q) = 0.5 * E_p[log(p/m)] + 0.5 * E_q[log(q/m)]
@@ -66,10 +66,7 @@ def compute_weighted(dx, standard_bandwidth_factor, f_x, k_max=3):
             output: (B, N, K)
         k_max: int - number of periodic images per dimension
     """
-    if isinstance(standard_bandwidth_factor, th.Tensor):
-        bandwidth_factor = standard_bandwidth_factor[:, None, None] ** 2  # scalar or (B,)
-    else:
-        bandwidth_factor = standard_bandwidth_factor ** 2
+    inv_std_t = th.linalg.inv(std_t)
 
     ks = th.arange(-k_max, k_max + 1, device=dx.device)
     kx, ky, kz = th.meshgrid(ks, ks, ks, indexing='ij')
@@ -77,10 +74,10 @@ def compute_weighted(dx, standard_bandwidth_factor, f_x, k_max=3):
 
     # Broadcast: mu_t_x1 is (B, N, 3), k_vecs is (K, 3)
     # diff: (B, N, K, 3)
-    diff = (dx[:, :, None, :] + k_vecs[None, None, :, :])   # @cell[:, None, :, :]
+    diff = (dx[:, :, None, :] + k_vecs[None, None, :, :]) @ inv_std_t   # @cell[:, None, :, :]
     sq_norms = th.sum(diff ** 2, dim=-1)  # (B, N, K)
 
-    log_weights = -sq_norms / (2) * bandwidth_factor  # (B, N, K)
+    log_weights = -sq_norms / (2) # (B, N, K)
     log_weights = log_weights - log_weights.max(dim=-1, keepdim=True).values
     weights = th.exp(log_weights)
     Z = weights.sum(dim=-1, keepdim=True)  # (B, N, 1)
@@ -117,7 +114,7 @@ class ICPlan:
 
         return -drift, diffusion
 
-    def compute_diffusion(self, x, t, form="constant", norm=1.0):
+    def compute_diffusion(self, x, t, form="constant", norm=1.0, cell=th.eye(3).unsqueeze(0).unsqueeze(0)):
         """Compute the diffusion term of the SDE
         Args:
           x: [batch_dim, ...], data point
@@ -126,8 +123,9 @@ class ICPlan:
           norm: float, norm of the diffusion term
         """
         t = expand_t_like_x(t, x)
+        inv_cell = th.linalg.inv(cell)
         choices = {
-            "constant": norm * th.ones_like(t),
+            "constant": norm * inv_cell,
             "SBDM": norm * self.compute_drift(x, t)[1],
             "sigma": norm * self.compute_sigma_t(t)[0],
             "linear": norm * (1 - t),
@@ -236,7 +234,7 @@ class ICPlan:
     
     def compute_marginal_std(self, t, diffusion):
         """Compute the marginal standard deviation of the time-dependent density p_t"""
-        return th.sqrt(2*diffusion) * th.sqrt(t*(1-t))
+        return th.sqrt(2*diffusion) * th.sqrt(t*(1-t))[:,None,None,None]
 
     def sample_xt_schrodinger_bridge(self, x0, x1, t, epsilon, diffusion):
         """
@@ -266,7 +264,7 @@ class ICPlan:
         mu_t = self.compute_mu_t(t, x0, x1)
         std_t = self.compute_marginal_std(t, diffusion)
         std_t = expand_t_like_x(std_t, x0)
-        return mu_t + std_t * epsilon
+        return mu_t + epsilon@std_t
 
     def compute_ut_schrodinger_bridge(self, t, x0, x1, xt):
         """
@@ -318,14 +316,14 @@ class ICPlan:
         epsilon = th.randn_like(x0)
         mu_t = x0 + t[:,None,None,None]*(wrap_frac_pos(x1 - x0 - 0.5) - 0.5)
         std_t = self.compute_marginal_std(t, diffusion)
-        xt = mu_t + std_t[:,None,None,None] * epsilon
+        xt = mu_t + epsilon@std_t
 
         sigma_t_prime_over_sigma_t = (1 - 2 * t) / (2 * t * (1 - t) + 1e-8)
         ut_ode = (wrap_frac_pos(x1 - x0 - 0.5) - 0.5).view(B*T,N,3)
         def ut_k(dx, k):
             return sigma_t_prime_over_sigma_t[:,None,None,None]*(dx + k) + ut_ode[:,:,None,:]
         
-        ut = compute_weighted((std_t[:,None,None,None] * epsilon).view(B*T,N,3), 1/std_t, ut_k).view(B,T,N,3)
+        ut = compute_weighted((epsilon@std_t).view(B*T,N,3), std_t, ut_k).view(B,T,N,3)
         return xt, ut, epsilon
 
     def compute_lambda_schrodinger_bridge(self, t, diffusion):

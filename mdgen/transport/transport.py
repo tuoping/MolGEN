@@ -373,7 +373,7 @@ class Transport:
             forces = None,
             E = None,
             x0std = None,
-            global_step = None
+            global_step = None,
     ):
         """Loss for training the score model
         Args:
@@ -449,7 +449,7 @@ class Transport:
                 assert self.args.weight_loss_var_x0 == 0
             else:
                 assert self.args.weight_loss_var_x0 == 0
-                diffusion = self.path_sampler.compute_diffusion(x1, t, self.args.diffusion_form, self.args.diffusion_norm).view(-1)  # the input x here is not used
+                diffusion = self.path_sampler.compute_diffusion(x1, t, self.args.diffusion_form, self.args.diffusion_norm, cell=self.prior_cell)  # the input x here is not used
                 xt, ut, eps = self.path_sampler.plan_schrodinger_bridge_fractional(t, x0[0], x1, diffusion)
                 alpha_t, _ = self.path_sampler.compute_alpha_t(path.expand_t_like_x(t, xt))
                 sigma_t, _ = self.path_sampler.compute_sigma_t(path.expand_t_like_x(t, xt))
@@ -509,10 +509,10 @@ class Transport:
                     
                 if self.score_model is not None:
                     cell = model_kwargs['cell']
-                    terms['loss_dsm'] = mean_flat(((lambda_t[:,None,None,None]*score_model_output + eps)**2)@cell, mask)
+                    terms['loss_dsm'] = mean_flat(((score_model_output@lambda_t + eps)**2)@cell, mask)
                     # terms['loss_tsm_0'] = mean_flat( ((score_model_output - 1./sigma_t*grad_log_normal_iso_3d(x0[0], mu=x0_mean[0], sigma=x0std/(N)**(1./3.)))**2 * (t < 0.5).to(th.int)[:,None,None,None])@cell, mask) 
                     terms['loss_tsm_1'] = mean_flat( ((score_model_output - 1./alpha_t*forces)**2 * (t > 0.5).to(th.int)[:,None,None,None])@cell, mask)
-                    terms['loss'] = terms['loss_flow'] + terms['loss_dsm'] + terms['loss_tsm_0'] + terms["loss_tsm_1"]
+                    terms['loss'] = terms['loss_flow'] + terms['loss_dsm'] + terms["loss_tsm_1"]
                 else:
                     terms['loss'] = terms['loss_flow']
                     if self.latt_path:
@@ -667,7 +667,7 @@ class Sampler:
     ):
 
         def diffusion_fn(x, t):
-            diffusion = self.transport.path_sampler.compute_diffusion(x, t, form=diffusion_form, norm=diffusion_norm)
+            diffusion = self.transport.path_sampler.compute_diffusion(x, t, form=diffusion_form, norm=diffusion_norm, cell=self.transport.prior_cell)
             return diffusion
 
         sde_drift = \
@@ -688,7 +688,7 @@ class Sampler:
     ):
 
         def diffusion_fn(x, t):
-            diffusion = self.transport.path_sampler.compute_diffusion(x, t, form=diffusion_form, norm=diffusion_norm)
+            diffusion = self.transport.path_sampler.compute_diffusion(x, t, form=diffusion_form, norm=diffusion_norm, cell=self.transport.prior_cell)
             return diffusion
 
         sde_drift = \

@@ -437,7 +437,7 @@ class EquivariantFEDWrapper(Wrapper):
             model_kwargs=prep['model_kwargs'],
             forces = forces,
             x0std = x0std,
-            global_step = self.current_epoch
+            global_step = self.current_epoch,
         )
         self.prefix_log('model_dur', time.time() - start)
         self.prefix_log('time', out_dict['t'].detach().cpu())
@@ -447,7 +447,7 @@ class EquivariantFEDWrapper(Wrapper):
         loss = loss_gen
         if self.score_model is not None:
             self.prefix_log("loss_dsm", out_dict['loss_dsm'].detach().cpu())
-            self.prefix_log("loss_tsm_0", out_dict['loss_tsm_0'].detach().cpu())
+            # self.prefix_log("loss_tsm_0", out_dict['loss_tsm_0'].detach().cpu())
             self.prefix_log("loss_tsm_1", out_dict['loss_tsm_1'].detach().cpu())
             self.prefix_log("loss_path", out_dict['loss_dsm'].detach().cpu()+out_dict['loss_flow'].detach().cpu())
         if self.args.KL == 'symm':
