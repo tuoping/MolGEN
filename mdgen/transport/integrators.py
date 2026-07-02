@@ -55,20 +55,22 @@ class sde:
         dw = w_cur * th.sqrt(th.abs(self.dt)) @ inv_cell
         drift = self.drift(x, t, model, score_model, **model_kwargs)
         diffusion = self.diffusion(x, t)
-        
+        metric = inv_cell.transpose(-1, -2) @ inv_cell
+        ### forward
         mean_x = x + drift * self.dt
         x_next = mean_x + th.sqrt(2 * diffusion) * dw
         dist = th.distributions.MultivariateNormal(loc=mean_x, 
-                                                   covariance_matrix= th.sqrt(2*diffusion*th.abs(self.dt))*inv_cell.transpose(-1, -2) @ inv_cell)
+                                                   covariance_matrix= (2*diffusion*th.abs(self.dt))*metric)
         
-        _drift = self.reverse_drift(x, t, model, score_model, **model_kwargs)
+        ### reverse
+        t_next = t + self.dt
+        _diffusion = self.diffusion(x_next, t_next)
+        _drift = self.reverse_drift(x, t_next, model, score_model, **model_kwargs)
         _mean_x = x + _drift * self.dt
-        _w_cur = th.randn(x.size()).to(x)
-        _dw = _w_cur * th.sqrt(th.abs(self.dt))
-        x_prev = _mean_x + th.sqrt(2 * diffusion) * _dw
-        _dist = th.distributions.Normal(loc=_mean_x, 
-                                        covariance_matrix= th.sqrt(2*diffusion*th.abs(self.dt))*inv_cell.transpose(-1, -2) @ inv_cell)
-        return x_next, mean_x, dist.log_prob(x_next), _dist.log_prob(x_prev)
+
+        _dist = th.distributions.MultivariateNormal(loc=_mean_x, 
+                                        covariance_matrix= (2*_diffusion*th.abs(self.dt))*metric)
+        return x_next, mean_x, dist.log_prob(x_next), _dist.log_prob(x)
     
     def __corrector_step(self, x, t, score_model, **model_kwargs):
         w_cur = th.randn(x.size()).to(x)
