@@ -4,9 +4,9 @@
 import glob
 
 ckpt_tag = 111
-inference_steps = 100
+inference_steps = 10
 
-sampling_method = "euler"
+sampling_method = "rk4"
 # sim_ckpt = glob.glob("workdir/fixlatt/run10.bk006.Tcv_l1/epoch=%03d-step=*-val_loss=*.ckpt"%ckpt_tag)[0]
 sim_ckpt = "workdir/fixlatt/run10.bk006.Tcv_l1/last.ckpt"
 
@@ -16,7 +16,7 @@ import os, torch, tqdm, time
 import numpy as np
 from mdgen.fed_wrapper import EquivariantFEDWrapper
 
-out_dir = f"experiments/smallcell_SiO2_nvt_nowrap/test_quartz_x0std0.138/Tcv3l1_r10e{ckpt_tag}_{sampling_method}_step{inference_steps}/"
+out_dir = f"experiments/smallcell_SiO2_nvt_nowrap/test_quartz_x0stdkBT/Tcv3l1_r10e{ckpt_tag}_{sampling_method}_step{inference_steps}/"
 print("Output folder: ", out_dir)
 os.makedirs(out_dir, exist_ok=True)
 with open(f"{out_dir}/README.md", "w") as fp:
@@ -32,6 +32,8 @@ args.sampling_method = sampling_method
 args.inference_steps = inference_steps
 args.data_dir = "data/SiO2/npt_1600K_1GPa/npt_quartz_dense/npt/"
 args.likelihood = "EJE"
+args.K_hutchinson_probe = 2
+args.K_hutchinson_probe_chunk = 1
 
 
 from mdgen.dataset import EquivariantTransformerDataset_phasediagram
@@ -49,7 +51,6 @@ print(model.args.path_type)
 print(model.args.sampling_method)
 print(model.args.inference_steps)
 print(model.args.likelihood)
-print(model.args.x0std)
 
 batch_size = 1
 val_loader = torch.utils.data.DataLoader(
@@ -111,6 +112,7 @@ for i_rollout in range(0, 5):
         for key in batch.keys():
             if isinstance(batch[key], torch.Tensor):
                 batch[key] = batch[key].to(device)
+        x0std = batch['x0std']
         labels = torch.argmax(batch["species"], dim=3).squeeze(0)
         symbols = [[map_to_chemical_symbol[int(i_elem.to('cpu'))] for i_elem in labels[i_conf]] for i_conf in range(len(labels))]
 
@@ -120,16 +122,17 @@ for i_rollout in range(0, 5):
             if args.likelihood is None:
                 all_pred_frac_pos, _, all_cell  = model.inference(batch)
             else:
+                raise Exception("Not verified")
                 logp, all_pred, _, reverse_logp, zs, all_pred_reverse = model.inference(batch)
                 all_pred_frac_pos = all_pred[0]
                 all_cell = all_pred[1]
                 all_pred_zs = all_pred_reverse[0]
                 pred_zs = all_pred_zs[-1]
                 pred_zs_cell = all_pred_reverse[1][-1]
-                np.savetxt(filename_logp, logp.detach().cpu().numpy() )
-                np.savetxt(filename_reverse_logp, reverse_logp.detach().cpu().numpy() )
+                np.savetxt(filename_logp, torch.tensor(logp).view(1,-1).detach().cpu().numpy() )
+                np.savetxt(filename_reverse_logp, torch.tensor(reverse_logp).view(1,-1).detach().cpu().numpy() )
                 N = all_pred_frac_pos.shape[-2]
-                sigma = (torch.ones_like(zs) * np.sqrt(args.x0std))
+                sigma = (torch.ones_like(zs) * x0std)
                 np.savetxt(filename_zs, [[( (zs@all_cell[0])**2/2/sigma**2).sum().detach().cpu().numpy(), ( (pred_zs@pred_zs_cell)**2/2/sigma**2).sum().detach().cpu().numpy()]])
         else:
             if args.likelihood is None:
@@ -137,12 +140,18 @@ for i_rollout in range(0, 5):
             else:
                 logp, all_pred_frac_pos, _, reverse_logp, zs, all_pred_zs = model.inference(batch)
                 pred_zs = all_pred_zs[-1]
-                cell = batch['cell0']
-                np.savetxt(filename_logp, logp.detach().cpu().numpy() )
-                np.savetxt(filename_reverse_logp, reverse_logp.detach().cpu().numpy() )
+                cell = batch['cell0'].cpu()
                 N = all_pred_frac_pos.shape[-2]
-                sigma = (torch.ones_like(zs) * np.sqrt(args.x0std))
-                np.savetxt(filename_zs, [[( (zs@cell)**2/2/sigma**2).sum().detach().cpu().numpy(), ( (pred_zs@cell)**2/2/sigma**2).sum().detach().cpu().numpy()]])
+
+                logp = torch.tensor(logp).detach().cpu()
+                logp[0] -= N * torch.log(abs(torch.linalg.det(cell.squeeze(0).squeeze(0))))
+                np.savetxt(filename_logp, logp.view(1,-1).numpy() )
+                reverse_logp = torch.tensor(reverse_logp).detach().cpu()
+                reverse_logp[0] += N * torch.log(abs(torch.linalg.det(cell.squeeze(0).squeeze(0))))
+                np.savetxt(filename_reverse_logp, reverse_logp.view(1,-1).numpy() )
+
+                sigma = (torch.ones_like(zs) * x0std).detach().cpu()
+                np.savetxt(filename_zs, [[( (zs.detach().cpu()@cell)**2/2/sigma**2).sum().numpy(), ( (pred_zs.detach().cpu()@cell)**2/2/sigma**2).sum().numpy()]])
         if i_rollout == 0:
             dump_idx = range(len(all_pred_frac_pos))
         else:
