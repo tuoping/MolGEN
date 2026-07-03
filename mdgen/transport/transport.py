@@ -689,7 +689,7 @@ class Sampler:
     ):
 
         def diffusion_fn(x, t):
-            diffusion = self.transport.path_sampler.compute_diffusion(x, t, form=diffusion_form, norm=diffusion_norm, cell=self.transport.prior_cell)
+            diffusion = self.transport.path_sampler.compute_diffusion(x, t, form=diffusion_form, norm=diffusion_norm)
             return diffusion
 
         inv_cell = th.linalg.inv(self.transport.prior_cell)

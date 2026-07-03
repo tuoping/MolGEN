@@ -104,22 +104,42 @@ if args.ckpt is not None:
 
 # assert model.transport.latt_path
 
-callbacks_fn = [
-    # ModelCheckpoint(
-    #     dirpath=os.environ["MODEL_DIR"], 
-    #     save_top_k=-1,
-    #     every_n_epochs=args.ckpt_freq,
-    # ),
-    ModelCheckpoint(
-        dirpath=os.environ["MODEL_DIR"], 
-        filename="{epoch:03d}-{step:07d}-{val_loss:.4f}",
-        monitor="val_loss",
-        save_top_k=1,
-        save_last=True
-    ),
+if model.score_model is not None:
+    callbacks_fn = [
+        ModelCheckpoint(
+            dirpath=os.environ["MODEL_DIR"], 
+            filename="{epoch:03d}-{step:07d}-{val_loss_path:.4f}",
+            monitor="val_loss",
+            save_top_k=1,
+            save_last=True
+        ),
+    
+        ModelSummary(max_depth=2),
 
-    ModelSummary(max_depth=2),
-]
+        # Best by val_loss_path
+        ModelCheckpoint(
+            dirpath=os.path.join(os.environ["MODEL_DIR"], "best_val_loss_path"),
+            filename="best-val_loss_path-{epoch:03d}-{step:07d}-{val_loss_path:.4f}",
+            monitor="val_loss_path",
+            mode="min",
+            save_top_k=1,
+            save_last=False,
+        ),
+        
+        ModelSummary(max_depth=2),
+    ]
+else:
+    callbacks_fn = [
+        ModelCheckpoint(
+            dirpath=os.environ["MODEL_DIR"], 
+            filename="{epoch:03d}-{step:07d}-{val_loss:.4f}",
+            monitor="val_loss",
+            save_top_k=1,
+            save_last=True
+        ),
+    
+        ModelSummary(max_depth=2),
+    ]
 
 trainer = pl.Trainer(
     accelerator="gpu" if torch.cuda.is_available() else 'auto',

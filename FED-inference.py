@@ -3,12 +3,12 @@
 
 import glob
 
-ckpt_tag = 111
-inference_steps = 10
+ckpt_tag = 39
+inference_steps = 1000
 
-sampling_method = "rk4"
-# sim_ckpt = glob.glob("workdir/fixlatt/run10.bk006.Tcv_l1/epoch=%03d-step=*-val_loss=*.ckpt"%ckpt_tag)[0]
-sim_ckpt = "workdir/fixlatt/run10.bk006.Tcv_l1/last.ckpt"
+sampling_method = "euler"
+sim_ckpt = glob.glob("workdir/fixlatt-sde/run1/epoch=%03d-step=*-val_loss=*.ckpt"%ckpt_tag)[0]
+# sim_ckpt = "workdir/fixlatt/run10.bk006.Tcv_l1/last.ckpt"
 
 device = "cuda"
 
@@ -16,7 +16,7 @@ import os, torch, tqdm, time
 import numpy as np
 from mdgen.fed_wrapper import EquivariantFEDWrapper
 
-out_dir = f"experiments/smallcell_SiO2_nvt_nowrap/test_quartz_x0stdkBT/Tcv3l1_r10e{ckpt_tag}_{sampling_method}_step{inference_steps}/"
+out_dir = f"experiments/smallcell_SiO2_nvt_nowrap/sdetest_quartz_x0varkBT/Tcv3_r1e{ckpt_tag}_{sampling_method}_step{inference_steps}/"
 print("Output folder: ", out_dir)
 os.makedirs(out_dir, exist_ok=True)
 with open(f"{out_dir}/README.md", "w") as fp:
@@ -31,8 +31,8 @@ args = hparams['args']
 args.sampling_method = sampling_method
 args.inference_steps = inference_steps
 args.data_dir = "data/SiO2/npt_1600K_1GPa/npt_quartz_dense/npt/"
-args.likelihood = "EJE"
-args.K_hutchinson_probe = 2
+args.likelihood = "FND"
+args.K_hutchinson_probe = 1
 args.K_hutchinson_probe_chunk = 1
 
 
@@ -144,10 +144,8 @@ for i_rollout in range(0, 5):
                 N = all_pred_frac_pos.shape[-2]
 
                 logp = torch.tensor(logp).detach().cpu()
-                logp[0] -= N * torch.log(abs(torch.linalg.det(cell.squeeze(0).squeeze(0))))
                 np.savetxt(filename_logp, logp.view(1,-1).numpy() )
                 reverse_logp = torch.tensor(reverse_logp).detach().cpu()
-                reverse_logp[0] += N * torch.log(abs(torch.linalg.det(cell.squeeze(0).squeeze(0))))
                 np.savetxt(filename_reverse_logp, reverse_logp.view(1,-1).numpy() )
 
                 sigma = (torch.ones_like(zs) * x0std).detach().cpu()
