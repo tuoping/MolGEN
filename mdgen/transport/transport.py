@@ -424,17 +424,12 @@ class Transport:
         if self.args.design:  # alterations made to the original SIT code to include dirichlet flow matching for design
             assert self.model_type == ModelType.VELOCITY
             seq_one_hot = aatype1
-            ### exponential sampler of t
-            # exponential_dist = th.distributions.Exponential(1.0)
-            # t = exponential_dist.sample((seq_one_hot.shape[0],)).to(seq_one_hot.device).float()
             alphas, _ = t_to_alpha(t, self.args)
             alphas = th.ones_like(seq_one_hot) + seq_one_hot * (alphas[:, None, None, None] - th.ones_like(seq_one_hot))
             x_d = th.distributions.Dirichlet(alphas).sample()
             xt = x_d
-
-            # model_output = model(xt, t, cell=model_kwargs["cell"], num_atoms=model_kwargs["num_atoms"], x_cond=model_kwargs["x_cond"], x_cond_mask=model_kwargs["x_cond_mask"])
         else:
-            if self.score_model is None:
+            if self.args.path_type not in ["Schrodinger_Linear", "Schrodinger_Linear_onemodel"]:
                 xt, ut = self.path_sampler.plan_fractional(t, x0[0], x1)
                 alpha_t, _ = self.path_sampler.compute_alpha_t(path.expand_t_like_x(t, xt))
                 if self.latt_path:
@@ -453,7 +448,7 @@ class Transport:
                 xt, ut, eps = self.path_sampler.plan_schrodinger_bridge_fractional(t, x0[0], x1, diffusion, cell=self.prior_cell)
                 alpha_t, _ = self.path_sampler.compute_alpha_t(path.expand_t_like_x(t, xt))
                 sigma_t, _ = self.path_sampler.compute_sigma_t(path.expand_t_like_x(t, xt))
-                lambda_t = self.path_sampler.compute_lambda_schrodinger_bridge(t, diffusion, cell=self.prior_cell)
+
 
         
         assert t.shape == (B,)
@@ -462,11 +457,13 @@ class Transport:
         else:
             model_output = model(xt, t, **model_kwargs)
         assert self.args.weight_loss_var_x0 == 0
-        if self.score_model is not None:
+        if self.args.path_type in ["Schrodinger_Linear", "Schrodinger_Linear_onemodel"]:
             if self.latt_path:
-                score_model_output, lattscore_output = self.score_model(xt, t, **model_kwargs)
-            else:
+                raise NotImplementedError("Score model with lattice path is not implemented.")
+            if self.score_model is not None:
                 score_model_output = self.score_model(xt, t, **model_kwargs)
+            else:
+                score_model_output = self.path_sampler.get_score_from_velocity(model_output, xt, t)
 
         assert model_output.size() == (B, *xt.size()[1:-1], C)
 
@@ -507,11 +504,12 @@ class Transport:
                     case _:
                         raise Exception(f"Wrong KL argument: {self.args.KL}")
                     
-                if self.score_model is not None:
+                if self.args.path_type in ["Schrodinger_Linear", "Schrodinger_Linear_onemodel"]:
                     cell = model_kwargs['cell']
-                    terms['loss_dsm'] = mean_flat(((score_model_output@lambda_t + eps)**2)@cell, mask)
+                    gamma_cart = th.sqrt(2 * diffusion * (t * (1 - t))[:,None,None,None])
+                    terms['loss_dsm'] = mean_flat((((score_model_output @ cell) * gamma_cart + eps)**2), mask)
                     # terms['loss_tsm_0'] = mean_flat( ((score_model_output - 1./sigma_t*grad_log_normal_iso_3d(x0[0], mu=x0_mean[0], sigma=x0std/(N)**(1./3.)))**2 * (t < 0.5).to(th.int)[:,None,None,None])@cell, mask) 
-                    terms['loss_tsm_1'] = mean_flat( ((score_model_output - 1./alpha_t*forces)**2 * (t > 0.5).to(th.int)[:,None,None,None])@cell, mask)
+                    terms['loss_tsm_1'] = mean_flat( ((score_model_output@cell - 1./alpha_t*forces)**2 * (t > 0.5).to(th.int)[:,None,None,None]), mask)
                     terms['loss'] = terms['loss_flow'] + terms['loss_dsm'] + terms["loss_tsm_1"]
                 else:
                     terms['loss'] = terms['loss_flow']
@@ -673,7 +671,7 @@ class Sampler:
         inv_cell = th.linalg.inv(self.transport.prior_cell)
         sde_drift = \
                 lambda x, t, model, score_model, **kwargs: \
-                    self.drift(x, t, model, **kwargs) + diffusion_fn(x, t) * self.score(x, t, score_model, **kwargs)@inv_cell@inv_cell.transpose(-1, -2)
+                    self.drift(x, t, model, **kwargs) + diffusion_fn(x, t) * self.score(x, t, score_model, **kwargs)/(self.x0std**2)[:,None,None,None]
 
         sde_diffusion = diffusion_fn
 
@@ -695,7 +693,7 @@ class Sampler:
         inv_cell = th.linalg.inv(self.transport.prior_cell)
         sde_drift = \
                 lambda x, t, model, score_model, **kwargs: \
-                    -self.drift(x, 1-t, model, **kwargs) + diffusion_fn(x, t) * self.score(x, 1-t, score_model, **kwargs)@inv_cell@inv_cell.transpose(-1, -2)
+                    -self.drift(x, 1-t, model, **kwargs) + diffusion_fn(x, t) * self.score(x, 1-t, score_model, **kwargs)/(self.x0std**2)[:,None,None,None]
 
         return sde_drift
 
@@ -1166,6 +1164,7 @@ def create_transport(
 
     path_choice = {
         "Schrodinger_Linear": PathType.LINEAR,
+        "Schrodinger_Linear_onemodel": PathType.LINEAR,
         "Linear": PathType.LINEAR,
         "Pow": PathType.Pow,
         "GVP": PathType.GVP,

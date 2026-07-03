@@ -2,6 +2,14 @@
 import torch as th
 from torchdiffeq import odeint
 
+def metric_logprob(x, mean, cell, var_cart):
+    # row convention: r = s @ cell
+    dx_cart = (x - mean) @ cell
+    maha = dx_cart.square().sum(dim=-1) / var_cart
+    logdet = th.logdet(cell)
+    log_norm = 0.5 * 3 * th.log(2 * th.pi * var_cart)
+    return (-0.5 * maha - log_norm + logdet)  # shape [B,T,N]
+
 class sde:
     """SDE solver class"""
     def __init__(
@@ -56,21 +64,24 @@ class sde:
         drift = self.drift(x, t, model, score_model, **model_kwargs)
         diffusion = self.diffusion(x, t)
         metric = inv_cell.transpose(-1, -2) @ inv_cell
+
         ### forward
         mean_x = x + drift * self.dt
         x_next = mean_x + th.sqrt(2 * diffusion) * dw
-        dist = th.distributions.MultivariateNormal(loc=mean_x, 
-                                                   covariance_matrix= (2*diffusion*th.abs(self.dt))*metric)
+        # dist = th.distributions.MultivariateNormal(loc=mean_x, 
+        #                                            covariance_matrix= (2*diffusion*th.abs(self.dt))*metric)
+        log_prob = metric_logprob(x_next, mean_x, self.cell, 2.0 * diffusion * abs(self.dt))
         
         ### reverse
         t_next = t + self.dt
         _diffusion = self.diffusion(x_next, t_next)
-        _drift = self.reverse_drift(x, t_next, model, score_model, **model_kwargs)
-        _mean_x = x + _drift * self.dt
+        _drift = self.reverse_drift(x_next, t_next, model, score_model, **model_kwargs)
+        _mean_x = x_next + _drift * self.dt
 
-        _dist = th.distributions.MultivariateNormal(loc=_mean_x, 
-                                        covariance_matrix= (2*_diffusion*th.abs(self.dt))*metric)
-        return x_next, mean_x, dist.log_prob(x_next), _dist.log_prob(x)
+        # _dist = th.distributions.MultivariateNormal(loc=_mean_x, 
+        #                                 covariance_matrix= (2*_diffusion*th.abs(self.dt))*metric)
+        _log_prob = metric_logprob(x, _mean_x, self.cell, 2.0 * _diffusion * abs(self.dt))
+        return x_next, mean_x, log_prob, _log_prob
     
     def __corrector_step(self, x, t, score_model, **model_kwargs):
         w_cur = th.randn(x.size()).to(x)

@@ -104,7 +104,7 @@ if args.ckpt is not None:
 
 # assert model.transport.latt_path
 
-if model.score_model is not None:
+if args.path_type in ["Schrodinger_Linear", "Schrodinger_Linear_onemodel"]:
     callbacks_fn = [
         ModelCheckpoint(
             dirpath=os.environ["MODEL_DIR"], 

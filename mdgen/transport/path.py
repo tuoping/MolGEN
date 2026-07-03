@@ -140,11 +140,25 @@ class ICPlan:
         return diffusion
 
     def get_score_from_velocity(self, velocity, x, t):
-        """Wrapper function: transfrom velocity prediction model to score
-        Args:
-            velocity: [batch_dim, ...] shaped tensor; velocity model output
-            x: [batch_dim, ...] shaped tensor; x_t data point
-            t: [batch_dim,] time tensor
+        """
+        Convert the learned IC control / velocity field b_t(x) to the
+        log-density score ∇_x log p_t(x).
+
+        Sign convention:
+            This returns ∇ log p_t, NOT ∇U_t.
+            Therefore it matches the SDE drift convention
+
+                drift = b_t + diffusion * score @ metric
+
+            used in transport.py.
+
+        IC path:
+            x_t = alpha_t * x1 + sigma_t * x0
+            b_t = E[d/dt x_t | x_t]
+
+        For alpha_t=t, sigma_t=1-t, zero-mean unit-Gaussian x0:
+
+            score = (t * velocity - x) / (1 - t)
         """
         t = expand_t_like_x(t, x)
         alpha_t, d_alpha_t = self.compute_alpha_t(t)
@@ -325,26 +339,6 @@ class ICPlan:
         
         ut = compute_weighted((epsilon@std_t).view(B*T,N,3), std_t, ut_k).view(B,T,N,3)
         return xt, ut, epsilon
-
-    def compute_lambda_schrodinger_bridge(self, t, diffusion, cell=th.eye(3).unsqueeze(0).unsqueeze(0)):
-        '''
-        Compute the lambda function for the Schrodinger bridge.
-        Diffusion rate: g(t) = sqrt(2 * diffusion)
-        lambda_t = 2*(g(t)**2*sqrt(t*(1-t)))/(g(t)**2)
-        Parameters
-        ----------
-        t : FloatTensor, shape (bs)
-            time vector
-        diffusion : FloatTensor, shape (bs)
-            diffusion constant of the SDE
-        Returns
-        -------
-        lambda_t : FloatTensor, shape (bs)
-            lambda function at time t
-        '''
-        std_t = self.compute_marginal_std(t, diffusion, cell)
-        # std_t = th.sqrt(2*diffusion) * th.sqrt(t*(1-t))
-        return 2*std_t/(2*diffusion + 1e-20)
 
 
 class VPCPlan(ICPlan):

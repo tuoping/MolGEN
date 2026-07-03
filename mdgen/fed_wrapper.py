@@ -349,7 +349,7 @@ class EquivariantFEDWrapper(Wrapper):
     
         self.transport.prior_cell = batch["cell0"]
         self.transport.prior_mean = batch["x0"]
-
+        self.transport.x0std = batch["x0std"]
 
         if "inpainting_mask" not in batch.keys():
             batch['inpainting_mask'] = torch.ones(B,T,L, dtype=int, device=species.device)
@@ -409,7 +409,7 @@ class EquivariantFEDWrapper(Wrapper):
                         }
                     }
 
-        if (self.score_model is not None) or (self.args.KL == "score"):
+        if self.args.path_type in ["Schrodinger_Linear", "Schrodinger_Linear_onemodel"]:
             data["forces"] = batch['forces'].to(_TORCH_FLOAT_PRECISION)
 
         data['x0std'] = batch['x0std'].to(_TORCH_FLOAT_PRECISION)
@@ -424,7 +424,7 @@ class EquivariantFEDWrapper(Wrapper):
         start = time.time()
 
         forces = None
-        if (self.score_model is not None) or (self.args.KL == "score"):
+        if self.args.path_type in ["Schrodinger_Linear", "Schrodinger_Linear_onemodel"]:
             forces = prep['forces']
         x0std = self.args.x0std
         if "x0std" in prep:
@@ -445,7 +445,7 @@ class EquivariantFEDWrapper(Wrapper):
         loss_gen = out_dict['loss']
         assert self.args.weight_loss_var_x0 == 0
         loss = loss_gen
-        if self.score_model is not None:
+        if self.args.path_type in ["Schrodinger_Linear", "Schrodinger_Linear_onemodel"]:
             self.prefix_log("loss_dsm", out_dict['loss_dsm'].detach().cpu())
             # self.prefix_log("loss_tsm_0", out_dict['loss_tsm_0'].detach().cpu())
             self.prefix_log("loss_tsm_1", out_dict['loss_tsm_1'].detach().cpu())
