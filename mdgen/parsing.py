@@ -72,6 +72,8 @@ def parse_train_args():
     group.add_argument("--path-type", type=str, default="Linear", choices=["Linear", "GVP", "VP", "Schrodinger_Linear", "Schrodinger_Linear_onemodel"])
     group.add_argument("--prediction", type=str, default="velocity", choices=["velocity", "score", "noise"])
     group.add_argument("--KL", type=str, default="L1", choices=['forward', 'reverse', 'symm', "L2", 'L1', 'alpha', 'score'])
+    group.add_argument("--TSMloss", action='store_true')
+    group.add_argument("--pref_TSMloss", type=float, default=1E-2)
     group.add_argument("--sampling_method", type=str, default="dopri5", choices=["dopri5", 'rk4', "euler", "Heun"])
     group.add_argument('--K_hutchinson_probe', type=float, default=4)
     group.add_argument('--K_hutchinson_probe_chunk', type=float, default=2)

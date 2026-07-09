@@ -136,7 +136,7 @@ class ICPlan:
             diffusion = choices[form]
         except KeyError:
             raise NotImplementedError(f"Diffusion form {form} not implemented")
-        
+        assert diffusion.dim() == 4, "Diffusion term must be a 4D tensor"
         return diffusion
 
     def get_score_from_velocity(self, velocity, x, t):
@@ -167,6 +167,7 @@ class ICPlan:
         reverse_alpha_ratio = alpha_t / d_alpha_t
         var = sigma_t**2 - reverse_alpha_ratio * d_sigma_t * sigma_t
         score = (reverse_alpha_ratio * velocity - mean) / var
+        assert score.dim() == 4, "Score term must be a 4D tensor"
         return score
     
     def get_noise_from_velocity(self, velocity, x, t):

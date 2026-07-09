@@ -143,13 +143,19 @@ class sde:
         logprob_samples = th.zeros(x.shape[:2]).to(x.device)
         _logprob_samples = th.zeros(x.shape[:2]).to(x.device)
         sampler = self.__forward_fn()
+        import time
         for ti in self.t[:-1]:
+            t_start = time.time()
             with th.no_grad():
                 x, mean_x, logprob_x, _logprob_x = sampler(x, mean_x, ti, model, score_model, **model_kwargs)
+                x = x.detach()
+                mean_x = mean_x.detach()
+                logprob_x = logprob_x.detach()
+                _logprob_x = _logprob_x.detach()
                 samples.append(x)
                 logprob_samples += logprob_x.sum(dim=-1).sum(dim=-1)
                 _logprob_samples += _logprob_x.sum(dim=-1).sum(dim=-1)
-                
+            print(f"Step {ti:.3f} took {time.time() - t_start:.3f} seconds")
         return samples, logprob_samples, _logprob_samples
 
 from . import path

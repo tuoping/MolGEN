@@ -508,9 +508,23 @@ class Transport:
                     cell = model_kwargs['cell']
                     gamma_cart = th.sqrt(2 * diffusion * (t * (1 - t))[:,None,None,None])
                     terms['loss_dsm'] = mean_flat((((score_model_output @ cell) * gamma_cart + eps)**2), mask)
-                    # terms['loss_tsm_0'] = mean_flat( ((score_model_output - 1./sigma_t*grad_log_normal_iso_3d(x0[0], mu=x0_mean[0], sigma=x0std/(N)**(1./3.)))**2 * (t < 0.5).to(th.int)[:,None,None,None])@cell, mask) 
-                    terms['loss_tsm_1'] = mean_flat( ((score_model_output@cell - 1./alpha_t*forces)**2 * (t > 0.5).to(th.int)[:,None,None,None]), mask)
-                    terms['loss'] = terms['loss_flow'] + terms['loss_dsm'] + terms["loss_tsm_1"]
+
+                    # endpoint 0 / Gaussian prior label
+                    dx0_cart = (x0[0] - x0_mean[0]) @ cell
+                    target_score_cart_0 = -dx0_cart / (
+                        sigma_t * x0std[:, :, None, None]**2 + 1e-12
+                    )
+                    terms["loss_tsm_0"] = mean_flat(
+                        ((score_model_output@cell - target_score_cart_0) ** 2 * (sigma_t * x0std[:, :, None, None]) ** 2)
+                        * (t < 0.5).to(x1.dtype)[:, None, None, None],
+                        mask,
+                    )
+                    # endpoint 1 / forces label
+                    terms['loss_tsm_1'] = mean_flat( ((score_model_output@cell - 1./alpha_t*forces)**2 * (x0std[:, :, None, None]) ** 2 * (t > 0.5).to(th.int)[:,None,None,None]), mask)
+                    if self.args.TSMloss:
+                        terms['loss'] = terms['loss_flow'] + terms['loss_dsm'] + (terms["loss_tsm_1"] + terms["loss_tsm_0"]) * self.args.pref_TSMloss
+                    else:
+                        terms['loss'] = terms['loss_flow'] + terms['loss_dsm']
                 else:
                     terms['loss'] = terms['loss_flow']
                     if self.latt_path:
@@ -610,6 +624,7 @@ class Transport:
             model_output = drift_fn(x, t, model, **model_kwargs)
             # assert model_output.shape == x.shape, "Output shape from ODE solver must match input shape"
             assert model_output[0].shape == x.shape if isinstance(model_output, tuple) else model_output.shape == x.shape, "Output shape from ODE solver must match input shape"
+            assert model_output.dim() == 4, "Output from ODE solver must be a 4D tensor"
             return model_output
 
         return body_fn
@@ -671,10 +686,9 @@ class Sampler:
         inv_cell = th.linalg.inv(self.transport.prior_cell)
         sde_drift = \
                 lambda x, t, model, score_model, **kwargs: \
-                    self.drift(x, t, model, **kwargs) + diffusion_fn(x, t) * self.score(x, t, score_model, **kwargs)/(self.x0std**2)[:,None,None,None]
+                    self.drift(x, t, model, **kwargs) + diffusion_fn(x, t) * self.score(x, t, score_model, **kwargs)/(self.transport.x0std**2)[:,None,None]
 
         sde_diffusion = diffusion_fn
-
         return sde_drift, sde_diffusion
     
 
@@ -693,7 +707,7 @@ class Sampler:
         inv_cell = th.linalg.inv(self.transport.prior_cell)
         sde_drift = \
                 lambda x, t, model, score_model, **kwargs: \
-                    -self.drift(x, 1-t, model, **kwargs) + diffusion_fn(x, t) * self.score(x, 1-t, score_model, **kwargs)/(self.x0std**2)[:,None,None,None]
+                    -self.drift(x, 1-t, model, **kwargs) + diffusion_fn(x, t) * self.score(x, 1-t, score_model, **kwargs)/(self.transport.x0std**2)[:,None,None]
 
         return sde_drift
 
@@ -935,6 +949,8 @@ class Sampler:
         K_hutchinson_probe_chunk = self.transport.args.K_hutchinson_probe_chunk
 
         def _likelihood_drift(x, t, model, **model_kwargs):
+            import time
+            t_start = time.time()
             x, _, _ = x
             B = x.shape[0]
             if reverse:
@@ -995,6 +1011,7 @@ class Sampler:
                 logp_grad_var = logp_grad_samples.var(dim=0)/K_hutchinson_probe
             else:
                 logp_grad_var = th.zeros_like(logp_grad_mean, device=x.device)
+            print(f"ODE likelihood drift time: {time.time() - t_start:.4f} seconds")
             return (drift, logp_grad_mean, logp_grad_var)
 
 

@@ -843,6 +843,7 @@ class EquivariantTransformerDataset_phasediagram(torch.utils.data.Dataset):
                         for data in dataset_1:
                             data.P = p
                             data.T = t
+                            data.forces = data.forces/(kB*T)
                             data.cell_0 = data.cell
                             data.kBT = torch.tensor(kB*T)
                         self.all_dataset += dataset_1
@@ -855,6 +856,7 @@ class EquivariantTransformerDataset_phasediagram(torch.utils.data.Dataset):
                             data.P = p
                             data.T = t
                             data.cell_0 = data.cell
+                            data.forces = data.forces/(kB*T)
                             data.kBT = torch.tensor(kB*T)
                         self.all_dataset += dataset_1
 
