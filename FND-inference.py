@@ -8,7 +8,7 @@ inference_steps = 200
 
 sampling_method = "euler"
 # sim_ckpt = glob.glob("workdir/fixlatt-sde/run1/epoch=%03d-step=*-val_loss=*.ckpt"%ckpt_tag)[0]
-sim_ckpt = "workdir/fixlatt-sde-onemodel/last.ckpt"
+sim_ckpt = "workdir/fixlatt-sde-onemodel-tsmloss/last.ckpt"
 
 device = "cuda"
 
@@ -16,7 +16,7 @@ import os, torch, tqdm, time
 import numpy as np
 from mdgen.fed_wrapper import EquivariantFEDWrapper
 
-out_dir = f"experiments/smallcell_SiO2_nvt_nowrap/sdetest_quartz_x0varkBT/r1e{ckpt_tag}_{sampling_method}_step{inference_steps}/"
+out_dir = f"experiments/smallcell_SiO2_nvt_nowrap/sdetest_TSMloss_quartz_x0varkBT/r1e{ckpt_tag}_{sampling_method}_step{inference_steps}/"
 print("Output folder: ", out_dir)
 os.makedirs(out_dir, exist_ok=True)
 with open(f"{out_dir}/README.md", "w") as fp:
@@ -32,6 +32,7 @@ args.sampling_method = sampling_method
 args.inference_steps = inference_steps
 args.data_dir = "data/SiO2/npt_1600K_1GPa/npt_quartz_dense/npt/"
 args.likelihood = "FND"
+# args.last_step = 'Mean'
 args.K_hutchinson_probe = 1
 args.K_hutchinson_probe_chunk = 1
 

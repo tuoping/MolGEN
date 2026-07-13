@@ -765,8 +765,8 @@ class Sampler:
         - num_steps: total integration step of SDE
         """
 
-        if last_step is None:
-            last_step_size = 0.0
+        # if last_step is None:
+        #     last_step_size = 0.0
 
         sde_drift, sde_diffusion = self.__get_sde_diffusion_and_drift(
             diffusion_form=diffusion_form,
@@ -830,8 +830,8 @@ class Sampler:
         - num_steps: total integration step of SDE
         """
 
-        if last_step is None:
-            last_step_size = 0.0
+        # if last_step is None:
+        #     last_step_size = 0.0
 
         sde_drift, sde_diffusion = self.__get_sde_diffusion_and_drift(
             diffusion_form=diffusion_form,
@@ -865,7 +865,7 @@ class Sampler:
             reverse_drift = reverse_sde_drift,
             cell=self.transport.prior_cell
         )
-        
+
         last_step_fn = self.__get_last_step(sde_drift, last_step=last_step, last_step_size=last_step_size)
 
         def _sample(init, model, **model_kwargs):
@@ -876,7 +876,7 @@ class Sampler:
                 x = last_step_fn(xs[-1], ts, model, score_model, **model_kwargs)
                 xs.append(x)
 
-            assert len(xs) == num_steps, "Samples does not match the number of steps"
+            # assert len(xs) == num_steps, "Samples does not match the number of steps"
             xs = th.stack(xs)
             return logprob_xs, _logprob_xs, xs
 

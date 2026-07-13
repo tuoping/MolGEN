@@ -611,12 +611,13 @@ class EquivariantFEDWrapper(Wrapper):
             # if self.args.likelihood == "FND":
             match self.args.likelihood:
                 case "FND":
+                    last_step = getattr(self.args, "last_step", None)
                     if self.score_model is not None:
-                        with torch.no_grad(): sample_fn = self.transport_sampler.sample_sde_likelihood(num_steps=self.args.inference_steps, diffusion_form=self.args.diffusion_form, diffusion_norm=torch.tensor(self.args.diffusion_norm), score_model=partial(self.score_model.forward_inference, **prep['model_kwargs']), last_step=None )
-                        with torch.no_grad(): sample_fn_reverse = self.transport_sampler.sample_sde_likelihood(num_steps=self.args.inference_steps, diffusion_form=self.args.diffusion_form, diffusion_norm=torch.tensor(self.args.diffusion_norm), reverse=True, score_model=partial(self.score_model.forward_inference, **prep['model_kwargs']), last_step=None )
+                        with torch.no_grad(): sample_fn = self.transport_sampler.sample_sde_likelihood(num_steps=self.args.inference_steps, diffusion_form=self.args.diffusion_form, diffusion_norm=torch.tensor(self.args.diffusion_norm), score_model=partial(self.score_model.forward_inference, **prep['model_kwargs']), last_step=last_step )
+                        with torch.no_grad(): sample_fn_reverse = self.transport_sampler.sample_sde_likelihood(num_steps=self.args.inference_steps, diffusion_form=self.args.diffusion_form, diffusion_norm=torch.tensor(self.args.diffusion_norm), reverse=True, score_model=partial(self.score_model.forward_inference, **prep['model_kwargs']), last_step=last_step )
                     else:
-                        with torch.no_grad(): sample_fn = self.transport_sampler.sample_sde_likelihood(num_steps=self.args.inference_steps, diffusion_form=self.args.diffusion_form, diffusion_norm=torch.tensor(self.args.diffusion_norm), score_model=partial(self.model.forward_inference, **prep['model_kwargs']), last_step=None )
-                        with torch.no_grad(): sample_fn_reverse = self.transport_sampler.sample_sde_likelihood(num_steps=self.args.inference_steps, diffusion_form=self.args.diffusion_form, diffusion_norm=torch.tensor(self.args.diffusion_norm), reverse=True, score_model=partial(self.model.forward_inference, **prep['model_kwargs']), last_step=None )
+                        with torch.no_grad(): sample_fn = self.transport_sampler.sample_sde_likelihood(num_steps=self.args.inference_steps, diffusion_form=self.args.diffusion_form, diffusion_norm=torch.tensor(self.args.diffusion_norm), score_model=partial(self.model.forward_inference, **prep['model_kwargs']), last_step=last_step )
+                        with torch.no_grad(): sample_fn_reverse = self.transport_sampler.sample_sde_likelihood(num_steps=self.args.inference_steps, diffusion_form=self.args.diffusion_form, diffusion_norm=torch.tensor(self.args.diffusion_norm), reverse=True, score_model=partial(self.model.forward_inference, **prep['model_kwargs']), last_step=last_step )
                 case None:
                     with torch.no_grad(): sample_fn = self.transport_sampler.sample_sde(num_steps=self.args.inference_steps, diffusion_form=self.args.diffusion_form, diffusion_norm=torch.tensor(self.args.diffusion_norm), score_model=partial(self.score_model.forward_inference, **prep['model_kwargs']) )
                 case _:

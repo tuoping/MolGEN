@@ -70,6 +70,7 @@ def parse_train_args():
 
     group = parser.add_argument_group("Transport arguments")
     group.add_argument("--path-type", type=str, default="Linear", choices=["Linear", "GVP", "VP", "Schrodinger_Linear", "Schrodinger_Linear_onemodel"])
+    group.add_argument("--last-step", type=str, default=None, choices=['Mean'])
     group.add_argument("--prediction", type=str, default="velocity", choices=["velocity", "score", "noise"])
     group.add_argument("--KL", type=str, default="L1", choices=['forward', 'reverse', 'symm', "L2", 'L1', 'alpha', 'score'])
     group.add_argument("--TSMloss", action='store_true')
