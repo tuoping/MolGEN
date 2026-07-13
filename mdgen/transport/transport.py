@@ -707,7 +707,7 @@ class Sampler:
         inv_cell = th.linalg.inv(self.transport.prior_cell)
         sde_drift = \
                 lambda x, t, model, score_model, **kwargs: \
-                    -self.drift(x, 1-t, model, **kwargs) + diffusion_fn(x, t) * self.score(x, 1-t, score_model, **kwargs)/(self.transport.x0std**2)[:,None,None]
+                    -self.drift(x, t, model, **kwargs) + diffusion_fn(x, t) * self.score(x, t, score_model, **kwargs)/(self.transport.x0std**2)[:,None,None]
 
         return sde_drift
 
