@@ -139,7 +139,7 @@ class ICPlan:
         assert diffusion.dim() == 4, "Diffusion term must be a 4D tensor"
         return diffusion
 
-    def get_score_from_velocity(self, velocity, x, t):
+    def get_score_from_velocity(self, velocity, x, t, x0std):
         """
         Convert the learned IC control / velocity field b_t(x) to the
         log-density score ∇_x log p_t(x).
@@ -166,7 +166,7 @@ class ICPlan:
         mean = x
         reverse_alpha_ratio = alpha_t / d_alpha_t
         var = sigma_t**2 - reverse_alpha_ratio * d_sigma_t * sigma_t
-        score = (reverse_alpha_ratio * velocity - mean) / var
+        score = (reverse_alpha_ratio * velocity - mean) / var /(x0std**2)[:,None,None]
         assert score.dim() == 4, "Score term must be a 4D tensor"
         return score
     

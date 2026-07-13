@@ -463,7 +463,7 @@ class Transport:
             if self.score_model is not None:
                 score_model_output = self.score_model(xt, t, **model_kwargs)
             else:
-                score_model_output = self.path_sampler.get_score_from_velocity(model_output, xt, t)
+                score_model_output = self.path_sampler.get_score_from_velocity(model_output, xt-x0_mean[0], t, self.x0std)
 
         assert model_output.size() == (B, *xt.size()[1:-1], C)
 
@@ -493,7 +493,7 @@ class Transport:
                     case "score":
                         cell = model_kwargs['cell'].view(B*T,3,3)
                         terms['loss_l1'] = mean_flat((model_output.view(B*T,N,3)@cell - ut.view(B*T,N,3)@cell).norm(dim=-1), mask.view(B*T,N,3)[:,:,0])
-                        score_ot = self.path_sampler.get_score_from_velocity(model_output, xt, t)
+                        score_ot = self.path_sampler.get_score_from_velocity(model_output, xt-x0_mean[0], t, self.x0std)
                         if self.weightfunction_x is not None:
                             e_repul, f_repul = self.weightfunction_x(xt, cell, model_kwargs['num_atoms'],)
                             forces_repulsed = forces + f_repul
@@ -646,7 +646,7 @@ class Transport:
             score_fn = lambda x, t, model, **model_kwargs: model(x, t, **model_kwargs)
         elif self.model_type == ModelType.VELOCITY:
             if self.score_model is None:
-                score_fn = lambda x, t, model, **model_kwargs: self.path_sampler.get_score_from_velocity(model(x, t, **model_kwargs), x, t)
+                score_fn = lambda x, t, model, **model_kwargs: self.path_sampler.get_score_from_velocity(model(x, t, **model_kwargs), x-self.prior_mean, t, self.x0std)
             else:
                 score_fn = score_sde
         else:
@@ -686,7 +686,7 @@ class Sampler:
         inv_cell = th.linalg.inv(self.transport.prior_cell)
         sde_drift = \
                 lambda x, t, model, score_model, **kwargs: \
-                    self.drift(x, t, model, **kwargs) + diffusion_fn(x, t) * self.score(x, t, score_model, **kwargs)/(self.transport.x0std**2)[:,None,None]
+                    self.drift(x, t, model, **kwargs) + diffusion_fn(x, t) * self.score(x, t, score_model, **kwargs)
 
         sde_diffusion = diffusion_fn
         return sde_drift, sde_diffusion
@@ -707,7 +707,7 @@ class Sampler:
         inv_cell = th.linalg.inv(self.transport.prior_cell)
         sde_drift = \
                 lambda x, t, model, score_model, **kwargs: \
-                    -self.drift(x, t, model, **kwargs) + diffusion_fn(x, t) * self.score(x, t, score_model, **kwargs)/(self.transport.x0std**2)[:,None,None]
+                    -self.drift(x, t, model, **kwargs) + diffusion_fn(x, t) * self.score(x, t, score_model, **kwargs)
 
         return sde_drift
 
@@ -722,7 +722,7 @@ class Sampler:
 
         if last_step is None:
             last_step_fn = \
-                lambda x, t, model, **model_kwargs: \
+                lambda x, t, model, score_model, **model_kwargs: \
                     x
         elif last_step == "Mean":
             last_step_fn = \
@@ -865,15 +865,16 @@ class Sampler:
             reverse_drift = reverse_sde_drift,
             cell=self.transport.prior_cell
         )
-
+        
         last_step_fn = self.__get_last_step(sde_drift, last_step=last_step, last_step_size=last_step_size)
 
         def _sample(init, model, **model_kwargs):
             assert not th.allclose(init, th.zeros_like(init))
             xs, logprob_xs, _logprob_xs = _sde.sample_likelihood(init, model, score_model, **model_kwargs)
-            ts = th.ones(init.size(0), device=init.device) * t1
-            x = last_step_fn(xs[-1], ts, model, score_model, **model_kwargs)
-            xs.append(x)
+            if last_step is not None:
+                ts = th.ones(init.size(0), device=init.device) * t1
+                x = last_step_fn(xs[-1], ts, model, score_model, **model_kwargs)
+                xs.append(x)
 
             assert len(xs) == num_steps, "Samples does not match the number of steps"
             xs = th.stack(xs)
