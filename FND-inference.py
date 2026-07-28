@@ -32,7 +32,6 @@ args.sampling_method = sampling_method
 args.inference_steps = inference_steps
 args.data_dir = "data/SiO2/npt_1600K_1GPa/npt_quartz_dense/npt/"
 args.likelihood = "FND"
-# args.last_step = 'Mean'
 args.K_hutchinson_probe = 1
 args.K_hutchinson_probe_chunk = 1
 

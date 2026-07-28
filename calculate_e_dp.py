@@ -39,7 +39,7 @@ import time
 import os
 
 dirname = f'./'
-for i_trial in range(696, num_trials):
+for i_trial in range(0, num_trials):
     s_time = time.time()
     if os.path.exists(f"{dirname}/all_energy_atoms_{i_trial}.dat") and isinstance(np.loadtxt(f"{dirname}/all_energy_atoms_{i_trial}.dat"), int):
         print(f"WARNING:: skipping {i_trial}", np.loadtxt(f"{dirname}/all_energy_atoms_{i_trial}.dat"))
