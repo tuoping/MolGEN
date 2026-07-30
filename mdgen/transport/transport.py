@@ -317,15 +317,10 @@ class Transport:
         x0_mean = []
         for i in range(1):
             if self.prior_mean is None:
-                ### Even sample
-                # m = math.ceil(N ** (1/3))
-                # g = (th.arange(m, device=device) + 0.5) / m
-                # X, Y, Z = th.meshgrid(g, g, g, indexing='ij')
-                # _x0_mean = th.stack([X.reshape(-1), Y.reshape(-1), Z.reshape(-1)], dim=1)[:N].unsqueeze(0).expand(T, -1, -1).unsqueeze(0).expand(B, -1, -1, -1)
                 ### Latin hypercube sample
-                _x0_mean = latin_hypercube_torch(B*T, N, C, device).view(B,T,N,C)
+                # _x0_mean = latin_hypercube_torch(B*T, N, C, device).view(B,T,N,C)
                 ### Uniform sample
-                # _x0_mean = th.rand(shape, device=device)
+                _x0_mean = th.rand(shape, device=device)
             else:
                 _x0_mean = self.prior_mean
             inv_cell = th.linalg.inv(self.prior_cell)
