@@ -1012,7 +1012,6 @@ class Sampler:
                 logp_grad_var = logp_grad_samples.var(dim=0)/K_hutchinson_probe
             else:
                 logp_grad_var = th.zeros_like(logp_grad_mean, device=x.device)
-            print(f"ODE likelihood drift time: {time.time() - t_start:.4f} seconds")
             return (drift, logp_grad_mean, logp_grad_var)
 
 
