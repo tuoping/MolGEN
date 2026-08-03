@@ -824,7 +824,7 @@ class EquivariantTransformerDataset_phasediagram(torch.utils.data.Dataset):
             test_idx = idx_data[:n_test]
             val_idx = idx_data[n_test:n_test+n_val]
             train_idx = idx_data[n_test+n_val:]
-
+            os.makedirs(save_dir, exist_ok=True)
             torch.save([dataset[i] for i in test_idx], f'{save_dir}/test.pt')
             torch.save([dataset[i] for i in val_idx], f'{save_dir}/val.pt')
             torch.save([dataset[i] for i in train_idx], f'{save_dir}/train.pt')
