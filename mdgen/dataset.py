@@ -609,13 +609,16 @@ def lattice_polar_decompose_torch(lattices: torch.Tensor):
 from .transport.path import wrap_frac_pos
 
 class EquivariantTransformerDataset_MaterialProject(torch.utils.data.Dataset):
-    def __init__(self, args, species, localmask=False, sim_condition=False, stage="train", save_dir = None, save_filename = None, sel_idx = None):
+    def __init__(self, args, species, num_species, localmask=False, sim_condition=False, stage="train", save_dir = None, sel_idx = None):
         traj_dir = args.data_dir
         cutoff = args.cutoff
-        temperature = 300
-        self.kT = temperature*8.617*10**-5
-        num_species = len(species)
+        kB = 8.617*10**-5  # K to eV
         self.num_species = num_species
+        type_map = {}
+        type_map = {}
+        for idx_e, e in enumerate(species):
+            type_map[idx_e+1] = e 
+
         self.cutoff = cutoff
 
         self.num_frames = 1
@@ -624,91 +627,53 @@ class EquivariantTransformerDataset_MaterialProject(torch.utils.data.Dataset):
         self.sim_condition = sim_condition
 
         if self.stage == "save":    
-            self.calculator = MACECalculator(
-                model_path="./mace-omat-0-medium.model",
-                device="cuda",
-                default_dtype="float32",
-            )
+            self.calculator = DP(model="data/SiO2/DP_R2SCAN.pb")
         
-            traj_filename = os.path.join(traj_dir, "all_structures.extxyz")
-            atoms_list = ase.io.read(traj_filename, index=":")  
+            traj_filename = os.path.join(traj_dir, "dump.equi")
+            atoms_list = ase.io.read(traj_filename, index=":", format="lammps-dump-text")[10:]
             atom_encoder = OneHotEncoder(sparse_output=False)
             atom_encoder.fit(np.array(species).reshape(-1,1))
-            
-            dataset = []
-            os.makedirs(save_dir, exist_ok=True)
-            if os.path.exists(f'{save_dir}/conventional.extxyz'): os.remove(f'{save_dir}/conventional.extxyz')
-            eps = 1e-4
-            for i_atoms, _atoms in enumerate(atoms_list):
-                for i in range(64):
-                    lattice   = _atoms.get_cell().array
-                    positions = _atoms.get_scaled_positions()
-                    numbers   = _atoms.get_atomic_numbers()
-                    cell_spg  = (lattice, positions, numbers)
-                    (conv_lattice, conv_positions, conv_numbers) = spglib.standardize_cell(cell_spg,
-                                   to_primitive=False,
-                                   no_idealize=False)
-                    N = positions.shape[0]
-                    atoms = Atoms(
-                        numbers=conv_numbers,
-                        scaled_positions=conv_positions,
-                        cell=conv_lattice,
-                        pbc=True
-                    )
-                    
-                    if atoms.get_number_of_atoms() < 8:
-                        from ase.build.supercells import make_supercell
-                        atoms = make_supercell(atoms, np.eye(3,3)*2)
-                    noise = np.random.randn(*atoms.positions.shape) @ atoms.cell * eps/(N)**(1./3.)
-                    atoms.set_positions(atoms.positions + noise)
-                    ase.io.write(f'{save_dir}/conventional.extxyz', atoms, append=True)
-                    if sel_idx is not None and i_atoms not in sel_idx:
-                        continue
-                    atoms.calc = self.calculator
-                    num_atoms = len(atoms)
-                    atoms.wrap()   
-                    inv_cell = np.linalg.pinv(np.array(atoms.cell))
-                    z = atom_encoder.transform(atoms.numbers.reshape(-1, 1))
-                    padded_z = np.zeros((num_atoms, num_species))
-                    padded_z[:, :z.shape[1]] = z
-                    num_atoms = len(atoms)
-                    data = Data(
-                        z          = torch.tensor(padded_z,               dtype=torch.float32),
-                        pos        = torch.tensor(atoms.positions - np.ones(3)*0.5 @ atoms.cell, dtype=torch.float32),
-                        forces     = torch.tensor(atoms.get_forces(), dtype=torch.float32),
-                        # forces = torch.tensor(noise / (eps/ N**(1./3.))**2, dtype=torch.float32),
-                        cell       = torch.tensor(np.array(atoms.cell), dtype=torch.float32),
-                        E_formation = None,
-                        E_above_hull = None,
-                        num_atoms = torch.tensor(num_atoms, dtype=torch.long),
-                    )
-                    dataset.append(data.clone())
 
-            torch.save(dataset, f'{save_dir}/{save_filename}.pt')
+            dataset = []
+            for i_atoms, atoms in enumerate(atoms_list):
+                atomic_species = [type_map[k] for k in atoms.get_atomic_numbers().astype(int)]
+                atoms.set_atomic_numbers(atomic_species)
+                atoms.calc = self.calculator
+                num_atoms = len(atoms)
+                atoms.wrap()   
+                inv_cell = np.linalg.pinv(np.array(atoms.cell))
+                z = atom_encoder.transform(atoms.numbers.reshape(-1, 1))
+                padded_z = np.zeros((num_atoms, num_species))
+                padded_z[:, :z.shape[1]] = z
+                num_atoms = len(atoms)
+                data = Data(
+                    z          = torch.tensor(padded_z,               dtype=torch.float32),
+                    num_atoms = torch.tensor(num_atoms, dtype=torch.long),
+
+                    # pos        = torch.tensor(atoms.positions - np.ones(3)*0.5 @ atoms.cell, dtype=torch.float32),
+                    cell       = torch.tensor(np.array(atoms.cell), dtype=torch.float32),
+                    frac_pos = torch.tensor(atoms.positions @ inv_cell - np.ones(3)*0.5, dtype=torch.float32),
+
+                    forces     = torch.tensor(atoms.get_forces(), dtype=torch.float32),
+                    E_formation = None,
+                    E_above_hull = None,
+                    E = torch.tensor(atoms.get_potential_energy(), dtype=torch.float32),
+                )
+                dataset.append(data.clone())
+
+            idx_data = np.arange(len(dataset))
+            np.random.shuffle(idx_data)
+            n_test = int(len(idx_data) // 10)
+            n_val = int(len(idx_data) // 10)
+            test_idx = idx_data[:n_test]
+            val_idx = idx_data[n_test:n_test+n_val]
+            train_idx = idx_data[n_test+n_val:]
+
+            torch.save([dataset[i] for i in test_idx], f'{save_dir}/test.pt')
+            torch.save([dataset[i] for i in val_idx], f'{save_dir}/val.pt')
+            torch.save([dataset[i] for i in train_idx], f'{save_dir}/train.pt')
         else:
-            _all_dataset = torch.load(os.path.join(traj_dir, f"{stage}.pt"), weights_only=False)
-            atomic_volumes = []
-            for data in _all_dataset:
-                data.cell = lattice_polar_build_torch(lattice_polar_decompose_torch(data.cell.reshape(-1,3,3))).reshape(3,3)
-                data.z = data.z[:,:num_species]
-                inv_cell = torch.linalg.inv(data.cell)
-                data.pos = data.pos@inv_cell 
-                data.forces = data.forces@inv_cell 
-                assert data.pos.shape == data.forces.shape
-                num_atoms = data.pos.shape[0]
-                atomic_volumes.append(torch.dot(data.cell[0], torch.cross(data.cell[1], data.cell[2], dim=0))/num_atoms)
-            
-            self.mean_atomic_volume = torch.tensor(atomic_volumes).mean()
-            self.x0std = args.x0std
-            self.all_dataset = _all_dataset
-            self.all_dataset = []
-            for j in range(len(_all_dataset)):
-                data = _all_dataset[j]
-                N = data.pos.shape[0]
-                assert data.pos.shape == (N,3)
-                if N <= 32:
-                    self.all_dataset.append(data)
-            print( f"Training over {len(self.all_dataset)} * samples; Training database size = {len(_all_dataset)}")
+            self.all_dataset = torch.load(os.path.join(traj_dir, f"{stage}.pt"), weights_only=False)
 
 
     def __len__(self):
@@ -717,19 +682,22 @@ class EquivariantTransformerDataset_MaterialProject(torch.utils.data.Dataset):
     def __getitem__(self, idx):
         idx = idx % len(self.all_dataset)
         dataset = [self.all_dataset[idx]]
-        for data in dataset:
-            N = data.pos.shape[0]
-            assert data.pos.shape == (N,3)
-            # data.pos = wrap_frac_pos(data.pos + torch.randn_like(data.pos)* self.x0std/(N)**(1./3.))
-        x = torch.stack([data.pos for data in dataset]) % 1
-        assert torch.all(x>=0)
-        assert torch.all(x<=1)
+        x = torch.stack([data.frac_pos for data in dataset])
+        x0 = torch.stack([data.frac_pos_0 for data in dataset])
+        # assert torch.all(x>=0)
+        # assert torch.all(x<=1)
         T,L,_ = x.shape
-            
-        _mask = torch.ones([T,L]) # T,L
+        
+        if self.gibbs_sampling:
+            _mask = torch.stack([-data.reduced_E for data in dataset]).exp().unsqueeze(-1).expand(-1,L)
+        else:
+            _mask = torch.ones([T,L]) # T,L
         _v_mask = _mask.unsqueeze(-1).expand(-1,-1,3) # T,L,3
         _h_mask = _mask.unsqueeze(-1).expand(-1,-1,self.num_species) # T,L,num_species
 
+        dataset_z = torch.stack([data.z for data in dataset])
+        padded_z = torch.stack([ torch.zeros((*data.z.shape[:-1], self.num_species)) for data in dataset]) # T,L,num_species
+        padded_z[:,:,:dataset_z.shape[-1]] = dataset_z
 
         if self.localmask:
             raise Exception("Yet to implement localmask")
@@ -737,10 +705,11 @@ class EquivariantTransformerDataset_MaterialProject(torch.utils.data.Dataset):
             mask = _mask
             v_mask = _v_mask
             h_mask = _h_mask
-
+        assert dataset[0].T <= 1
+        assert (dataset[0].kBT > 0.01 or dataset[0].kBT == 0.) and dataset[0].kBT < 1
         return {
             "name": "Material Project",
-            "species": torch.stack([data.z for data in dataset]),
+            "species": padded_z,
             "x": x,
             "forces": torch.stack([data.forces for data in dataset]),
             "cell": torch.stack([data.cell for data in dataset]),
