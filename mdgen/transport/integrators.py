@@ -152,7 +152,6 @@ class sde:
                 samples.append(x)
                 logprob_samples += logprob_x.sum(dim=-1).sum(dim=-1)
                 _logprob_samples += _logprob_x.sum(dim=-1).sum(dim=-1)
-            print(f"Step {ti:.3f} took {time.time() - t_start:.3f} seconds")
         return samples, logprob_samples, _logprob_samples
 
 from . import path
