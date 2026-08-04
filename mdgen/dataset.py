@@ -641,7 +641,9 @@ class EquivariantTransformerDataset_MaterialProject(torch.utils.data.Dataset):
             atom_encoder.fit(np.array(species).reshape(-1,1))
 
             dataset = []
-            for i_atoms, atoms in enumerate(atoms_list):
+            # for i_atoms, atoms in enumerate(atoms_list):
+            for i in range(1024):
+                atoms = atoms_list[0]
                 # atomic_species = [type_map[int(k)] for k in atoms.get_atomic_numbers()]
                 # atoms.set_atomic_numbers(atomic_species)
                 atoms.calc = self.calculator
@@ -679,7 +681,12 @@ class EquivariantTransformerDataset_MaterialProject(torch.utils.data.Dataset):
             torch.save(dataset, f'{save_dir}/val.pt')
             torch.save(dataset, f'{save_dir}/train.pt')
         else:
-            self.all_dataset = torch.load(os.path.join(traj_dir, f"{stage}.pt"), weights_only=False)
+            if stage == "train":
+                self.all_dataset = torch.load(os.path.join(traj_dir, f"{stage}.pt"), weights_only=False)[:512]
+            elif stage == "val":
+                self.all_dataset = torch.load(os.path.join(traj_dir, f"{stage}.pt"), weights_only=False)[:4]
+            else:
+                self.all_dataset = torch.load(os.path.join(traj_dir, f"{stage}.pt"), weights_only=False)[:1]
 
 
     def __len__(self):
@@ -688,7 +695,10 @@ class EquivariantTransformerDataset_MaterialProject(torch.utils.data.Dataset):
     def __getitem__(self, idx):
         idx = idx % len(self.all_dataset)
         dataset = [self.all_dataset[idx]]
-        x = torch.stack([data.frac_pos for data in dataset])
+        cell = torch.stack([data.cell for data in dataset])
+        inv_cell = torch.linalg.inv(cell)
+        x = torch.stack([data.frac_pos for data in dataset]) 
+        x += torch.randn(x.shape) @ inv_cell
         # assert torch.all(x>=0)
         # assert torch.all(x<=1)
         T,L,_ = x.shape
@@ -714,7 +724,8 @@ class EquivariantTransformerDataset_MaterialProject(torch.utils.data.Dataset):
             "species": padded_z,
             "x": x,
             "forces": torch.stack([data.forces for data in dataset]),
-            "cell": torch.stack([data.cell for data in dataset]),
+            "cell": cell,
+            "x0std": cell,
             "num_atoms": torch.stack([data.num_atoms for data in dataset]),
             "mask": mask,
             "v_mask": v_mask,
