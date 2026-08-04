@@ -627,17 +627,25 @@ class EquivariantTransformerDataset_MaterialProject(torch.utils.data.Dataset):
         self.sim_condition = sim_condition
 
         if self.stage == "save":    
-            self.calculator = DP(model="data/SiO2/DP_R2SCAN.pb")
+            from mace.calculators import MACECalculator
+            self.calculator = MACECalculator(
+                model_paths="data/MOF/mofs_v2.model",
+                device="cuda",
+                default_dtype="float64",
+                head='default'
+                )
         
-            traj_filename = os.path.join(traj_dir, "dump.equi")
-            atoms_list = ase.io.read(traj_filename, index=":", format="lammps-dump-text")[10:]
+            traj_filename = os.path.join(traj_dir, "UiO-66_conventional_456atoms.vasp")
+            atoms_list = [ase.io.read(traj_filename, format="vasp")]
             atom_encoder = OneHotEncoder(sparse_output=False)
             atom_encoder.fit(np.array(species).reshape(-1,1))
 
             dataset = []
-            for i_atoms, atoms in enumerate(atoms_list):
-                atomic_species = [type_map[k] for k in atoms.get_atomic_numbers().astype(int)]
-                atoms.set_atomic_numbers(atomic_species)
+            # for i_atoms, atoms in enumerate(atoms_list):
+            for i in range(1024):
+                atoms = atoms_list[0]
+                # atomic_species = [type_map[int(k)] for k in atoms.get_atomic_numbers()]
+                # atoms.set_atomic_numbers(atomic_species)
                 atoms.calc = self.calculator
                 num_atoms = len(atoms)
                 atoms.wrap()   
@@ -663,17 +671,22 @@ class EquivariantTransformerDataset_MaterialProject(torch.utils.data.Dataset):
 
             idx_data = np.arange(len(dataset))
             np.random.shuffle(idx_data)
-            n_test = int(len(idx_data) // 10)
-            n_val = int(len(idx_data) // 10)
-            test_idx = idx_data[:n_test]
-            val_idx = idx_data[n_test:n_test+n_val]
-            train_idx = idx_data[n_test+n_val:]
+            # n_test = int(len(idx_data) // 10)
+            # n_val = int(len(idx_data) // 10)
+            # test_idx = idx_data[:n_test]
+            # val_idx = idx_data[n_test:n_test+n_val]
+            # train_idx = idx_data[n_test+n_val:]
 
-            torch.save([dataset[i] for i in test_idx], f'{save_dir}/test.pt')
-            torch.save([dataset[i] for i in val_idx], f'{save_dir}/val.pt')
-            torch.save([dataset[i] for i in train_idx], f'{save_dir}/train.pt')
+            torch.save(dataset, f'{save_dir}/test.pt')
+            torch.save(dataset, f'{save_dir}/val.pt')
+            torch.save(dataset, f'{save_dir}/train.pt')
         else:
-            self.all_dataset = torch.load(os.path.join(traj_dir, f"{stage}.pt"), weights_only=False)
+            if stage == "train":
+                self.all_dataset = torch.load(os.path.join(traj_dir, f"{stage}.pt"), weights_only=False)[:512]
+            elif stage == "val":
+                self.all_dataset = torch.load(os.path.join(traj_dir, f"{stage}.pt"), weights_only=False)[:4]
+            else:
+                self.all_dataset = torch.load(os.path.join(traj_dir, f"{stage}.pt"), weights_only=False)[:1]
 
 
     def __len__(self):
@@ -682,16 +695,16 @@ class EquivariantTransformerDataset_MaterialProject(torch.utils.data.Dataset):
     def __getitem__(self, idx):
         idx = idx % len(self.all_dataset)
         dataset = [self.all_dataset[idx]]
-        x = torch.stack([data.frac_pos for data in dataset])
-        x0 = torch.stack([data.frac_pos_0 for data in dataset])
+        cell = torch.stack([data.cell for data in dataset])
+        inv_cell = torch.linalg.inv(cell)
+        x = torch.stack([data.frac_pos for data in dataset]) 
+        x += torch.randn(x.shape) @ inv_cell
         # assert torch.all(x>=0)
         # assert torch.all(x<=1)
         T,L,_ = x.shape
         
-        if self.gibbs_sampling:
-            _mask = torch.stack([-data.reduced_E for data in dataset]).exp().unsqueeze(-1).expand(-1,L)
-        else:
-            _mask = torch.ones([T,L]) # T,L
+
+        _mask = torch.ones([T,L]) # T,L
         _v_mask = _mask.unsqueeze(-1).expand(-1,-1,3) # T,L,3
         _h_mask = _mask.unsqueeze(-1).expand(-1,-1,self.num_species) # T,L,num_species
 
@@ -705,14 +718,14 @@ class EquivariantTransformerDataset_MaterialProject(torch.utils.data.Dataset):
             mask = _mask
             v_mask = _v_mask
             h_mask = _h_mask
-        assert dataset[0].T <= 1
-        assert (dataset[0].kBT > 0.01 or dataset[0].kBT == 0.) and dataset[0].kBT < 1
+
         return {
             "name": "Material Project",
             "species": padded_z,
             "x": x,
             "forces": torch.stack([data.forces for data in dataset]),
-            "cell": torch.stack([data.cell for data in dataset]),
+            "cell": cell,
+            "x0std": cell,
             "num_atoms": torch.stack([data.num_atoms for data in dataset]),
             "mask": mask,
             "v_mask": v_mask,

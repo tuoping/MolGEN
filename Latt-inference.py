@@ -3,11 +3,12 @@
 
 import glob
 
-ckpt_tag = "3379"
+ckpt_tag = 79
+inference_steps = 100
 
-inference_steps = 50
-sampling_method = "euler"
-sim_ckpt = glob.glob(f"workdir/latinhypecubeprior/bck.3.run5/epoch={ckpt_tag}-step=0*.ckpt")[0]
+sampling_method = "rk4"
+sim_ckpt = glob.glob("workdir/default/epoch=%03d-step=*-val_loss=*.ckpt"%ckpt_tag)[0]
+# sim_ckpt = "workdir/fixlatt/run10.bk006.Tcv_l1/last.ckpt"
 
 device = "cuda"
 
@@ -15,9 +16,8 @@ import os, torch, tqdm, time
 import numpy as np
 from mdgen.equivariant_wrapper import EquivariantMDGenWrapper
 
-out_dir = f"experiments/latinhypecubeprior_nnoise0.02/MP_C_N32_fracpos/lossxtRepulsiveE_e{ckpt_tag}_{sampling_method}_step{inference_steps}/"
-
-
+out_dir = f"experiments/MOF/e{ckpt_tag}_{sampling_method}_step{inference_steps}/"
+print("Output folder: ", out_dir)
 os.makedirs(out_dir, exist_ok=True)
 with open(f"{out_dir}/README.md", "w") as fp:
     fp.write(sim_ckpt)
@@ -30,12 +30,14 @@ hparams = ckpt["hyper_parameters"]
 args = hparams['args']
 args.sampling_method = sampling_method
 args.inference_steps = inference_steps
-args.data_dir = "data/MP_C_data/"
-# args.likelihood = "EJE"
+args.data_dir = "data/MOF/"
+args.likelihood = None
+args.K_hutchinson_probe = 1
+args.K_hutchinson_probe_chunk = 1
 
 
 from mdgen.dataset import EquivariantTransformerDataset_MaterialProject
-dataset = EquivariantTransformerDataset_MaterialProject(args, species=[6], sim_condition=False, stage="train_withforces")
+dataset = EquivariantTransformerDataset_MaterialProject(args, species=[1, 6, 8, 40], num_species=args.num_species, sim_condition=False, stage="test",)
 
 
 
@@ -49,7 +51,6 @@ print(model.args.path_type)
 print(model.args.sampling_method)
 print(model.args.inference_steps)
 print(model.args.likelihood)
-print(model.args.x0std)
 
 batch_size = 1
 val_loader = torch.utils.data.DataLoader(
@@ -69,7 +70,10 @@ def rollout(model, batch):
 
 
 map_to_chemical_symbol = {
-    0: "C"
+    0: "H",
+    1: "C",
+    2: "O",
+    3: "Zr"
 }
 
 idx_rollouts = np.arange(len(dataset))
@@ -84,22 +88,24 @@ all_rollout_atoms = []
 all_rollout_atoms_ref = []
 start = time.time()
 all_logp = []
-for i_rollout in range(0, len(idx_rollouts), 8):
-    idx = idx_rollouts[i_rollout]
+for i_rollout in range(0, 1):
+    # idx = idx_rollouts[i_rollout]
+    idx = i_rollout
     print(i_rollout, idx)
     filename = os.path.join(out_dir, f"gentraj_{idx}.xyz")
+    filename_ref = os.path.join(out_dir, f"reftraj_{idx}.xyz")
+    for f in [filename, filename_ref, ]:
+        if os.path.exists(f):
+            os.remove(f)
 
     if args.likelihood is not None:
         filename_reverse = os.path.join(out_dir, f"reverse_gentraj_{idx}.xyz")
-        fout_logp = open(os.path.join(out_dir, f"Logp_{idx}.txt"), "a")
-        fout_reverse_logp = open(os.path.join(out_dir, f"reverse_Logp_{idx}.txt"), "a")
-        fout_zs = open(os.path.join(out_dir, f"Uzs_{idx}.txt"), "a")
-
-    filename_ref = os.path.join(out_dir, f"reftraj_{idx}.xyz")
-
-    for f in [filename, filename_ref]:
-        if os.path.exists(f):
-            os.remove(f)
+        filename_logp = os.path.join(out_dir, f"Logp_{idx}.txt")
+        filename_reverse_logp = os.path.join(out_dir, f"reverse_Logp_{idx}.txt")
+        filename_zs = os.path.join(out_dir, f"Uzs_{idx}.txt")
+        for f in [filename_reverse, filename_logp, filename_reverse_logp, filename_zs]:
+            if os.path.exists(f):
+                os.remove(f)
 
     for i_sample in range(1):
         item = dataset.__getitem__(idx)
@@ -108,34 +114,47 @@ for i_rollout in range(0, len(idx_rollouts), 8):
         for key in batch.keys():
             if isinstance(batch[key], torch.Tensor):
                 batch[key] = batch[key].to(device)
+        x0std = None
         labels = torch.argmax(batch["species"], dim=3).squeeze(0)
         symbols = [[map_to_chemical_symbol[int(i_elem.to('cpu'))] for i_elem in labels[i_conf]] for i_conf in range(len(labels))]
 
         print("rollout", i_rollout, "idx = ", idx+i_sample)
         formula = "".join(symbols[0])
         if model.transport.latt_path:
-            all_pred_frac_pos, _, all_cell_out  = model.inference(batch)
+            if args.likelihood is None:
+                all_pred_frac_pos, _, all_cell  = model.inference(batch)
+            else:
+                raise Exception("Not verified")
+                logp, all_pred, _, zs = model.inference(batch)
+                all_pred_frac_pos = all_pred[0]
+                all_cell = all_pred[1]
+                pred_zs_cell = all_pred_reverse[1][-1]
+                np.savetxt(filename_logp, torch.tensor(logp).view(1,-1).detach().cpu().numpy() )
+                N = all_pred_frac_pos.shape[-2]
+                sigma = (torch.ones_like(zs) * x0std)
+                np.savetxt(filename_zs, [[( (zs@all_cell[0])**2/2/sigma**2).sum().detach().cpu().numpy(), ( (pred_zs@pred_zs_cell)**2/2/sigma**2).sum().detach().cpu().numpy()]])
         else:
             if args.likelihood is None:
                 all_pred_frac_pos, _  = model.inference(batch)
             else:
-                logp, all_pred_frac_pos, _, reverse_logp, zs, all_pred_zs = model.inference(batch)
-                pred_zs = all_pred_zs[-1]
-                cell = batch['cell']
-                np.savetxt(fout_logp, logp.detach().cpu().numpy() )
-                fout_logp.flush()
-                np.savetxt(fout_reverse_logp, reverse_logp.detach().cpu().numpy() )
-                fout_reverse_logp.flush()
+                logp, all_pred_frac_pos, _, zs = model.inference(batch)
+                cell = batch['cell0'].cpu()
                 N = all_pred_frac_pos.shape[-2]
-                sigma = (torch.ones_like(zs) * args.x0std/(N**(1./3.)))@cell
-                np.savetxt(fout_zs, [[( (zs@cell)**2/2/sigma**2).sum().detach().cpu().numpy(), ( (pred_zs@cell)**2/2/sigma**2).sum().detach().cpu().numpy()]])
-                fout_zs.flush()
 
-        for idx_traj in range(len(all_pred_frac_pos)):
+                logp = torch.tensor(logp).detach().cpu()
+                np.savetxt(filename_logp, logp.view(1,-1).numpy() )
+
+                sigma = (torch.ones_like(zs) * x0std).detach().cpu()
+                np.savetxt(filename_zs, [[( (zs.detach().cpu()@cell)**2/2/sigma**2).sum().numpy(), ]])
+        if i_rollout == 0:
+            dump_idx = range(len(all_pred_frac_pos))
+        else:
+            dump_idx = [-1]
+        for idx_traj in dump_idx:
         # for idx_traj in [-1]:
             pred_frac_pos = all_pred_frac_pos[idx_traj][0]
             if model.transport.latt_path:
-                cell_out = all_cell_out[idx_traj]
+                cell_out = all_cell[idx_traj]
                 pred_pos = pred_frac_pos[0] @ cell_out[0][0]
             else:
                 cell_out = batch['cell']
@@ -147,19 +166,6 @@ for i_rollout in range(0, len(idx_rollouts), 8):
         ref_pos = batch["x"][0][0] @ batch['cell'][0][0]
         atoms_ref = Atoms(formula, positions=ref_pos.cpu().numpy(), cell=batch['cell'][0][0].cpu().numpy(), pbc=[1,1,1])
         write(filename_ref, atoms_ref, append=True)
-
-        if args.likelihood is not None:
-            for idx_traj in range(len(all_pred_zs)):
-            # for idx_traj in [-1]:
-                pred_frac_pos = all_pred_zs[idx_traj][0]
-                if model.transport.latt_path:
-                    raise Exception("Not implemented")
-                else:
-                    cell_out = batch['cell']
-                    pred_pos = pred_frac_pos[0] @ cell_out[0][0]
-
-                atoms = Atoms(formula, positions=pred_pos.detach().cpu().numpy(), cell=cell_out[0][0].detach().cpu().numpy(), pbc=[1,1,1])
-                write(filename_reverse, atoms, append=True)
 
         
         # del pred_frac_pos
