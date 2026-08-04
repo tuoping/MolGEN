@@ -230,7 +230,7 @@ def compute_jsd_loss(mu_t_x1, standard_bandwidth_factor, mu_theta, k_max=3):
 
     logm = th.logaddexp(logP_, logQ_) - th.log(th.tensor(2.0, device=mu_t_x1.device))# (B, N, K)
 
-    kl_p_m = (th.exp(logP_-logZ_P[:,:,None]) * (logP_ - logQ_)).sum(dim=-1)  # (B,N)
+    kl_p_m = (th.exp(logP_-logZ_P[:,:,None]) * (logP_ - logm)).sum(dim=-1)  # (B,N)
     kl_q_m = (th.exp(logQ_-logZ_Q[:,:,None]) * (logQ_ - logm)).sum(dim=-1)  # (B,N)
 
     jsd = 0.5 * kl_p_m + 0.5 * kl_q_m  # (B,N)
@@ -321,7 +321,7 @@ class Transport:
                 # _x0_mean = latin_hypercube_torch(B*T, N, C, device).view(B,T,N,C)
                 ### Uniform sample
                 _x0_mean = th.zeros(shape, device=device)
-                x0.append(th.rand(shape, device=device))
+                x0.append(th.rand(shape, device=device) - th.ones(shape, device=device)*0.5)
             else:
                 _x0_mean = self.prior_mean
                 inv_cell = th.linalg.inv(self.prior_cell)
@@ -359,6 +359,76 @@ class Transport:
         else:
             return self.prior_cell.clone()
 
+        
+    def _OT_atom_permutation(self, x0, x1, model_kwargs):
+        B, T, N, C = x1.shape
+        BT = B * T
+        device = x1.device
+
+        x0_bt = x0[0].reshape(BT, N, C)
+        x1_bt = x1.reshape(BT, N, C)
+        cell_bt = model_kwargs["cell"].reshape(BT, 3, 3)
+
+        def periodic_assignment_cost(
+            x0_frac,
+            x1_frac,
+            cell,
+        ):
+            """
+            Args:
+                x0_frac: (BT, N, 3)
+                x1_frac: (BT, N, 3)
+                cell:    (BT, 3, 3)
+
+            Returns:
+                cost:    (BT, N, N)
+            """
+            # (BT, source atom, target atom, xyz)
+            dfrac = (
+                x0_frac[:, :, None, :]
+                - x1_frac[:, None, :, :]
+            )
+
+            # Minimum-image convention.
+            dfrac = dfrac - th.round(dfrac)
+
+            # Convert every pair displacement to Cartesian coordinates.
+            dcart = th.einsum(
+                "bijn,bnk->bijk",
+                dfrac,
+                cell,
+            )
+
+            cost = dcart.square().sum(dim=-1)
+            return cost
+
+        # Quadratic Cartesian transport cost.
+        cost = periodic_assignment_cost(
+            x0_bt,
+            x1_bt,
+            cell_bt,
+        )
+
+        # assignment[b, i] gives the target atom j matched to prior atom i.
+        assignment = hungarian_over_L(cost)  # (BT, N)
+
+        # We want prior_new[j] = prior_old[i], where assignment[i] = j.
+        # Since assignment is a permutation, argsort gives its inverse.
+        inverse_assignment = th.argsort(assignment, dim=-1)
+
+        batch_idx = th.arange(
+            BT,
+            device=device,
+        )[:, None].expand(BT, N)
+
+        x0_bt = x0_bt[batch_idx, inverse_assignment]
+        x0_pos = x0_bt.reshape(B, T, N, C)
+
+        # Preserve the original x0 container type and any other components.
+        x0 = [x0_pos, *x0[1:]]
+
+        return x0
+
     def training_losses(
             self,
             model,
@@ -367,7 +437,6 @@ class Transport:
             mask=None,
             model_kwargs=None,
             forces = None,
-            E = None,
             x0std = None,
             global_step = None,
     ):
@@ -393,29 +462,10 @@ class Transport:
         ### normal sampler of t
         t, x0, x0_mean = self.sample(x1.shape, x1.device, x0std)
         ### OT in the atom number dimension
+        ### Species-constrained, periodic OT in the atom-number dimension
         if self.prior_mean is None:
-            x1 = x1.view(B*T, N, C)
-            model_kwargs['x1'] = model_kwargs['x1'].view(B*T, N, C)
-            assignment = hungarian_over_L(th.cdist(x0[0].view(B*T, N, C), x1))
-            x1 = x1[th.arange(B).unsqueeze(1).expand(B, N), assignment]
-            model_kwargs['x1'] = model_kwargs['x1'][th.arange(B).unsqueeze(1).expand(B, N), assignment]
-            x1 = x1.view(B, T, N, C)
-            model_kwargs['x1'] = model_kwargs['x1'].view(B, T, N, C)
-        
-        ### OT in the batch dimension
-        # # Flatten each sample's atom features into a single vector: (B*T, N*C)
-        # x0_flat = x0[0].view(B*T, N, C).reshape(B*T, N*C)
-        # x1_flat = x1.reshape(B*T, N*C)
-        # # Cost matrix is (1, B*T, B*T) — pairwise distances between batch elements
-        # cost_matrix = th.cdist(x0_flat.unsqueeze(0), x1_flat.unsqueeze(0))  # (1, B*T, B*T)
-        # # Hungarian assignment over the batch dimension
-        # assignment = hungarian_over_L(cost_matrix)  # (1, B*T)
-        # assignment = assignment.squeeze(0)          # (B*T,)
-        # # Permute x1 along the batch dimension
-        # x1 = x1[assignment]  # (B*T, N, C)
-        # model_kwargs['x1'] = model_kwargs['x1'][assignment]
-        # x1 = x1.view(B, T, N, C)
-        # model_kwargs['x1'] = model_kwargs['x1'].view(B, T, N, C)
+            x0 = self._OT_atom_permutation(x0, x1, model_kwargs)
+
 
         if self.args.design:  # alterations made to the original SIT code to include dirichlet flow matching for design
             assert self.model_type == ModelType.VELOCITY
@@ -440,6 +490,8 @@ class Transport:
                 assert self.args.weight_loss_var_x0 == 0
             else:
                 assert self.args.weight_loss_var_x0 == 0
+                assert self.args.diffusion_form == "constant"
+                assert self.args.diffusion_norm == 1.
                 diffusion = self.path_sampler.compute_diffusion(x1, t, self.args.diffusion_form, self.args.diffusion_norm)  # the input x here is not used
                 xt, ut, eps = self.path_sampler.plan_schrodinger_bridge_fractional(t, x0[0], x1, diffusion, cell=self.prior_cell)
                 alpha_t, _ = self.path_sampler.compute_alpha_t(path.expand_t_like_x(t, xt))
@@ -459,7 +511,7 @@ class Transport:
             if self.score_model is not None:
                 score_model_output = self.score_model(xt, t, **model_kwargs)
             else:
-                score_model_output = self.path_sampler.get_score_from_velocity(model_output, xt-x0_mean[0], t, self.x0std)
+                score_model_output = self.path_sampler.get_score_from_velocity(model_output, xt-x0_mean[0], t, self.x0std, model_kwargs['cell'])
 
         assert model_output.size() == (B, *xt.size()[1:-1], C)
 
@@ -478,9 +530,8 @@ class Transport:
                     case "symm":
                         cell = model_kwargs['cell'].view(B*T,3,3)
                         terms['loss_l1'] = mean_flat((model_output.view(B*T,N,3)@cell - ut.view(B*T,N,3)@cell).norm(dim=-1), mask.view(B*T,N,3)[:,:,0])
-                        volume = th.abs(th.det(cell))
                         
-                        jsd = compute_jsd_loss(xt.view(B*T,N,3), t, (x0[0]+model_output*t[:,None,None,None]).view(B*T,N,3), 3)  # (B,N)
+                        jsd = compute_jsd_loss(xt.view(B*T,N,3), 1, (x0[0]+model_output*t[:,None,None,None]).view(B*T,N,3), 3)  # (B,N)
                         terms['loss_symmkl'] = mean_flat(jsd, mask.view(B*T,N,3)[:,:,0])
                         terms['loss_flow'] = terms['loss_symmkl'] + terms['loss_l1'] 
                     case "L1":
@@ -489,7 +540,7 @@ class Transport:
                     case "score":
                         cell = model_kwargs['cell'].view(B*T,3,3)
                         terms['loss_l1'] = mean_flat((model_output.view(B*T,N,3)@cell - ut.view(B*T,N,3)@cell).norm(dim=-1), mask.view(B*T,N,3)[:,:,0])
-                        score_ot = self.path_sampler.get_score_from_velocity(model_output, xt-x0_mean[0], t, self.x0std)
+                        score_ot = self.path_sampler.get_score_from_velocity(model_output, xt-x0_mean[0], t, self.x0std, cell)
                         if self.weightfunction_x is not None:
                             e_repul, f_repul = self.weightfunction_x(xt, cell, model_kwargs['num_atoms'],)
                             forces_repulsed = forces + f_repul
@@ -504,20 +555,18 @@ class Transport:
                     cell = model_kwargs['cell']
                     gamma_cart = th.sqrt(2 * diffusion * (t * (1 - t))[:,None,None,None])
                     terms['loss_dsm'] = mean_flat((((score_model_output @ cell) * gamma_cart + eps)**2), mask)
-
-                    # endpoint 0 / Gaussian prior label
-                    dx0_cart = (x0[0] - x0_mean[0]) @ cell
-                    target_score_cart_0 = -dx0_cart / (
-                        sigma_t * x0std[:, :, None, None]**2 + 1e-12
-                    )
-                    terms["loss_tsm_0"] = mean_flat(
-                        ((score_model_output@cell - target_score_cart_0) ** 2 * (sigma_t * x0std[:, :, None, None]) ** 2)
-                        * (t < 0.5).to(x1.dtype)[:, None, None, None],
-                        mask,
-                    )
-                    # endpoint 1 / forces label
-                    terms['loss_tsm_1'] = mean_flat( ((score_model_output@cell - 1./alpha_t*forces)**2 * (x0std[:, :, None, None]) ** 2 * (t > 0.5).to(th.int)[:,None,None,None]), mask)
                     if self.args.TSMloss:
+                        # endpoint 0 / Gaussian prior label
+                        dx0_cart = (x0[0] - x0_mean[0]) @ cell
+                        target_score_cart_0 = -dx0_cart / x0std[:, :, None, None].clamp_min(1e-12)
+                        terms["loss_tsm_0"] = mean_flat(
+                            ((score_model_output@cell * sigma_t * x0std[:, :, None, None] - target_score_cart_0) ** 2)
+                            * (t < 0.5).to(x1.dtype)[:, None, None, None],
+                            mask,
+                        )
+                        # endpoint 1 / forces label
+                        terms['loss_tsm_1'] = mean_flat( ((score_model_output@cell - 1./alpha_t*forces)**2 * (x0std[:, :, None, None]) ** 2 * (t > 0.5).to(th.int)[:,None,None,None]), mask)
+                    
                         terms['loss'] = terms['loss_flow'] + terms['loss_dsm'] + (terms["loss_tsm_1"] + terms["loss_tsm_0"]) * self.args.pref_TSMloss
                     else:
                         terms['loss'] = terms['loss_flow'] + terms['loss_dsm']
@@ -643,7 +692,7 @@ class Transport:
             score_fn = lambda x, t, model, **model_kwargs: model(x, t, **model_kwargs)
         elif self.model_type == ModelType.VELOCITY:
             if self.score_model is None:
-                score_fn = lambda x, t, model, **model_kwargs: self.path_sampler.get_score_from_velocity(model(x, t, **model_kwargs), x-self.prior_mean, t, self.x0std)
+                score_fn = lambda x, t, model, **model_kwargs: self.path_sampler.get_score_from_velocity(model(x, t, **model_kwargs), x-self.prior_mean, t, self.x0std, model_kwargs['cell'])
             else:
                 score_fn = score_sde
         else:
