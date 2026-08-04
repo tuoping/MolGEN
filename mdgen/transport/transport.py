@@ -320,11 +320,12 @@ class Transport:
                 ### Latin hypercube sample
                 # _x0_mean = latin_hypercube_torch(B*T, N, C, device).view(B,T,N,C)
                 ### Uniform sample
-                _x0_mean = th.rand(shape, device=device)
+                _x0_mean = th.zeros(shape, device=device)
+                x0.append(th.rand(shape, device=device))
             else:
                 _x0_mean = self.prior_mean
-            inv_cell = th.linalg.inv(self.prior_cell)
-            x0.append((th.randn(shape, device=device)*x0std[:,:,None,None])@inv_cell + _x0_mean)
+                inv_cell = th.linalg.inv(self.prior_cell)
+                x0.append((th.randn(shape, device=device)*x0std[:,:,None,None])@inv_cell + _x0_mean)
             x0_mean.append(_x0_mean)
         
         t0, t1 = self.check_interval(self.train_eps, self.sample_eps)
@@ -531,6 +532,7 @@ class Transport:
 
                 if self.args.loss_consistency:
                     if th.randn(1).item() > 1 and th.ceil(2/(1-t.min())).to(int).item() < 128: # True roughly 1 out of 6 times
+                    # if th.ceil(2/(1-t.min())).to(int).item() < 128:
                         d = 1./th.randint(low=th.ceil(2/(1-t.min())).to(int).item(), high=128, size=(B,), device=xt.device)
                         if self.latt_path:
                             model_kwargs['dt'] = 2*d.view(B,1,1).expand(-1,T,-1)

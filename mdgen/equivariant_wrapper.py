@@ -385,7 +385,7 @@ class EquivariantMDGenWrapper(Wrapper):
         forces = None
         if self.args.path_type in ["Schrodinger_Linear", "Schrodinger_Linear_onemodel"]:
             forces = prep['forces']
-        x0std = self.args.x0std
+
         out_dict = self.transport.training_losses(
             model=self.model,
             x1=prep['latents'],

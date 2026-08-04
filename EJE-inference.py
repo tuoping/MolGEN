@@ -123,14 +123,11 @@ for i_rollout in range(0, 5):
                 all_pred_frac_pos, _, all_cell  = model.inference(batch)
             else:
                 raise Exception("Not verified")
-                logp, all_pred, _, reverse_logp, zs, all_pred_reverse = model.inference(batch)
+                logp, all_pred, _, zs = model.inference(batch)
                 all_pred_frac_pos = all_pred[0]
                 all_cell = all_pred[1]
-                all_pred_zs = all_pred_reverse[0]
-                pred_zs = all_pred_zs[-1]
                 pred_zs_cell = all_pred_reverse[1][-1]
                 np.savetxt(filename_logp, torch.tensor(logp).view(1,-1).detach().cpu().numpy() )
-                np.savetxt(filename_reverse_logp, torch.tensor(reverse_logp).view(1,-1).detach().cpu().numpy() )
                 N = all_pred_frac_pos.shape[-2]
                 sigma = (torch.ones_like(zs) * x0std)
                 np.savetxt(filename_zs, [[( (zs@all_cell[0])**2/2/sigma**2).sum().detach().cpu().numpy(), ( (pred_zs@pred_zs_cell)**2/2/sigma**2).sum().detach().cpu().numpy()]])
@@ -138,18 +135,15 @@ for i_rollout in range(0, 5):
             if args.likelihood is None:
                 all_pred_frac_pos, _  = model.inference(batch)
             else:
-                logp, all_pred_frac_pos, _, reverse_logp, zs, all_pred_zs = model.inference(batch)
-                pred_zs = all_pred_zs[-1]
+                logp, all_pred_frac_pos, _, zs = model.inference(batch)
                 cell = batch['cell0'].cpu()
                 N = all_pred_frac_pos.shape[-2]
 
                 logp = torch.tensor(logp).detach().cpu()
                 np.savetxt(filename_logp, logp.view(1,-1).numpy() )
-                reverse_logp = torch.tensor(reverse_logp).detach().cpu()
-                np.savetxt(filename_reverse_logp, reverse_logp.view(1,-1).numpy() )
 
                 sigma = (torch.ones_like(zs) * x0std).detach().cpu()
-                np.savetxt(filename_zs, [[( (zs.detach().cpu()@cell)**2/2/sigma**2).sum().numpy(), ( (pred_zs.detach().cpu()@cell)**2/2/sigma**2).sum().numpy()]])
+                np.savetxt(filename_zs, [[( (zs.detach().cpu()@cell)**2/2/sigma**2).sum().numpy(), ]])
         if i_rollout == 0:
             dump_idx = range(len(all_pred_frac_pos))
         else:
@@ -170,20 +164,6 @@ for i_rollout in range(0, 5):
         ref_pos = batch["x"][0][0] @ batch['cell'][0][0]
         atoms_ref = Atoms(formula, positions=ref_pos.cpu().numpy(), cell=batch['cell'][0][0].cpu().numpy(), pbc=[1,1,1])
         write(filename_ref, atoms_ref, append=True)
-
-        if args.likelihood is not None:
-            for idx_traj in dump_idx:
-            # for idx_traj in [-1]:
-                pred_frac_pos = all_pred_zs[idx_traj][0]
-                if model.transport.latt_path:
-                    cell_out = all_pred_reverse[1][idx_traj]
-                    pred_pos = pred_frac_pos[0] @ cell_out[0][0]
-                else:
-                    cell_out = batch['cell0']
-                    pred_pos = pred_frac_pos[0] @ cell_out[0][0]
-
-                atoms = Atoms(formula, positions=pred_pos.detach().cpu().numpy(), cell=cell_out[0][0].detach().cpu().numpy(), pbc=[1,1,1])
-                write(filename_reverse, atoms, append=True)
 
         
         # del pred_frac_pos
