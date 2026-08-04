@@ -30,8 +30,7 @@ torch.set_float32_matmul_precision('medium')
 # from torch.utils.data import ConcatDataset
 # from torch.utils.data import Subset
 
-train_dataset = EquivariantTransformerDataset_MaterialProject(args, species=[6], sim_condition=False, stage="train_withforces")
-args.mean_atomic_volume = train_dataset.mean_atomic_volume
+train_dataset = EquivariantTransformerDataset_MaterialProject(args, species=[1, 6, 8, 40], num_species=args.num_species, sim_condition=False, stage="train")
 num_atoms_list = [int(max(train_dataset[i]["num_atoms"])) for i in range(len(train_dataset))]
 trainsampler = BucketBatchSampler(train_dataset, num_atoms_list, batch_size=args.batch_size)
 
@@ -39,7 +38,9 @@ if args.overfit:
     val_dataset = train_dataset
     valsampler = trainsampler
 else:
-    val_dataset = EquivariantTransformerDataset_MaterialProject(args.data_dir, args.cutoff, species=[6], sim_condition=False, stage="val_withforces")
+    val_dataset = EquivariantTransformerDataset_MaterialProject(args, species=[1, 6, 8, 40], num_species=args.num_species, sim_condition=False, stage="val")
+    num_atoms_list = [int(max(val_dataset[i]["num_atoms"])) for i in range(len(val_dataset))]
+    valsampler = BucketBatchSampler(val_dataset, num_atoms_list, batch_size=args.batch_size)
 
 train_loader = torch.utils.data.DataLoader(
     train_dataset,
@@ -66,37 +67,69 @@ val_loader = torch.utils.data.DataLoader(
 #     num_workers=args.num_workers,
 #     shuffle=True,
 # )
+
+def partial_load(ckpt, model):
+    old_state = ckpt["state_dict"]
+
+    new_state = model.state_dict()
+
+    # Keep only compatible parameters
+    compatible_state = {
+        k: v
+        for k, v in old_state.items()
+        if k in new_state and v.shape == new_state[k].shape
+    }
+
+    # Optional: print skipped keys
+    skipped = [
+        k for k, v in old_state.items()
+        if k not in new_state or v.shape != new_state[k].shape
+    ]
+    print("Skipped keys:")
+    for k in skipped:
+        print(k, old_state[k].shape, "->", new_state[k].shape if k in new_state else "missing")
+
+    # Load compatible weights
+    missing, unexpected = model.load_state_dict(compatible_state, strict=False)
+
+    print("Missing keys:", missing)
+    print("Unexpected keys:", unexpected)
+
 device='cuda'
 model = EquivariantMDGenWrapper(args).to(device)
 if args.ckpt is not None:
     checkpoint = torch.load(args.ckpt, weights_only=False, map_location=torch.device(device))
-    model.load_state_dict(checkpoint["state_dict"], strict=False )
+    # model.load_state_dict(checkpoint["state_dict"], strict=False )
+    partial_load(checkpoint, model)
+
 # assert model.transport.latt_path
 
-if "Schrodinger" in args.path_type:
+if args.path_type in ["Schrodinger_Linear", "Schrodinger_Linear_onemodel"]:
     callbacks_fn = [
-        # ModelCheckpoint(
-        #     dirpath=os.environ["MODEL_DIR"], 
-        #     save_top_k=-1,
-        #     every_n_epochs=args.ckpt_freq,
-        # ),
         ModelCheckpoint(
             dirpath=os.environ["MODEL_DIR"], 
             filename="{epoch:03d}-{step:07d}-{val_loss_path:.4f}",
-            monitor="val_loss_path",
+            monitor="val_loss",
             save_top_k=1,
             save_last=True
         ),
+    
+        ModelSummary(max_depth=2),
 
+        # Best by val_loss_path
+        ModelCheckpoint(
+            dirpath=os.path.join(os.environ["MODEL_DIR"], "best_val_loss_path"),
+            filename="best-val_loss_path-{epoch:03d}-{step:07d}-{val_loss_path:.4f}",
+            monitor="val_loss_path",
+            mode="min",
+            save_top_k=1,
+            save_last=False,
+        ),
+        
         ModelSummary(max_depth=2),
     ]
 else:
     callbacks_fn = [
-        # ModelCheckpoint(
-        #     dirpath=os.environ["MODEL_DIR"], 
-        #     save_top_k=-1,
-        #     every_n_epochs=args.ckpt_freq,
-        # ),
         ModelCheckpoint(
             dirpath=os.environ["MODEL_DIR"], 
             filename="{epoch:03d}-{step:07d}-{val_loss:.4f}",
@@ -104,15 +137,16 @@ else:
             save_top_k=1,
             save_last=True
         ),
-
+    
         ModelSummary(max_depth=2),
     ]
+
 trainer = pl.Trainer(
     accelerator="gpu" if torch.cuda.is_available() else 'auto',
     max_epochs=args.epochs,
     limit_train_batches=args.train_batches or 1.0,
     limit_val_batches=0.0 if args.no_validate else (args.val_batches or 1.0),
-    num_sanity_val_steps=0,
+    num_sanity_val_steps=1,
     precision=args.precision,
     enable_progress_bar=not args.wandb or os.getlogin() == 'hstark',
     gradient_clip_val=args.grad_clip,
@@ -121,6 +155,7 @@ trainer = pl.Trainer(
     accumulate_grad_batches=args.accumulate_grad,
     val_check_interval=args.val_freq,
     check_val_every_n_epoch=args.val_epoch_freq,
+    inference_mode=False,
     logger=False
 )
 
