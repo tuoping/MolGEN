@@ -342,6 +342,7 @@ class EquivariantMDGenWrapper(Wrapper):
 
         v_loss_mask = batch["v_mask"]
 
+        self.transport.x0std = batch['x0std']
 
         B, T, L, _ = latents.shape
         assert _ == 3, f"latents shape should be (B, T, D, 3), but got {latents.shape}"
@@ -403,8 +404,9 @@ class EquivariantMDGenWrapper(Wrapper):
         loss = loss_gen
         if self.args.path_type in ["Schrodinger_Linear", "Schrodinger_Linear_onemodel"]:
             self.prefix_log("loss_dsm", out_dict['loss_dsm'].detach().cpu())
-            # self.prefix_log("loss_tsm_0", out_dict['loss_tsm_0'].detach().cpu())
-            self.prefix_log("loss_tsm_1", out_dict['loss_tsm_1'].detach().cpu())
+            if self.args.TSMloss:
+                # self.prefix_log("loss_tsm_0", out_dict['loss_tsm_0'].detach().cpu())
+                self.prefix_log("loss_tsm_1", out_dict['loss_tsm_1'].detach().cpu())
             self.prefix_log("loss_path", out_dict['loss_dsm'].detach().cpu()+out_dict['loss_flow'].detach().cpu())
         if self.args.KL == 'symm':
             self.prefix_log('loss_symmkl', out_dict['loss_symmkl'].detach().cpu())
