@@ -491,7 +491,6 @@ class Transport:
             else:
                 assert self.args.weight_loss_var_x0 == 0
                 assert self.args.diffusion_form == "constant"
-                assert self.args.diffusion_norm == 1.
                 diffusion = self.path_sampler.compute_diffusion(x1, t, self.args.diffusion_form, self.args.diffusion_norm)  # the input x here is not used
                 xt, ut, eps = self.path_sampler.plan_schrodinger_bridge_fractional(t, x0[0], x1, diffusion, cell=self.prior_cell)
                 alpha_t, _ = self.path_sampler.compute_alpha_t(path.expand_t_like_x(t, xt))
