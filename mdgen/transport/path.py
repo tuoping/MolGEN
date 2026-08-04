@@ -139,7 +139,7 @@ class ICPlan:
         assert diffusion.dim() == 4, "Diffusion term must be a 4D tensor"
         return diffusion
 
-    def get_score_from_velocity(self, velocity, x, t, x0std):
+    def get_score_from_velocity(self, velocity_frac, x_frac, t, x0std, cell, diffusion=1.):
         """
         Convert the learned IC control / velocity field b_t(x) to the
         log-density score ∇_x log p_t(x).
@@ -160,15 +160,18 @@ class ICPlan:
 
             score = (t * velocity - x) / (1 - t)
         """
+        x = x_frac@cell
+        velocity = velocity_frac@cell
         t = expand_t_like_x(t, x)
         alpha_t, d_alpha_t = self.compute_alpha_t(t)
         sigma_t, d_sigma_t = self.compute_sigma_t(t)
         mean = x
         reverse_alpha_ratio = alpha_t / d_alpha_t
         var = sigma_t**2 - reverse_alpha_ratio * d_sigma_t * sigma_t
-        score = (reverse_alpha_ratio * velocity - mean) / var /(x0std**2)[:,None,None]
+        score = (reverse_alpha_ratio * velocity - mean) / (var *(x0std**2)[:,None,None] + diffusion * t)
         assert score.dim() == 4, "Score term must be a 4D tensor"
-        return score
+        inv_cell = th.linalg.inv(cell)
+        return score @ inv_cell
     
     def get_noise_from_velocity(self, velocity, x, t):
         """Wrapper function: transfrom velocity prediction model to denoiser
