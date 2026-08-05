@@ -286,7 +286,7 @@ class EquivariantFEDWrapper(Wrapper):
         mean_log = get_log_mean(log)
         self.log("val_loss", mean_log['val_loss'])
         # self.log("val_loss_gen", mean_log['val_loss_gen'])
-        if self.score_model is not None:
+        if self.args.path_type in ["Schrodinger_Linear", "Schrodinger_Linear_onemodel"]:
             self.log("val_loss_path", mean_log['val_loss_path'])
         self.print_log(prefix='val', save=False)
 

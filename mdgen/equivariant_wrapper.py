@@ -287,7 +287,7 @@ class EquivariantMDGenWrapper(Wrapper):
         mean_log = get_log_mean(log)
         self.log("val_loss", mean_log['val_loss'])
         # self.log("val_loss_gen", mean_log['val_loss_gen'])
-        if self.score_model is not None:
+        if self.args.path_type in ["Schrodinger_Linear", "Schrodinger_Linear_onemodel"]:
             self.log("val_loss_path", mean_log['val_loss_path'])
         self.print_log(prefix='val', save=False)
 
@@ -342,6 +342,7 @@ class EquivariantMDGenWrapper(Wrapper):
 
         v_loss_mask = batch["v_mask"]
 
+        ### for schrodinger bridge
         self.transport.x0std = batch['x0std']
 
         B, T, L, _ = latents.shape
