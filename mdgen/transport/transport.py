@@ -564,7 +564,7 @@ class Transport:
                             mask,
                         )
                         # endpoint 1 / forces label
-                        terms['loss_tsm_1'] = mean_flat( ((score_model_output@cell - 1./alpha_t*forces)**2 * (x0std[:, :, None, None]) ** 2 * (t > 0.5).to(th.int)[:,None,None,None]), mask)
+                        terms['loss_tsm_1'] = mean_flat( ((alpha_t * score_model_output@cell - forces)**2 * (x0std[:, :, None, None]) ** 2 * (t > 0.5).to(th.int)[:,None,None,None]), mask)
                     
                         terms['loss'] = terms['loss_flow'] + terms['loss_dsm'] + (terms["loss_tsm_1"] + terms["loss_tsm_0"]) * self.args.pref_TSMloss
                     else:

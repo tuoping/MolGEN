@@ -3,7 +3,7 @@
 
 import glob
 
-ckpt_tag = 170
+ckpt_tag = 100
 inference_steps = 200
 
 sampling_method = "euler"
@@ -16,7 +16,7 @@ import os, torch, tqdm, time
 import numpy as np
 from mdgen.fed_wrapper import EquivariantFEDWrapper
 
-out_dir = f"experiments/smallcell_SiO2_nvt_nowrap/sdetest_TSMloss_quartz_x0varkBT/r1e{ckpt_tag}_{sampling_method}_step{inference_steps}/"
+out_dir = f"experiments/smallcell_SiO2_nvt_nowrap/sdetest_TSMloss_quartz_x0varkBT/r2e{ckpt_tag}_{sampling_method}_step{inference_steps}/"
 print("Output folder: ", out_dir)
 os.makedirs(out_dir, exist_ok=True)
 with open(f"{out_dir}/README.md", "w") as fp:
@@ -139,7 +139,7 @@ for i_rollout in range(0, 5):
                 cell = batch['cell0'].cpu()
                 N = all_pred_frac_pos.shape[-2]
 
-                logp = torch.tensor(logp).detach().cpu()
+                logp = logp.detach().cpu()
                 np.savetxt(filename_logp, logp.view(1,-1).numpy() )
 
                 sigma = (torch.ones_like(zs) * x0std).detach().cpu()

@@ -684,7 +684,8 @@ class EquivariantFEDWrapper(Wrapper):
                     with torch.no_grad(): 
                         samples_logp, _samples_logp, samples = sample_fn(
                             zs,
-                            partial(self.model.forward_inference, **prep['model_kwargs'])
+                            partial(self.model.forward_inference, **prep['model_kwargs']),
+                            **prep["model_kwargs"],
                         )
                     _samples_logp = _samples_logp.detach().cpu()
                     samples_logp = samples_logp.detach().cpu()

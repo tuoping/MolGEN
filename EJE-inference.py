@@ -3,12 +3,12 @@
 
 import glob
 
-ckpt_tag = 111
+ckpt_tag = 37
 inference_steps = 10
 
 sampling_method = "rk4"
-# sim_ckpt = glob.glob("workdir/fixlatt-sde/run1/epoch=%03d-step=*-val_loss=*.ckpt"%ckpt_tag)[0]
-sim_ckpt = "workdir/fixlatt/run10.bk006.Tcv_l1/last.ckpt"
+# sim_ckpt = "workdir/fixlatt/run10.bk006.Tcv_l1/last.ckpt" # r10 e=111(actually 193)
+sim_ckpt = "workdir/fixlatt/run13.bk006.Tcv_l1/last.ckpt" # r13 e=37
 
 device = "cuda"
 
@@ -16,7 +16,7 @@ import os, torch, tqdm, time
 import numpy as np
 from mdgen.fed_wrapper import EquivariantFEDWrapper
 
-out_dir = f"experiments/smallcell_SiO2_nvt_nowrap/test_quartz_x0varkBT/Tcv3l1_r10e{ckpt_tag}_{sampling_method}_step{inference_steps}/"
+out_dir = f"experiments/smallcell_SiO2_nvt_nowrap/TTTTTKPPPPPGPa/test_CCCCC_x0varkBT/Tcv3l1_r13e{ckpt_tag}_{sampling_method}_step{inference_steps}/"
 print("Output folder: ", out_dir)
 os.makedirs(out_dir, exist_ok=True)
 with open(f"{out_dir}/README.md", "w") as fp:
@@ -30,14 +30,14 @@ hparams = ckpt["hyper_parameters"]
 args = hparams['args']
 args.sampling_method = sampling_method
 args.inference_steps = inference_steps
-args.data_dir = "data/SiO2/npt_1600K_1GPa/npt_quartz_dense/npt/"
+args.data_dir = "data/SiO2/npt_TTTTTK_PPPPPGPa/npt_CCCCC_dense/npt/"
 args.likelihood = "EJE"
 args.K_hutchinson_probe = 16
 args.K_hutchinson_probe_chunk = 4
 
 
 from mdgen.dataset import EquivariantTransformerDataset_phasediagram
-dataset = EquivariantTransformerDataset_phasediagram(args, species=[14, 8], num_species=args.num_species, sim_condition=False, stage="test", T=1600)
+dataset = EquivariantTransformerDataset_phasediagram(args, species=[14, 8], num_species=args.num_species, sim_condition=False, stage="test", T=TTTTT)
 
 
 
@@ -80,17 +80,16 @@ from ase import Atoms
 from ase.geometry.geometry import get_distances
 import shutil, os
 from ase.io import write
+import sys
 
 all_rollout_atoms_ref_0 = []
 all_rollout_atoms = []
 all_rollout_atoms_ref = []
 start = time.time()
 all_logp = []
-import sys
-for i_rollout in range(int(sys.argv[1]), 10000):
+for i_rollout in range(int(sys.argv[1]), 5000):
     # idx = idx_rollouts[i_rollout]
     idx = i_rollout
-    print(i_rollout, idx)
     filename = os.path.join(out_dir, f"gentraj_{idx}.xyz")
     filename_ref = os.path.join(out_dir, f"reftraj_{idx}.xyz")
     for f in [filename, filename_ref, ]:
