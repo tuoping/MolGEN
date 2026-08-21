@@ -761,7 +761,7 @@ class EquivariantTransformerDataset_phasediagram(torch.utils.data.Dataset):
             self.calculator = DP(model="data/SiO2/DP_R2SCAN.pb")
         
             traj_filename = os.path.join(traj_dir, "dump.equi")
-            atoms_list = ase.io.read(traj_filename, index=":", format="lammps-dump-text")[10:]
+            atoms_list = ase.io.read(traj_filename, index=":", format="lammps-dump-text")[100:]
             atom_encoder = OneHotEncoder(sparse_output=False)
             atom_encoder.fit(np.array(species).reshape(-1,1))
             
@@ -819,7 +819,7 @@ class EquivariantTransformerDataset_phasediagram(torch.utils.data.Dataset):
                         t = torch.tensor((T-0)/(5000.-0.))
                     
                         dirname = os.path.join(traj_dir, f"npt_{T}K_{P}GPa/npt_coesite_dense/npt")
-                        dataset_1 = torch.load(os.path.join(dirname, f"{stage}.pt"), weights_only=False)
+                        dataset_1 = torch.load(os.path.join(dirname, f"{stage}.pt"), weights_only=False)[100:]
                         vol_0 = torch.linalg.det(dataset_1[0].cell_0)
                         # vol = torch.stack([torch.linalg.det(data.cell) for data in dataset_1]).mean()
                         for data in dataset_1:
@@ -831,7 +831,7 @@ class EquivariantTransformerDataset_phasediagram(torch.utils.data.Dataset):
                         self.all_dataset += dataset_1
 
                         dirname = os.path.join(traj_dir, f"npt_{T}K_{P}GPa/npt_quartz_dense/npt")
-                        dataset_1 = torch.load(os.path.join(dirname, f"{stage}.pt"), weights_only=False)
+                        dataset_1 = torch.load(os.path.join(dirname, f"{stage}.pt"), weights_only=False)[100:]
                         vol_0 = torch.linalg.det(dataset_1[0].cell_0)
                         # vol = torch.stack([torch.linalg.det(data.cell) for data in dataset_1]).mean()
                         for data in dataset_1:
@@ -843,7 +843,7 @@ class EquivariantTransformerDataset_phasediagram(torch.utils.data.Dataset):
                         self.all_dataset += dataset_1
 
                 dirname = os.path.join(traj_dir, "npt_1600K_1GPa/npt_coesite_dense/npt")
-                dataset_1 = torch.load(os.path.join(dirname, f"{stage}.pt"), weights_only=False)
+                dataset_1 = torch.load(os.path.join(dirname, f"{stage}.pt"), weights_only=False)[100:]
                 dataset_3 = []
                 for i in range(len(dataset_1)//2):
                     data = Data(
@@ -862,7 +862,7 @@ class EquivariantTransformerDataset_phasediagram(torch.utils.data.Dataset):
                 self.all_dataset += dataset_3
 
                 dirname = os.path.join(traj_dir, "npt_1600K_1GPa/npt_quartz_dense/npt")
-                dataset_2 = torch.load(os.path.join(dirname, f"{stage}.pt"), weights_only=False)
+                dataset_2 = torch.load(os.path.join(dirname, f"{stage}.pt"), weights_only=False)[100:]
                 dataset_4 = []
                 for i in range(len(dataset_2)//2):
                     data = Data(
@@ -883,7 +883,7 @@ class EquivariantTransformerDataset_phasediagram(torch.utils.data.Dataset):
                         
             else:   
                 if "npt_0K_0GPa" in traj_dir:
-                    dataset_1 = torch.load(os.path.join(traj_dir.replace("npt_0K_0GPa", "npt_1600K_1GPa"), f"{stage}.pt"), weights_only=False)
+                    dataset_1 = torch.load(os.path.join(traj_dir.replace("npt_0K_0GPa", "npt_1600K_1GPa"), f"{stage}.pt"), weights_only=False)[100:]
                     self.all_dataset = []
                     for i in range(len(dataset_1)//2):
                         data = Data(
@@ -902,7 +902,7 @@ class EquivariantTransformerDataset_phasediagram(torch.utils.data.Dataset):
                 else:
                     assert T is not None
                     t = torch.tensor((T-0)/(5000.-0.))
-                    self.all_dataset = torch.load(os.path.join(traj_dir, f"{stage}.pt"), weights_only=False)
+                    self.all_dataset = torch.load(os.path.join(traj_dir, f"{stage}.pt"), weights_only=False)[100:]
                     vol_0 = torch.linalg.det(self.all_dataset[0].cell_0)
                     vol = torch.stack([torch.linalg.det(data.cell) for data in self.all_dataset]).mean()
                     for data in self.all_dataset:
