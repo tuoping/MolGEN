@@ -43,7 +43,7 @@ class sde:
         w_cur = th.randn(x.size()).to(x)
         t = th.ones(x.size(0)).to(x) * t
         dw = w_cur * th.sqrt(th.abs(self.dt)) @ th.linalg.inv(self.cell)
-        drift = self.drift(x, t, model, score_model, **model_kwargs)
+        drift = self.drift(x, t, model, **model_kwargs)
         diffusion = self.diffusion(x, t)
         mean_x = x + drift * self.dt
         x = mean_x + th.sqrt(2 * diffusion) * dw
@@ -58,7 +58,7 @@ class sde:
         t = th.ones(x.size(0)).to(x) * t
         inv_cell = th.linalg.inv(self.cell)
         dw = w_cur * th.sqrt(th.abs(self.dt)) @ inv_cell
-        drift = self.drift(x, t, model, score_model, **model_kwargs)
+        drift = self.drift(x, t, model, **model_kwargs)
         diffusion = self.diffusion(x, t)
         metric = inv_cell.transpose(-1, -2) @ inv_cell
 
@@ -72,7 +72,7 @@ class sde:
         ### reverse
         t_next = t + self.dt
         _diffusion = self.diffusion(x_next, t_next)
-        _drift = self.reverse_drift(x_next, t_next, model, score_model, **model_kwargs)
+        _drift = self.reverse_drift(x_next, t_next, model, **model_kwargs)
         _mean_x = x_next + _drift * self.dt
 
         # _dist = th.distributions.MultivariateNormal(loc=_mean_x, 
@@ -97,9 +97,9 @@ class sde:
         t_cur = th.ones(x.size(0)).to(x) * t
         diffusion = self.diffusion(x, t_cur)
         xhat = x + th.sqrt(2 * diffusion) * dw
-        K1 = self.drift(xhat, t_cur, model, score_model, **model_kwargs)
+        K1 = self.drift(xhat, t_cur, model, **model_kwargs)
         xp = xhat + self.dt * K1
-        K2 = self.drift(xp, t_cur + self.dt, model, score_model, **model_kwargs)
+        K2 = self.drift(xp, t_cur + self.dt, model, **model_kwargs)
         return xhat + 0.5 * self.dt * (K1 + K2), xhat # at last time point we do not perform the heun step
 
     def __forward_fn(self):
@@ -124,8 +124,8 @@ class sde:
         
         samples = []
         sampler = self.__forward_fn()
-        for ti in self.t[:-1]:
-            with th.no_grad():
+        with th.inference_mode():
+            for ti in self.t[:-1]:
                 x, mean_x = sampler(x, mean_x, ti, model, score_model, **model_kwargs)
                 samples.append(x)
 
@@ -140,9 +140,9 @@ class sde:
         logprob_samples = th.zeros(x.shape[:2]).to(x.device)
         _logprob_samples = th.zeros(x.shape[:2]).to(x.device)
         sampler = self.__forward_fn()
-        import time
+        # import time
         for idx_ti, ti in enumerate(self.t[:-1]):
-            t_start = time.time()
+            # t_start = time.time()
             with th.no_grad():
                 x, mean_x, logprob_x, _logprob_x = sampler(x, mean_x, ti, model, score_model, **model_kwargs)
                 x = x.detach()
@@ -152,6 +152,7 @@ class sde:
                 samples.append(x)
                 logprob_samples += logprob_x.sum(dim=-1).sum(dim=-1)
                 _logprob_samples += _logprob_x.sum(dim=-1).sum(dim=-1)
+            # print(f"Step {ti:.3f} took {time.time() - t_start:.3f} seconds")
         return samples, logprob_samples, _logprob_samples
 
 from . import path

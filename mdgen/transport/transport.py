@@ -230,7 +230,7 @@ def compute_jsd_loss(mu_t_x1, standard_bandwidth_factor, mu_theta, k_max=3):
 
     logm = th.logaddexp(logP_, logQ_) - th.log(th.tensor(2.0, device=mu_t_x1.device))# (B, N, K)
 
-    kl_p_m = (th.exp(logP_-logZ_P[:,:,None]) * (logP_ - logm)).sum(dim=-1)  # (B,N)
+    kl_p_m = (th.exp(logP_-logZ_P[:,:,None]) * (logP_ - logQ_)).sum(dim=-1)  # (B,N)
     kl_q_m = (th.exp(logQ_-logZ_Q[:,:,None]) * (logQ_ - logm)).sum(dim=-1)  # (B,N)
 
     jsd = 0.5 * kl_p_m + 0.5 * kl_q_m  # (B,N)
@@ -345,11 +345,14 @@ class Transport:
         T = shape[1]
         if self.prior_cell is None:
             num_atoms = shape[2]
-            mu = th.zeros(*shape[:2], 6)
-            mu[:,:,-1] = 1.
-            sigma = 0.1
-            k = th.normal(mu, sigma).to(device)
-            cell = lattice_polar_build_torch(k.reshape(-1, 6)).reshape(-1, 3, 3)
+            ### Random prior cell
+            # mu = th.zeros(*shape[:2], 6)
+            # mu[:,:,-1] = 1.
+            # sigma = 0.1
+            # k = th.normal(mu, sigma).to(device)
+            # cell = lattice_polar_build_torch(k.reshape(-1, 6)).reshape(-1, 3, 3)
+            ### Cubic prior cell
+            cell = th.eye(3).unsqueeze(0).expand(B*T,-1,-1)
             volume = (cell[:,0] * th.cross(cell[:,1], cell[:,2], dim=1)).sum(dim=-1)
             target_volume = num_atoms * self.mean_atomic_volume * th.ones_like(volume)
             # residual_k = (th.log(target_volume) - th.log(volume))/3
@@ -462,7 +465,6 @@ class Transport:
         ### normal sampler of t
         t, x0, x0_mean = self.sample(x1.shape, x1.device, x0std)
         ### OT in the atom number dimension
-        ### Species-constrained, periodic OT in the atom-number dimension
         if self.prior_mean is None:
             x0 = self._OT_atom_permutation(x0, x1, model_kwargs)
 
@@ -478,15 +480,6 @@ class Transport:
             if self.args.path_type not in ["Schrodinger_Linear", "Schrodinger_Linear_onemodel"]:
                 xt, ut = self.path_sampler.plan_fractional(t, x0[0], x1)
                 alpha_t, _ = self.path_sampler.compute_alpha_t(path.expand_t_like_x(t, xt))
-                if self.latt_path:
-                    latt0 = self.sample_latt(x1.shape, x1.device)
-                    B,T,_,_ = model_kwargs['cell'].shape
-                    # latt1 = lattice_polar_decompose_torch(model_kwargs['cell'].reshape([B*T,3,3])).reshape(B*T,6)
-                    latt1 = model_kwargs['cell']
-                    latt, ulatt = self.path_sampler.plan_latt_riemann(t, latt0, latt1)
-                    model_kwargs['cell'] = latt
-                    # model_kwargs['cell'] = lattice_polar_build_torch(latt.reshape([B*T,6])).reshape([B,T,3,3])
-                    # ulatt_L = lattice_polar_build_torch(ulatt.reshape([B*T,6])).reshape([B,T,3,3])
                 assert self.args.weight_loss_var_x0 == 0
             else:
                 assert self.args.weight_loss_var_x0 == 0
@@ -496,6 +489,15 @@ class Transport:
                 alpha_t, _ = self.path_sampler.compute_alpha_t(path.expand_t_like_x(t, xt))
                 sigma_t, _ = self.path_sampler.compute_sigma_t(path.expand_t_like_x(t, xt))
 
+            if self.latt_path:
+                latt0 = self.sample_latt(x1.shape, x1.device)
+                B,T,_,_ = model_kwargs['cell'].shape
+                # latt1 = lattice_polar_decompose_torch(model_kwargs['cell'].reshape([B*T,3,3])).reshape(B*T,6)
+                latt1 = model_kwargs['cell']
+                latt, ulatt = self.path_sampler.plan_latt_riemann(t, latt0, latt1)
+                model_kwargs['cell'] = latt
+                # model_kwargs['cell'] = lattice_polar_build_torch(latt.reshape([B*T,6])).reshape([B,T,3,3])
+                # ulatt_L = lattice_polar_build_torch(ulatt.reshape([B*T,6])).reshape([B,T,3,3])
 
         
         assert t.shape == (B,)
@@ -510,7 +512,7 @@ class Transport:
             if self.score_model is not None:
                 score_model_output = self.score_model(xt, t, **model_kwargs)
             else:
-                score_model_output = self.path_sampler.get_score_from_velocity(model_output, xt-x0_mean[0], t, self.x0std, model_kwargs['cell'])
+                score_model_output = self.path_sampler.get_score_from_velocity(model_output, xt-x0_mean[0], t, x0std, model_kwargs['cell'])
 
         assert model_output.size() == (B, *xt.size()[1:-1], C)
 
@@ -527,19 +529,21 @@ class Transport:
                 # if self.args.KL == 'symm':
                 match self.args.KL:
                     case "symm":
+                        if self.args.path_type in ["Schrodinger_Linear", "Schrodinger_Linear_onemodel"]:
+                            raise Exception("Symm loss here doesn't work with Brownian path")
                         cell = model_kwargs['cell'].view(B*T,3,3)
                         terms['loss_l1'] = mean_flat((model_output.view(B*T,N,3)@cell - ut.view(B*T,N,3)@cell).norm(dim=-1), mask.view(B*T,N,3)[:,:,0])
                         
-                        jsd = compute_jsd_loss(xt.view(B*T,N,3), 1, (x0[0]+model_output*t[:,None,None,None]).view(B*T,N,3), 3)  # (B,N)
+                        jsd = compute_jsd_loss(xt.view(B*T,N,3), 1, (x0[0]+model_output*t[:,None,None,None]).view(B*T,N,3), 3) * (th.det(cell)[:,None])**(2./3.)  # (B,N)
                         terms['loss_symmkl'] = mean_flat(jsd, mask.view(B*T,N,3)[:,:,0])
-                        terms['loss_flow'] = terms['loss_symmkl'] + terms['loss_l1'] 
+                        terms['loss_flow'] = terms['loss_symmkl'] * self.args.pref_symmkl + terms['loss_l1'] 
                     case "L1":
                         cell = model_kwargs['cell'].view(B*T,3,3)
                         terms['loss_flow'] = mean_flat((model_output.view(B*T,N,3)@cell - ut.view(B*T,N,3)@cell).norm(dim=-1), mask.view(B*T,N,3)[:,:,0])
                     case "score":
                         cell = model_kwargs['cell'].view(B*T,3,3)
                         terms['loss_l1'] = mean_flat((model_output.view(B*T,N,3)@cell - ut.view(B*T,N,3)@cell).norm(dim=-1), mask.view(B*T,N,3)[:,:,0])
-                        score_ot = self.path_sampler.get_score_from_velocity(model_output, xt-x0_mean[0], t, self.x0std, cell)
+                        score_ot = self.path_sampler.get_score_from_velocity(model_output, xt-x0_mean[0], t, x0std, cell)
                         if self.weightfunction_x is not None:
                             e_repul, f_repul = self.weightfunction_x(xt, cell, model_kwargs['num_atoms'],)
                             forces_repulsed = forces + f_repul
@@ -564,23 +568,23 @@ class Transport:
                             mask,
                         )
                         # endpoint 1 / forces label
-                        terms['loss_tsm_1'] = mean_flat( ((alpha_t * score_model_output@cell - forces)**2 * (x0std[:, :, None, None]) ** 2 * (t > 0.5).to(th.int)[:,None,None,None]), mask)
-                    
+                        terms['loss_tsm_1'] = mean_flat( ((score_model_output@cell - 1./alpha_t*forces)**2 * (x0std[:, :, None, None]) ** 2 * (t > 0.5).to(th.int)[:,None,None,None]), mask)
+
                         terms['loss'] = terms['loss_flow'] + terms['loss_dsm'] + (terms["loss_tsm_1"] + terms["loss_tsm_0"]) * self.args.pref_TSMloss
                     else:
                         terms['loss'] = terms['loss_flow'] + terms['loss_dsm']
                 else:
                     terms['loss'] = terms['loss_flow']
-                    if self.latt_path:
-                        lowertrigflow_output = th.stack([lattflow_output[:,:,0,0], lattflow_output[:,:,1,0], lattflow_output[:,:,1,1], lattflow_output[:,:,2,0], lattflow_output[:,:,2,1], lattflow_output[:,:,2,2]], dim=-1)
-                        lowertrigulatt = th.stack([ulatt[:,:,0,0], ulatt[:,:,1,0], ulatt[:,:,1,1], ulatt[:,:,2,0], ulatt[:,:,2,1], ulatt[:,:,2,2] ], dim=-1)
-                        terms['loss_lattflow'] = mean_flat((lowertrigflow_output - lowertrigulatt).abs(), th.ones_like(lowertrigflow_output, device=lowertrigflow_output.device))
-                        terms['loss'] = terms['loss_flow'] + terms['loss_lattflow']
-                        # terms['loss'] = terms['loss_lattflow']
+                    
+                if self.latt_path:
+                    lowertrigflow_output = th.stack([lattflow_output[:,:,0,0], lattflow_output[:,:,1,0], lattflow_output[:,:,1,1], lattflow_output[:,:,2,0], lattflow_output[:,:,2,1], lattflow_output[:,:,2,2]], dim=-1)
+                    lowertrigulatt = th.stack([ulatt[:,:,0,0], ulatt[:,:,1,0], ulatt[:,:,1,1], ulatt[:,:,2,0], ulatt[:,:,2,1], ulatt[:,:,2,2] ], dim=-1)
+                    terms['loss_lattflow'] = mean_flat((lowertrigflow_output - lowertrigulatt).abs(), th.ones_like(lowertrigflow_output, device=lowertrigflow_output.device))
+                    terms['loss'] += terms['loss_lattflow']
+                    # terms['loss'] = terms['loss_lattflow']
 
                 if self.args.loss_consistency:
                     if th.randn(1).item() > 1 and th.ceil(2/(1-t.min())).to(int).item() < 128: # True roughly 1 out of 6 times
-                    # if th.ceil(2/(1-t.min())).to(int).item() < 128:
                         d = 1./th.randint(low=th.ceil(2/(1-t.min())).to(int).item(), high=128, size=(B,), device=xt.device)
                         if self.latt_path:
                             model_kwargs['dt'] = 2*d.view(B,1,1).expand(-1,T,-1)
@@ -632,6 +636,44 @@ class Transport:
 
         return terms
 
+    def drift_from_output(
+            self
+    ):
+        """member function for obtaining the drift of the probability flow ODE"""
+
+        def score_ode(x, t, model_output):
+            drift_mean, drift_var = self.path_sampler.compute_drift(x, t)
+            return (-drift_mean + drift_var * model_output)  # by change of variable
+
+        def noise_ode(x, t, model_output):
+            drift_mean, drift_var = self.path_sampler.compute_drift(x, t)
+            sigma_t, _ = self.path_sampler.compute_sigma_t(path.expand_t_like_x(t, x))
+            score = model_output / -sigma_t
+            return (-drift_mean + drift_var * score)
+
+        def velocity_ode(x, t, model_output):
+            return model_output
+
+        if self.model_type == ModelType.NOISE:
+            if self.latt_path:
+                raise Exception("ModelType.NOISE is not implemented for variable lattice")
+            drift_fn = noise_ode
+        elif self.model_type == ModelType.SCORE:
+            if self.latt_path:
+                raise Exception("ModelType.SCORE is not implemented for variable lattice")
+            drift_fn = score_ode
+        else:
+            drift_fn = velocity_ode
+
+        def body_fn(x, t, _model_output):
+            model_output = drift_fn(x, t, _model_output)
+            # assert model_output.shape == x.shape, "Output shape from ODE solver must match input shape"
+            assert model_output[0].shape == x.shape if isinstance(model_output, tuple) else model_output.shape == x.shape, "Output shape from ODE solver must match input shape"
+            assert model_output.dim() == 4, "Output from ODE solver must be a 4D tensor"
+            return model_output
+
+        return body_fn
+
 
     def get_drift(
             self
@@ -674,6 +716,30 @@ class Transport:
 
         return body_fn
 
+    def score_from_output(
+            self,
+    ):
+        """member function for obtaining score of 
+            x_t = alpha_t * x + sigma_t * eps"""
+        
+        def score_sde(x, t, model_output):
+            return model_output
+        
+        if self.model_type == ModelType.NOISE:
+            score_fn = lambda x, t, model_output: model_output / - \
+                self.path_sampler.compute_sigma_t(path.expand_t_like_x(t, x))[0]
+        elif self.model_type == ModelType.SCORE:
+            score_fn = lambda x, t, model_output: model_output
+        elif self.model_type == ModelType.VELOCITY:
+            if self.score_model is None:
+                score_fn = lambda x, t, model_output: self.path_sampler.get_score_from_velocity(model_output, x-self.prior_mean, t, self.x0std, self.prior_cell)
+            else:
+                score_fn = score_sde
+        else:
+            raise NotImplementedError()
+
+        return score_fn
+
     def get_score(
             self,
     ):
@@ -691,7 +757,7 @@ class Transport:
             score_fn = lambda x, t, model, **model_kwargs: model(x, t, **model_kwargs)
         elif self.model_type == ModelType.VELOCITY:
             if self.score_model is None:
-                score_fn = lambda x, t, model, **model_kwargs: self.path_sampler.get_score_from_velocity(model(x, t, **model_kwargs), x-self.prior_mean, t, self.x0std, model_kwargs['cell'])
+                score_fn = lambda x, t, model, **model_kwargs: self.path_sampler.get_score_from_velocity(model(x, t, **model_kwargs), x-self.prior_mean, t, self.x0std, self.prior_cell)
             else:
                 score_fn = score_sde
         else:
@@ -715,6 +781,8 @@ class Sampler:
         self.transport = transport
         self.drift = self.transport.get_drift()
         self.score = self.transport.get_score()
+        self.drift_from_output = self.transport.drift_from_output()
+        self.score_from_output = self.transport.score_from_output()
 
     def __get_sde_diffusion_and_drift(
             self,
@@ -729,9 +797,16 @@ class Sampler:
             return diffusion
 
         inv_cell = th.linalg.inv(self.transport.prior_cell)
-        sde_drift = \
-                lambda x, t, model, score_model, **kwargs: \
-                    self.drift(x, t, model, **kwargs) + diffusion_fn(x, t) * self.score(x, t, score_model, **kwargs)
+
+        def _sde_drift(x, t, model, **kwargs):
+            model_output = model(x, t, **kwargs)
+
+            drift = self.drift_from_output(x, t, model_output)
+            score = self.score_from_output(x, t, model_output)
+
+            return drift + diffusion_fn(x, t) * score
+        
+        sde_drift = _sde_drift
 
         sde_diffusion = diffusion_fn
         return sde_drift, sde_diffusion
@@ -750,9 +825,15 @@ class Sampler:
             return diffusion
 
         inv_cell = th.linalg.inv(self.transport.prior_cell)
-        sde_drift = \
-                lambda x, t, model, score_model, **kwargs: \
-                    -self.drift(x, t, model, **kwargs) + diffusion_fn(x, t) * self.score(x, t, score_model, **kwargs)
+        def _sde_drift(x, t, model, **kwargs):
+            model_output = model(x, t, **kwargs)
+
+            drift = self.drift_from_output(x, t, model_output)
+            score = self.score_from_output(x, t, model_output)
+
+            return -drift + diffusion_fn(x, t) * score
+
+        sde_drift = _sde_drift
 
         return sde_drift
 
@@ -792,7 +873,7 @@ class Sampler:
     def sample_sde(
             self,
             *,
-            sampling_method="Euler",
+            sampling_method="euler",
             diffusion_form="SBDM",
             diffusion_norm=1.0,
             last_step="Mean",
