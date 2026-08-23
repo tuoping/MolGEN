@@ -3,12 +3,12 @@
 
 import glob
 
-ckpt_tag = 100
-inference_steps = 200
+ckpt_tag = 69
+inference_steps = 1000
 
 sampling_method = "euler"
 # sim_ckpt = glob.glob("workdir/fixlatt-sde/run1/epoch=%03d-step=*-val_loss=*.ckpt"%ckpt_tag)[0]
-sim_ckpt = "workdir/fixlatt-sde-onemodel-tsmloss/last.ckpt"
+sim_ckpt = "workdir/bk.r14.fixlatt-sde-onemodel-tsmloss/last.ckpt"
 
 device = "cuda"
 
@@ -16,7 +16,7 @@ import os, torch, tqdm, time
 import numpy as np
 from mdgen.fed_wrapper import EquivariantFEDWrapper
 
-out_dir = f"experiments/smallcell_SiO2_nvt_nowrap/sdetest_TSMloss_quartz_x0varkBT/r2e{ckpt_tag}_{sampling_method}_step{inference_steps}/"
+out_dir = f"experiments/smallcell_SiO2_nvt_nowrap/sdetest_TSMloss_CCCCC_x0varkBT/bck.r14.r1e{ckpt_tag}_{sampling_method}_step{inference_steps}/"
 print("Output folder: ", out_dir)
 os.makedirs(out_dir, exist_ok=True)
 with open(f"{out_dir}/README.md", "w") as fp:
@@ -30,14 +30,15 @@ hparams = ckpt["hyper_parameters"]
 args = hparams['args']
 args.sampling_method = sampling_method
 args.inference_steps = inference_steps
-args.data_dir = "data/SiO2/npt_1600K_1GPa/npt_quartz_dense/npt/"
+args.data_dir = "data/SiO2/npt_TTTTTK_PPPPPGPa/npt_quartz_dense/npt/"
 args.likelihood = "FND"
 args.K_hutchinson_probe = 1
 args.K_hutchinson_probe_chunk = 1
 
+print("Diffusion coefficient:", args.diffusion_norm)
 
 from mdgen.dataset import EquivariantTransformerDataset_phasediagram
-dataset = EquivariantTransformerDataset_phasediagram(args, species=[14, 8], num_species=args.num_species, sim_condition=False, stage="test", T=1600)
+dataset = EquivariantTransformerDataset_phasediagram(args, species=[14, 8], num_species=args.num_species, sim_condition=False, stage="test", T=TTTTT)
 
 
 
