@@ -555,6 +555,63 @@ class EquivariantFEDWrapper(Wrapper):
         return v + self.args.guidance_pref*g
 
     
+    def dump_priors(self, batch, stage='inference'):
+        s_time= time.time()
+        self.stage = stage
+        prep = self.prep_batch(batch)
+
+        latents = prep['latents']
+        B, T, N, D = latents.shape
+        x0std = self.args.x0std
+        if "x0std" in prep:
+            x0std = prep['x0std']
+
+        if self.args.design:
+            # zs_continuous = torch.randn(B, T, N, self.latent_dim - self.args.num_species, device=latents.device)
+            zs_discrete = torch.distributions.Dirichlet(torch.ones(B, N, self.args.num_species, device=latents.device)).sample()
+            zs_discrete = zs_discrete[:, None].expand(-1, T, -1, -1)
+            # zs = torch.cat([zs_continuous, zs_discrete], -1)
+            zs = zs_discrete
+
+            x1 = prep['latents']
+            x_d = torch.zeros(x1.shape[0], x1.shape[1], x1.shape[2], self.args.num_species, device=self.device)
+            xt = torch.cat([x1, x_d], dim=-1)
+            logits = self.model.forward_inference(xt, torch.ones(B, device=self.device),
+                                                  **prep['model_kwargs'])
+            aa_out = torch.argmax(logits, -1)
+            # aa_out = logits
+            vector_out = prep["model_kwargs"]["x_latt"]
+            return vector_out, aa_out
+        else:
+            # from .transport.path import wrap_frac_pos
+            # zs = wrap_frac_pos(torch.randn(B, T, N, D, device=self.device)*self.args.x0std/(N)**(1./3.))
+            # zs = torch.rand(B,T,N,D, device=self.device)
+
+            # m = math.ceil(N ** (1/3))
+            # g = (torch.arange(m, device=self.device) + 0.5) / m
+            # X, Y, Z = torch.meshgrid(g, g, g, indexing='ij')
+            # zs =  torch.stack([X.reshape(-1), Y.reshape(-1), Z.reshape(-1)], dim=1)[:N].unsqueeze(0).expand(T, -1, -1).unsqueeze(0).expand(B, -1, -1, -1)
+            _, zs, zs_mean = self.transport.sample(latents.shape, self.device, x0std)
+            zs = zs[0]
+            zs_mean = zs_mean[0]
+            if self.transport.latt_path:
+                cell0 = self.transport.sample_latt(zs.shape, self.device)
+
+        samples = [zs]
+        if self.args.design:
+            aa_out = torch.argmax(logits, -1)
+            # aa_out = logits
+        else:
+            aa_out = torch.argmax(batch['species'], -1)
+            # aa_out = batch['species']
+        print('Time =', time.time()-s_time)
+
+        if self.transport.latt_path:
+            raise Exception("Lattice path not supported for dump_priors")
+            return samples[0], aa_out, samples[1]
+        else:
+            return samples, aa_out
+    
     def inference(self, batch, stage='inference'):
         s_time= time.time()
         self.stage = stage
@@ -684,8 +741,7 @@ class EquivariantFEDWrapper(Wrapper):
                     with torch.no_grad(): 
                         samples_logp, _samples_logp, samples = sample_fn(
                             zs,
-                            partial(self.model.forward_inference, **prep['model_kwargs']),
-                            **prep["model_kwargs"],
+                            partial(self.model.forward_inference, **prep['model_kwargs'])
                         )
                     _samples_logp = _samples_logp.detach().cpu()
                     samples_logp = samples_logp.detach().cpu()
@@ -746,7 +802,7 @@ class EquivariantFEDWrapper(Wrapper):
         # if self.args.likelihood == "EJE":
         match self.args.likelihood:
             case "EJE":
-                return (samples_logp, samples_logp_var), samples, aa_out, zs-zs_mean
+                return torch.concatenate([samples_logp, samples_logp_var], dim=-1), samples, aa_out, zs-zs_mean
             case "FND":
                 if self.transport.latt_path:
                     raise Exception("FND for latt_path not implemented")
