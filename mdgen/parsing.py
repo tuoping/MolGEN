@@ -82,7 +82,7 @@ def parse_train_args():
     group.add_argument('--discrete_loss_weight', type=float, default=0.5)
     group.add_argument("--dirichlet_flow_temp", type=float, default=1.0)
     group.add_argument('--allow_nan_cfactor', action='store_true')
-    group.add_argument('--x0std', type=float, default=None)
+    group.add_argument('--x0std', type=float, default=1.0)
     group.add_argument('--loss_consistency', action='store_true')
     group.add_argument('--beta_sample_t', type=float, default=0.8)
     group.add_argument("--loss-weight", type=str, default=None, choices=["None", "velocity", "likelihood"])
@@ -106,6 +106,7 @@ def parse_train_args():
     group.add_argument('--cond_interval', type=int, default=None) # for superresolution
     
     ## Equivariant Transformer settings
+    group.add_argument('--k-spring', type=float, default=1)
     group.add_argument('--num_species', type=int, default=10)
     group.add_argument('--embed_dim', type=int, default=128)
     group.add_argument('--edge_dim', type=int, default=128)
