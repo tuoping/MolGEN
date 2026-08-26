@@ -616,12 +616,13 @@ class EquivariantFEDWrapper(Wrapper):
         s_time= time.time()
         self.stage = stage
         prep = self.prep_batch(batch)
-
+        
         latents = prep['latents']
         B, T, N, D = latents.shape
         x0std = self.args.x0std
         if "x0std" in prep:
             x0std = prep['x0std']
+        prep['model_kwargs']['dt'] = torch.ones(B,T,1, dtype=_TORCH_FLOAT_PRECISION, device=latents.device)/self.args.inference_steps
 
         if self.args.design:
             # zs_continuous = torch.randn(B, T, N, self.latent_dim - self.args.num_species, device=latents.device)
