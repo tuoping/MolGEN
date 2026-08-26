@@ -1,5 +1,5 @@
 from argparse import ArgumentParser
-import os
+import os, json
 
 
 def parse_train_args():
@@ -82,7 +82,7 @@ def parse_train_args():
     group.add_argument('--discrete_loss_weight', type=float, default=0.5)
     group.add_argument("--dirichlet_flow_temp", type=float, default=1.0)
     group.add_argument('--allow_nan_cfactor', action='store_true')
-    group.add_argument('--x0std', type=float, default=1.0)
+    group.add_argument('--x0std', type=float, default=None)
     group.add_argument('--loss_consistency', action='store_true')
     group.add_argument('--beta_sample_t', type=float, default=0.8)
     group.add_argument("--loss-weight", type=str, default=None, choices=["None", "velocity", "likelihood"])
@@ -130,6 +130,10 @@ def parse_train_args():
     if args.likelihood == "None":
         args.likelihood = None
     args.pbc = True
+    
+    os.makedirs(f"workdir/{args.run_name}", exist_ok=True)
+    with open(f"workdir/{args.run_name}/args.json", "w") as f:
+        json.dump(vars(args), f, indent=4)
     return args
 
 
