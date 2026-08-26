@@ -230,7 +230,7 @@ def compute_jsd_loss(mu_t_x1, standard_bandwidth_factor, mu_theta, k_max=3):
 
     logm = th.logaddexp(logP_, logQ_) - th.log(th.tensor(2.0, device=mu_t_x1.device))# (B, N, K)
 
-    kl_p_m = (th.exp(logP_-logZ_P[:,:,None]) * (logP_ - logQ_)).sum(dim=-1)  # (B,N)
+    kl_p_m = (th.exp(logP_-logZ_P[:,:,None]) * (logP_ - logm)).sum(dim=-1)  # (B,N)
     kl_q_m = (th.exp(logQ_-logZ_Q[:,:,None]) * (logQ_ - logm)).sum(dim=-1)  # (B,N)
 
     jsd = 0.5 * kl_p_m + 0.5 * kl_q_m  # (B,N)
@@ -428,7 +428,7 @@ class Transport:
         x0_pos = x0_bt.reshape(B, T, N, C)
 
         # Preserve the original x0 container type and any other components.
-        x0 = [x0_pos, *x0[1:]]
+        x0 = [x0_pos]
 
         return x0
 
@@ -732,7 +732,10 @@ class Transport:
             score_fn = lambda x, t, model_output: model_output
         elif self.model_type == ModelType.VELOCITY:
             if self.score_model is None:
-                score_fn = lambda x, t, model_output: self.path_sampler.get_score_from_velocity(model_output, x-self.prior_mean, t, self.x0std, self.prior_cell)
+                if self.prior_mean is not None:
+                    score_fn = lambda x, t, model_output: self.path_sampler.get_score_from_velocity(model_output, x-self.prior_mean, t, self.x0std, self.prior_cell)
+                else:
+                    score_fn = lambda x, t, model_output: self.path_sampler.get_score_from_velocity(model_output, x, t, self.x0std, self.prior_cell)
             else:
                 score_fn = score_sde
         else:
@@ -757,7 +760,10 @@ class Transport:
             score_fn = lambda x, t, model, **model_kwargs: model(x, t, **model_kwargs)
         elif self.model_type == ModelType.VELOCITY:
             if self.score_model is None:
-                score_fn = lambda x, t, model, **model_kwargs: self.path_sampler.get_score_from_velocity(model(x, t, **model_kwargs), x-self.prior_mean, t, self.x0std, self.prior_cell)
+                if self.prior_mean is not None:
+                    score_fn = lambda x, t, model, **model_kwargs: self.path_sampler.get_score_from_velocity(model(x, t, **model_kwargs), x-self.prior_mean, t, self.x0std, self.prior_cell)
+                else:
+                    score_fn = lambda x, t, model, **model_kwargs: self.path_sampler.get_score_from_velocity(model(x, t, **model_kwargs), x, t, self.x0std, self.prior_cell)
             else:
                 score_fn = score_sde
         else:
