@@ -345,6 +345,8 @@ class EquivariantMDGenWrapper(Wrapper):
         ### for schrodinger bridge
         self.transport.x0std = batch['x0std']
         self.transport.prior_cell = batch["cell"]
+        if not self.args.uniform_prior:
+            self.transport.prior_mean = batch['x']
 
         B, T, L, _ = latents.shape
         assert _ == 3, f"latents shape should be (B, T, D, 3), but got {latents.shape}"
@@ -374,7 +376,7 @@ class EquivariantMDGenWrapper(Wrapper):
         
         if self.args.path_type in ["Schrodinger_Linear", "Schrodinger_Linear_onemodel"]:
             data["forces"] = batch['forces'].to(_TORCH_FLOAT_PRECISION)
-
+        data['x0std'] = batch['x0std'].to(_TORCH_FLOAT_PRECISION)
         return data
     
     def general_step(self, batch, stage='train'):
@@ -388,7 +390,9 @@ class EquivariantMDGenWrapper(Wrapper):
         forces = None
         if self.args.path_type in ["Schrodinger_Linear", "Schrodinger_Linear_onemodel"]:
             forces = prep['forces']
-
+        x0std = self.args.x0std
+        if "x0std" in prep:
+            x0std = prep['x0std']
         out_dict = self.transport.training_losses(
             model=self.model,
             x1=prep['latents'],
@@ -396,6 +400,7 @@ class EquivariantMDGenWrapper(Wrapper):
             mask=prep['loss_mask'],
             model_kwargs=prep['model_kwargs'],
             forces = forces,
+            x0std=x0std,
             global_step = self.current_epoch
         )
         self.prefix_log('model_dur', time.time() - start)
@@ -407,7 +412,7 @@ class EquivariantMDGenWrapper(Wrapper):
         if self.args.path_type in ["Schrodinger_Linear", "Schrodinger_Linear_onemodel"]:
             self.prefix_log("loss_dsm", out_dict['loss_dsm'].detach().cpu())
             if self.args.TSMloss:
-                # self.prefix_log("loss_tsm_0", out_dict['loss_tsm_0'].detach().cpu())
+                self.prefix_log("loss_tsm_0", out_dict['loss_tsm_0'].detach().cpu())
                 self.prefix_log("loss_tsm_1", out_dict['loss_tsm_1'].detach().cpu())
             self.prefix_log("loss_path", out_dict['loss_dsm'].detach().cpu()+out_dict['loss_flow'].detach().cpu())
         if self.args.KL == 'symm':
@@ -523,6 +528,8 @@ class EquivariantMDGenWrapper(Wrapper):
         latents = prep['latents']
         B, T, N, D = latents.shape
         x0std = self.args.x0std
+        if "x0std" in prep:
+            x0std = prep['x0std']
 
         if self.args.design:
             # zs_continuous = torch.randn(B, T, N, self.latent_dim - self.args.num_species, device=latents.device)
@@ -566,10 +573,9 @@ class EquivariantMDGenWrapper(Wrapper):
                 case _:
                     raise Exception(f"Wrong likelihood parameter: {self.args.likelihood}")
         else:
-            # if self.args.likelihood == "FND":
+            last_step = getattr(self.args, "last_step", None)
             match self.args.likelihood:
                 case "FND":
-                    last_step = getattr(self.args, "last_step", None)
                     if self.score_model is not None:
                         with torch.no_grad(): sample_fn = self.transport_sampler.sample_sde_likelihood(num_steps=self.args.inference_steps, diffusion_form=self.args.diffusion_form, diffusion_norm=torch.tensor(self.args.diffusion_norm), score_model=partial(self.score_model.forward_inference, **prep['model_kwargs']), last_step=last_step )
                         with torch.no_grad(): sample_fn_reverse = self.transport_sampler.sample_sde_likelihood(num_steps=self.args.inference_steps, diffusion_form=self.args.diffusion_form, diffusion_norm=torch.tensor(self.args.diffusion_norm), reverse=True, score_model=partial(self.score_model.forward_inference, **prep['model_kwargs']), last_step=last_step )
@@ -577,7 +583,8 @@ class EquivariantMDGenWrapper(Wrapper):
                         with torch.no_grad(): sample_fn = self.transport_sampler.sample_sde_likelihood(num_steps=self.args.inference_steps, diffusion_form=self.args.diffusion_form, diffusion_norm=torch.tensor(self.args.diffusion_norm), score_model=partial(self.model.forward_inference, **prep['model_kwargs']), last_step=last_step )
                         with torch.no_grad(): sample_fn_reverse = self.transport_sampler.sample_sde_likelihood(num_steps=self.args.inference_steps, diffusion_form=self.args.diffusion_form, diffusion_norm=torch.tensor(self.args.diffusion_norm), reverse=True, score_model=partial(self.model.forward_inference, **prep['model_kwargs']), last_step=last_step )
                 case None:
-                    with torch.no_grad(): sample_fn = self.transport_sampler.sample_sde(num_steps=self.args.inference_steps, diffusion_form=self.args.diffusion_form, diffusion_norm=torch.tensor(self.args.diffusion_norm), score_model=partial(self.score_model.forward_inference, **prep['model_kwargs']) )
+                    score_model = self.score_model if self.score_model is not None else self.model
+                    with torch.no_grad(): sample_fn = self.transport_sampler.sample_sde(num_steps=self.args.inference_steps, diffusion_form=self.args.diffusion_form, diffusion_norm=torch.tensor(self.args.diffusion_norm), score_model=partial(score_model.forward_inference, **prep['model_kwargs']), last_step=last_step )
                 case _:
                     raise Exception("Wrong likelihood argument (not implemented for SDE): "+self.args.likelihood)
 
@@ -672,6 +679,8 @@ class EquivariantMDGenWrapper(Wrapper):
                 cell_out = samples[1][-1]
                 cell_out = cell_out.detach().requires_grad_(False)
             else:
+                if isinstance(samples, list):
+                    samples = torch.stack(samples)
                 samples = samples *prep["model_kwargs"]['v_mask'] + prep["latents"]*(1-prep["model_kwargs"]['v_mask'])
 
 

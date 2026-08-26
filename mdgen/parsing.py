@@ -1,5 +1,5 @@
 from argparse import ArgumentParser
-import os
+import os, json
 
 
 def parse_train_args():
@@ -73,8 +73,11 @@ def parse_train_args():
     group.add_argument("--last-step", type=str, default=None, choices=['Mean'])
     group.add_argument("--prediction", type=str, default="velocity", choices=["velocity", "score", "noise"])
     group.add_argument("--KL", type=str, default="L1", choices=['forward', 'reverse', 'symm', "L2", 'L1', 'alpha', 'score'])
+    group.add_argument("--pref_symmkl", type=float, default=1)
     group.add_argument("--TSMloss", action='store_true')
     group.add_argument("--pref_TSMloss", type=float, default=1E-2)
+    group.add_argument("--pref_loss_SDE", type=float, default=1E-2)
+    group.add_argument('--uniform_prior', action='store_true')
     group.add_argument("--sampling_method", type=str, default="dopri5", choices=["dopri5", 'rk4', "euler", "Heun"])
     group.add_argument('--K_hutchinson_probe', type=float, default=4)
     group.add_argument('--K_hutchinson_probe_chunk', type=float, default=2)
@@ -106,7 +109,7 @@ def parse_train_args():
     group.add_argument('--cond_interval', type=int, default=None) # for superresolution
     
     ## Equivariant Transformer settings
-    group.add_argument('--num_species', type=int, default=10)
+    group.add_argument('--num_species', type=int, default=80)
     group.add_argument('--embed_dim', type=int, default=128)
     group.add_argument('--edge_dim', type=int, default=128)
     group.add_argument('--num_convs', type=int, default=5)
@@ -129,6 +132,10 @@ def parse_train_args():
     if args.likelihood == "None":
         args.likelihood = None
     args.pbc = True
+    
+    os.makedirs(f"workdir/{args.run_name}", exist_ok=True)
+    with open(f"workdir/{args.run_name}/args.json", "w") as f:
+        json.dump(vars(args), f, indent=4)
     return args
 
 

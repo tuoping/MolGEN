@@ -609,108 +609,278 @@ def lattice_polar_decompose_torch(lattices: torch.Tensor):
 from .transport.path import wrap_frac_pos
 
 class EquivariantTransformerDataset_MaterialProject(torch.utils.data.Dataset):
-    def __init__(self, args, species, num_species, localmask=False, sim_condition=False, stage="train", save_dir = None, sel_idx = None):
+    def __init__(self, args, species, num_species, localmask=False, sim_condition=False, stage="train", save_dir=None, sel_idx=None, calculator=None):
+        self.uniform_prior = getattr(args, "uniform_prior", False)
         traj_dir = args.data_dir
-        cutoff = args.cutoff
-        kB = 8.617*10**-5  # K to eV
+        self.cutoff = args.cutoff
         self.num_species = num_species
-        type_map = {}
-        type_map = {}
-        for idx_e, e in enumerate(species):
-            type_map[idx_e+1] = e 
-
-        self.cutoff = cutoff
-
+        self.species = np.array(species)
         self.num_frames = 1
         self.stage = stage
         self.localmask = localmask
         self.sim_condition = sim_condition
 
-        if self.stage == "save":    
-            from mace.calculators import MACECalculator
-            self.calculator = MACECalculator(
-                model_paths="data/MOF/mofs_v2.model",
-                device="cuda",
-                default_dtype="float64",
-                head='default'
+        self.checkpoint_files = None
+        self.checkpoint_lengths = None
+        self.checkpoint_cumulative_sizes = None
+        self._checkpoint_cache_index = None
+        self._checkpoint_cache = None
+
+        if self.stage == "save":
+            if save_dir is None:
+                raise ValueError("save_dir is required when stage='save'")
+            if calculator is None:
+                from mace.calculators import mace_mp
+                calculator = mace_mp(
+                    model="data/MOF/CoRE_MOF/mace-mh-1.model",
+                    head="omat_pbe",
+                    device="cuda",
+                    default_dtype="float32",
+                    dispersion=True,
+                    dispersion_xc="pbe",
                 )
-        
-            traj_filename = os.path.join(traj_dir, "UiO-66_conventional_456atoms.vasp")
-            atoms_list = [ase.io.read(traj_filename, format="vasp")]
-            atom_encoder = OneHotEncoder(sparse_output=False)
-            atom_encoder.fit(np.array(species).reshape(-1,1))
 
-            dataset = []
-            # for i_atoms, atoms in enumerate(atoms_list):
-            for i in range(1024):
-                atoms = atoms_list[0]
-                # atomic_species = [type_map[int(k)] for k in atoms.get_atomic_numbers()]
-                # atoms.set_atomic_numbers(atomic_species)
-                atoms.calc = self.calculator
-                num_atoms = len(atoms)
-                atoms.wrap()   
-                inv_cell = np.linalg.pinv(np.array(atoms.cell))
-                z = atom_encoder.transform(atoms.numbers.reshape(-1, 1))
-                padded_z = np.zeros((num_atoms, num_species))
-                padded_z[:, :z.shape[1]] = z
-                num_atoms = len(atoms)
-                data = Data(
-                    z          = torch.tensor(padded_z,               dtype=torch.float32),
-                    num_atoms = torch.tensor(num_atoms, dtype=torch.long),
+            import glob
+            import json
 
-                    # pos        = torch.tensor(atoms.positions - np.ones(3)*0.5 @ atoms.cell, dtype=torch.float32),
-                    cell       = torch.tensor(np.array(atoms.cell), dtype=torch.float32),
-                    frac_pos = torch.tensor(atoms.positions @ inv_cell - np.ones(3)*0.5, dtype=torch.float32),
+            # traj_filenames = sorted(glob.glob(os.path.join(traj_dir, "*.cif")))
+            # if not traj_filenames:
+            #     raise ValueError(f"No CIF files found in {traj_dir}")
+            traj_filenames = sorted(glob.glob(os.path.join(traj_dir, "gentraj_*.xyz")))
+            if not traj_filenames:
+                raise ValueError(f"No XYZ files found in {traj_dir}")
 
-                    forces     = torch.tensor(atoms.get_forces(), dtype=torch.float32),
-                    E_formation = None,
-                    E_above_hull = None,
-                    E = torch.tensor(atoms.get_potential_energy(), dtype=torch.float32),
-                )
-                dataset.append(data.clone())
+            os.makedirs(save_dir, exist_ok=True)
+            split_seed = int(getattr(args, "split_seed", 0))
+            checkpoint_batch_size = max(
+                1, int(getattr(args, "checkpoint_batch_size", 8192))
+            )
+            empty_cache_every = max(
+                1, int(getattr(args, "cuda_empty_cache_every", 10))
+            )
+            manifest_path = os.path.join(save_dir, "split_manifest.json")
+            source_names = [os.path.basename(filename) for filename in traj_filenames]
 
-            idx_data = np.arange(len(dataset))
-            np.random.shuffle(idx_data)
-            # n_test = int(len(idx_data) // 10)
-            # n_val = int(len(idx_data) // 10)
-            # test_idx = idx_data[:n_test]
-            # val_idx = idx_data[n_test:n_test+n_val]
-            # train_idx = idx_data[n_test+n_val:]
-
-            torch.save(dataset, f'{save_dir}/test.pt')
-            torch.save(dataset, f'{save_dir}/val.pt')
-            torch.save(dataset, f'{save_dir}/train.pt')
-        else:
-            if stage == "train":
-                self.all_dataset = torch.load(os.path.join(traj_dir, f"{stage}.pt"), weights_only=False)[:512]
-            elif stage == "val":
-                self.all_dataset = torch.load(os.path.join(traj_dir, f"{stage}.pt"), weights_only=False)[:4]
+            if os.path.isfile(manifest_path):
+                with open(manifest_path, "r", encoding="utf-8") as handle:
+                    manifest = json.load(handle)
+                manifest_names = [
+                    name
+                    for split_names in manifest["splits"].values()
+                    for name in split_names
+                ]
+                if set(manifest_names) != set(source_names):
+                    raise RuntimeError(
+                        "The CIF inputs differ from split_manifest.json; use a new "
+                        "save_dir or remove the old checkpoints before rebuilding."
+                    )
+                splits = manifest["splits"]
+                if manifest.get("checkpoint_format") == "batched-v1":
+                    checkpoint_batch_size = int(manifest["checkpoint_batch_size"])
+                elif glob.glob(os.path.join(save_dir, "*", "*.pt")):
+                    raise RuntimeError(
+                        "The save directory contains per-structure checkpoints from "
+                        "the previous format. Use a new save_dir for batched checkpoints."
+                    )
             else:
-                self.all_dataset = torch.load(os.path.join(traj_dir, f"{stage}.pt"), weights_only=False)[:1]
+                # rng = np.random.default_rng(split_seed)
+                # shuffled_names = [source_names[i] for i in rng.permutation(len(source_names))]
+                # n_test = len(shuffled_names) // 10
+                # n_val = len(shuffled_names) // 10
+                # splits = {
+                #     "test": shuffled_names[:n_test],
+                #     "val": shuffled_names[n_test:n_test + n_val],
+                #     "train": shuffled_names[n_test + n_val:],
+                # }
+                shuffled_names = [source_names[i] for i in range(len(source_names))]
+                n_test = len(shuffled_names)
+                n_val = 0
+                splits = {
+                    "test": shuffled_names[:n_test],
+                    # "val": shuffled_names[n_test:n_test + n_val],
+                    # "train": shuffled_names[n_test + n_val:],
+                }
+                manifest = {
+                    "version": 1,
+                    "source_dir": os.path.abspath(traj_dir),
+                    "split_seed": split_seed,
+                    "splits": splits,
+                }
+
+            manifest["checkpoint_format"] = "batched-v1"
+            manifest["checkpoint_batch_size"] = checkpoint_batch_size
+            manifest_tmp = f"{manifest_path}.tmp"
+            with open(manifest_tmp, "w", encoding="utf-8") as handle:
+                json.dump(manifest, handle, indent=2)
+            os.replace(manifest_tmp, manifest_path)
+
+            for split_name in splits:
+                os.makedirs(os.path.join(save_dir, split_name), exist_ok=True)
+
+            atom_encoder = OneHotEncoder(sparse_output=False)
+            atom_encoder.fit(np.array(species).reshape(-1, 1))
+
+            num_total = sum(len(split_names) for split_names in splits.values())
+            num_saved = 0
+            num_existing = 0
+            num_processed = 0
+
+            for split_name, split_names in splits.items():
+                split_dir = os.path.join(save_dir, split_name)
+                for chunk_idx, chunk_start in enumerate(
+                    range(0, len(split_names), checkpoint_batch_size)
+                ):
+                    chunk_names = split_names[
+                        chunk_start:chunk_start + checkpoint_batch_size
+                    ]
+                    checkpoint_path = os.path.join(split_dir, f"{chunk_idx:06d}.pt")
+                    if os.path.isfile(checkpoint_path):
+                        num_existing += len(chunk_names)
+                        continue
+
+                    checkpoint_batch = []
+                    for source_name in chunk_names:
+                        atoms = ase.io.read(os.path.join(traj_dir, source_name), index=-1)
+                        num_atoms = len(atoms)
+                        if num_atoms > 1500:
+                            continue
+                        atoms.calc = calculator
+                        atoms.wrap()
+                        inv_cell = np.linalg.pinv(np.array(atoms.cell))
+                        z = atom_encoder.transform(atoms.numbers.reshape(-1, 1))
+                        padded_z = np.zeros((num_atoms, num_species))
+                        padded_z[:, :z.shape[1]] = z
+
+                        forces = atoms.get_forces()
+                        energy = atoms.get_potential_energy()
+                        checkpoint_batch.append(Data(
+                            z=torch.tensor(padded_z, dtype=torch.float32),
+                            num_atoms=torch.tensor(num_atoms, dtype=torch.long),
+                            cell=torch.tensor(np.array(atoms.cell), dtype=torch.float32),
+                            frac_pos=torch.tensor(
+                                atoms.positions @ inv_cell - np.ones(3) * 0.5,
+                                dtype=torch.float32,
+                            ),
+                            forces=torch.tensor(forces, dtype=torch.float32),
+                            E_formation=None,
+                            E_above_hull=None,
+                            E=torch.tensor(energy, dtype=torch.float32),
+                            source_filename=source_name,
+                        ))
+
+                        num_processed += 1
+                        del atoms, forces, energy
+                        if torch.cuda.is_available() and num_processed % empty_cache_every == 0:
+                            torch.cuda.empty_cache()
+                        if num_processed % 25 == 0:
+                            print(
+                                f"Processed {num_saved + num_existing + len(checkpoint_batch)}"
+                                f"/{num_total} structures"
+                            )
+
+                    # Each file contains up to checkpoint_batch_size samples.
+                    # The atomic rename prevents partial files from being
+                    # mistaken for completed checkpoints after interruption.
+                    checkpoint_tmp = f"{checkpoint_path}.tmp"
+                    torch.save(checkpoint_batch, checkpoint_tmp)
+                    os.replace(checkpoint_tmp, checkpoint_path)
+                    num_saved += len(checkpoint_batch)
+                    print(
+                        f"Saved {split_name} chunk {chunk_idx:06d} with "
+                        f"{len(checkpoint_batch)} samples "
+                        f"({num_saved + num_existing}/{num_total} complete)"
+                    )
+                    del checkpoint_batch
+
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+        else:
+            import glob
+            import json
+
+            checkpoint_dir = os.path.join(traj_dir, stage)
+            manifest_path = os.path.join(traj_dir, "split_manifest.json")
+            if os.path.isdir(checkpoint_dir) and os.path.isfile(manifest_path):
+                with open(manifest_path, "r", encoding="utf-8") as handle:
+                    manifest = json.load(handle)
+                if manifest.get("checkpoint_format") != "batched-v1":
+                    raise RuntimeError(
+                        f"Unsupported checkpoint format in {manifest_path}"
+                    )
+
+                self.checkpoint_files = sorted(
+                    glob.glob(os.path.join(checkpoint_dir, "*.pt"))
+                )
+                checkpoint_batch_size = int(manifest["checkpoint_batch_size"])
+                split_size = len(manifest["splits"][stage])
+                expected_chunks = (
+                    split_size + checkpoint_batch_size - 1
+                ) // checkpoint_batch_size
+                if len(self.checkpoint_files) != expected_chunks:
+                    raise RuntimeError(
+                        f"Incomplete {stage} checkpoints: found "
+                        f"{len(self.checkpoint_files)} of {expected_chunks} chunks"
+                    )
+
+                self.checkpoint_lengths = [
+                    min(checkpoint_batch_size, split_size - chunk_idx * checkpoint_batch_size)
+                    for chunk_idx in range(expected_chunks)
+                ]
+                self.checkpoint_cumulative_sizes = np.cumsum(self.checkpoint_lengths)
+                self.all_dataset = None
+            else:
+                self.all_dataset = torch.load(
+                    os.path.join(traj_dir, f"{stage}.pt"), weights_only=False
+                )
 
 
     def __len__(self):
+        if self.checkpoint_files is not None:
+            return int(self.checkpoint_cumulative_sizes[-1])
         return len(self.all_dataset)
-    
-    def __getitem__(self, idx):
-        idx = idx % len(self.all_dataset)
-        dataset = [self.all_dataset[idx]]
-        cell = torch.stack([data.cell for data in dataset])
-        inv_cell = torch.linalg.inv(cell)
-        x = torch.stack([data.frac_pos for data in dataset]) 
-        x += torch.randn(x.shape) @ inv_cell
-        # assert torch.all(x>=0)
-        # assert torch.all(x<=1)
-        T,L,_ = x.shape
-        
 
-        _mask = torch.ones([T,L]) # T,L
-        _v_mask = _mask.unsqueeze(-1).expand(-1,-1,3) # T,L,3
-        _h_mask = _mask.unsqueeze(-1).expand(-1,-1,self.num_species) # T,L,num_species
+    def __getitem__(self, idx, inference=False):
+        idx = idx % len(self)
+        if self.checkpoint_files is not None:
+            chunk_idx = int(np.searchsorted(
+                self.checkpoint_cumulative_sizes, idx, side="right"
+            ))
+            chunk_start = (
+                0 if chunk_idx == 0
+                else int(self.checkpoint_cumulative_sizes[chunk_idx - 1])
+            )
+            if self._checkpoint_cache_index != chunk_idx:
+                self._checkpoint_cache = torch.load(
+                    self.checkpoint_files[chunk_idx], weights_only=False
+                )
+                if len(self._checkpoint_cache) != self.checkpoint_lengths[chunk_idx]:
+                    raise RuntimeError(
+                        f"Checkpoint length mismatch in {self.checkpoint_files[chunk_idx]}"
+                    )
+                self._checkpoint_cache_index = chunk_idx
+            data = self._checkpoint_cache[idx - chunk_start]
+        else:
+            data = self.all_dataset[idx]
+        dataset = [data]
+        cell = torch.stack([data.cell for data in dataset])
+
+        x = torch.stack([data.frac_pos for data in dataset])
+        if self.uniform_prior:
+            inv_cell = torch.linalg.inv(cell)
+            noise = torch.randn(x.shape)
+            x += noise @ inv_cell
+
+        T,L,_ = x.shape
 
         dataset_z = torch.stack([data.z for data in dataset])
         padded_z = torch.stack([ torch.zeros((*data.z.shape[:-1], self.num_species)) for data in dataset]) # T,L,num_species
         padded_z[:,:,:dataset_z.shape[-1]] = dataset_z
+
+        # labels = torch.argmax(padded_z, dim=2)  # T,L
+        # atomic_numbers = torch.tensor([self.species[label] for label in labels.flatten()]).reshape(T,L)  # T,L
+        _mask = torch.ones([T,L]) # T,L
+        _v_mask = _mask.unsqueeze(-1).expand(-1,-1,3) # T,L,3
+        _h_mask = _mask.unsqueeze(-1).expand(-1,-1,self.num_species) # T,L,num_species
 
         if self.localmask:
             raise Exception("Yet to implement localmask")
@@ -718,20 +888,47 @@ class EquivariantTransformerDataset_MaterialProject(torch.utils.data.Dataset):
             mask = _mask
             v_mask = _v_mask
             h_mask = _h_mask
+        if self.uniform_prior:
+            return {
+                "name": "Material Project",
+                "species": padded_z,
+                "x": x,
+                "forces": -noise,
+                "cell": cell,
+                "x0std": torch.ones(T) * torch.linalg.det(cell)**(1./3),
+                "num_atoms": torch.stack([data.num_atoms for data in dataset]),
+                "mask": mask,
+                "v_mask": v_mask,
+                "h_mask": h_mask,
+            }
+        else:
+            if inference:
+                return {
+                    "name": "Material Project",
+                    "species": padded_z,
+                    "x": x,
+                    "forces": torch.stack([data.forces for data in dataset]),
+                    "cell": cell,
+                    "x0std": torch.zeros(T),
+                    "num_atoms": torch.stack([data.num_atoms for data in dataset]),
+                    "mask": mask,
+                    "v_mask": v_mask,
+                    "h_mask": h_mask,
+                }
+            else:
+                return {
+                    "name": "Material Project",
+                    "species": padded_z,
+                    "x": x,
+                    "forces": torch.stack([data.forces for data in dataset]),
+                    "cell": cell,
+                    "x0std": torch.ones(T),
+                    "num_atoms": torch.stack([data.num_atoms for data in dataset]),
+                    "mask": mask,
+                    "v_mask": v_mask,
+                    "h_mask": h_mask,
+                }
 
-        return {
-            "name": "Material Project",
-            "species": padded_z,
-            "x": x,
-            "forces": torch.stack([data.forces for data in dataset]),
-            "cell": cell,
-            "x0std": cell,
-            "num_atoms": torch.stack([data.num_atoms for data in dataset]),
-            "mask": mask,
-            "v_mask": v_mask,
-            "h_mask": h_mask,
-        }
-    
 
 try:
     from deepmd.calculator import DP
