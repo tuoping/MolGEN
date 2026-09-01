@@ -3,12 +3,12 @@
 
 import glob
 
-ckpt_tag = 37
+ckpt_tag = 10
 inference_steps = 10
 
 sampling_method = "rk4"
 # sim_ckpt = "workdir/fixlatt/run10.bk006.Tcv_l1/last.ckpt" # r10 e=111(actually 193)
-sim_ckpt = "workdir/fixlatt/run13.bk006.Tcv_l1/last.ckpt" # r13 e=37
+sim_ckpt = "workdir/kspring4_fixlatt/run1/last.ckpt" # r13 e=37
 
 device = "cuda"
 
@@ -16,7 +16,7 @@ import os, torch, tqdm, time
 import numpy as np
 from mdgen.fed_wrapper import EquivariantFEDWrapper
 
-out_dir = f"experiments/smallcell_SiO2_nvt_nowrap/TTTTTKPPPPPGPa/test_CCCCC_x0varkBT/Tcv3l1_r13e{ckpt_tag}_{sampling_method}_step{inference_steps}/"
+out_dir = f"experiments/smallcell_SiO2_nvt_nowrap/kspring4/TTTTTKPPPPPGPa/test_CCCCC_x0varkBT/Tcv3l1_r1e{ckpt_tag}_{sampling_method}_step{inference_steps}/"
 print("Output folder: ", out_dir)
 os.makedirs(out_dir, exist_ok=True)
 with open(f"{out_dir}/README.md", "w") as fp:
@@ -33,7 +33,7 @@ args.inference_steps = inference_steps
 args.data_dir = "data/SiO2/npt_TTTTTK_PPPPPGPa/npt_CCCCC_dense/npt/"
 args.likelihood = "EJE"
 args.K_hutchinson_probe = 16
-args.K_hutchinson_probe_chunk = 4
+args.K_hutchinson_probe_chunk = 2
 
 
 from mdgen.dataset import EquivariantTransformerDataset_phasediagram
@@ -87,7 +87,7 @@ all_rollout_atoms = []
 all_rollout_atoms_ref = []
 start = time.time()
 all_logp = []
-for i_rollout in range(int(sys.argv[1]), 5000):
+for i_rollout in range(int(sys.argv[1]), 5):
     # idx = idx_rollouts[i_rollout]
     idx = i_rollout
     filename = os.path.join(out_dir, f"gentraj_{idx}.xyz")

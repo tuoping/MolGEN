@@ -533,8 +533,8 @@ class Transport:
                             raise Exception("Symm loss here doesn't work with Brownian path")
                         cell = model_kwargs['cell'].view(B*T,3,3)
                         terms['loss_l1'] = mean_flat((model_output.view(B*T,N,3)@cell - ut.view(B*T,N,3)@cell).norm(dim=-1), mask.view(B*T,N,3)[:,:,0])
-                        
-                        jsd = compute_jsd_loss(xt.view(B*T,N,3), 1, (x0[0]+model_output*t[:,None,None,None]).view(B*T,N,3), 3) * (th.det(cell)[:,None])**(2./3.)  # (B,N)
+                        ### the bandwidth factor should be 1/(1-t), which approaches infinity as t approaches 1.
+                        jsd = compute_jsd_loss(xt.view(B*T,N,3), t.exp(), (x0[0]+model_output*t[:,None,None,None]).view(B*T,N,3), 3) * (th.det(cell)[:,None])**(2./3.)  # (B,N)
                         terms['loss_symmkl'] = mean_flat(jsd, mask.view(B*T,N,3)[:,:,0])
                         terms['loss_flow'] = terms['loss_symmkl'] * self.args.pref_symmkl + terms['loss_l1'] 
                     case "L1":

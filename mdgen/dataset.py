@@ -762,7 +762,7 @@ class EquivariantTransformerDataset_phasediagram(torch.utils.data.Dataset):
             self.calculator = DP(model="data/SiO2/DP_R2SCAN.pb")
         
             traj_filename = os.path.join(traj_dir, "dump.equi")
-            atoms_list = ase.io.read(traj_filename, index=":", format="lammps-dump-text")[100:]
+            atoms_list = ase.io.read(traj_filename, index=":", format="lammps-dump-text")[100::10]
             atom_encoder = OneHotEncoder(sparse_output=False)
             atom_encoder.fit(np.array(species).reshape(-1,1))
             
@@ -804,6 +804,7 @@ class EquivariantTransformerDataset_phasediagram(torch.utils.data.Dataset):
             np.random.shuffle(idx_data)
             n_test = int(len(idx_data) // 10)
             n_val = int(len(idx_data) // 10)
+            print(len(idx_data), n_test, n_val)
             test_idx = idx_data[:n_test]
             val_idx = idx_data[n_test:n_test+n_val]
             train_idx = idx_data[n_test+n_val:]

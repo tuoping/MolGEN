@@ -3,8 +3,8 @@
 
 import glob
 
-ckpt_tag = 79
-inference_steps = 100
+ckpt_tag = 16
+inference_steps = 21
 
 sampling_method = "rk4"
 sim_ckpt = glob.glob("workdir/default/epoch=%03d-step=*-val_loss=*.ckpt"%ckpt_tag)[0]

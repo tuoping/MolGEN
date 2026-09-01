@@ -10,4 +10,4 @@ sed \
     -e "s/TTTTT/${t}/g" \
     -e "s/PPPPP/${p}/g" \
     -e "s/CCCCC/${c}/g" \
-    FND-inference.py > "$f"
+    EJE-inference.py > "$f"
