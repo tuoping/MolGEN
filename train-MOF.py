@@ -11,6 +11,8 @@ from mdgen.equivariant_wrapper import EquivariantMDGenWrapper
 from pytorch_lightning.callbacks import ModelCheckpoint, ModelSummary
 import pytorch_lightning as pl
 
+os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
+
 class ResetLrCallback(pl.Callback):
     def __init__(self, new_lr: float):
         self.new_lr = new_lr
@@ -30,7 +32,14 @@ torch.set_float32_matmul_precision('medium')
 # from torch.utils.data import ConcatDataset
 # from torch.utils.data import Subset
 
-train_dataset = EquivariantTransformerDataset_MaterialProject(args, species=[1, 6, 8, 40], num_species=args.num_species, sim_condition=False, stage="train")
+# train_dataset = EquivariantTransformerDataset_MaterialProject(args, species=[1, 6, 8, 40], num_species=args.num_species, sim_condition=False, stage="train")
+train_dataset = EquivariantTransformerDataset_MaterialProject(args, species=[1, 3, 5, 6, 7, 8, 9, 11, 12, 13, 14, 15, 16, 17, 19, 20, 21,
+                                                                    22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 37, 39, 40,
+                                                                    41, 42, 44, 45, 46, 47, 48, 49, 51, 53, 55, 57, 58, 59, 60, 62, 63,
+                                                                    64, 65, 66, 67, 68, 69, 70, 71, 72, 74, 77, 78, 79, 80, 82, 83, 90,
+                                                                    92, 93, 94], 
+                                                                    num_species=args.num_species, sim_condition=False, stage="train")
+# train_dataset = EquivariantTransformerDataset_MaterialProject(args, species=[47, 13, 6, 29, 26, 1, 53, 25, 7, 8, 15, 23, 30], num_species=args.num_species, sim_condition=False, stage="train")
 num_atoms_list = [int(max(train_dataset[i]["num_atoms"])) for i in range(len(train_dataset))]
 trainsampler = BucketBatchSampler(train_dataset, num_atoms_list, batch_size=args.batch_size)
 
@@ -38,7 +47,12 @@ if args.overfit:
     val_dataset = train_dataset
     valsampler = trainsampler
 else:
-    val_dataset = EquivariantTransformerDataset_MaterialProject(args, species=[1, 6, 8, 40], num_species=args.num_species, sim_condition=False, stage="val")
+    val_dataset = EquivariantTransformerDataset_MaterialProject(args, species=[1, 3, 5, 6, 7, 8, 9, 11, 12, 13, 14, 15, 16, 17, 19, 20, 21,
+                                                                    22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 37, 39, 40,
+                                                                    41, 42, 44, 45, 46, 47, 48, 49, 51, 53, 55, 57, 58, 59, 60, 62, 63,
+                                                                    64, 65, 66, 67, 68, 69, 70, 71, 72, 74, 77, 78, 79, 80, 82, 83, 90,
+                                                                    92, 93, 94], 
+                                                                    num_species=args.num_species, sim_condition=False, stage="val")
     num_atoms_list = [int(max(val_dataset[i]["num_atoms"])) for i in range(len(val_dataset))]
     valsampler = BucketBatchSampler(val_dataset, num_atoms_list, batch_size=args.batch_size)
 
@@ -108,7 +122,7 @@ if args.path_type in ["Schrodinger_Linear", "Schrodinger_Linear_onemodel"]:
     callbacks_fn = [
         ModelCheckpoint(
             dirpath=os.environ["MODEL_DIR"], 
-            filename="{epoch:03d}-{step:07d}-{val_loss_path:.4f}",
+            filename="{epoch:03d}-{step:07d}-{val_loss:.4f}",
             monitor="val_loss",
             save_top_k=1,
             save_last=True
