@@ -569,13 +569,14 @@ class EquivariantTransformer_dpm(EquivariantTransformer):
         scaler_out, vector_out, _lattice_tensor_out = self._graph_forward(species.reshape(-1,self.num_species), edge_index, edge_attr, edge_vec, t.reshape(-1,1), dt.reshape(-1,1), cv, out_cond)
         lattice_vec = cell.view(B*T,3,3)
         inv_lattice = torch.linalg.inv(lattice_vec)
-        vector_out = vector_out.view(B*T,N,3)
-        frac_vector_out = vector_out @ inv_lattice
+
         if self.design:
             return scaler_out.view(B, T, N, -1)
         elif self.potential_model:
             return scaler_out.reshape(B, T, N, -1)
         else:
+            vector_out = vector_out.view(B*T,N,3)
+            frac_vector_out = vector_out @ inv_lattice
             return frac_vector_out.reshape(B, T, N, 3), _lattice_tensor_out.reshape(B, T, N, 3, 3).mean(dim=2)
         
     def forward(self, x: Tensor, t: Tensor, cv: Tensor=None,
@@ -593,7 +594,7 @@ class EquivariantTransformer_dpm(EquivariantTransformer):
         elif self.potential_model:
             if v_mask is not None:
                 x = x*v_mask+x1*(1-v_mask)
-            scaler_out = self.inference(x, t, cell, num_atoms, aatype=aatype, fragments_idx=fragments_idx)
+            scaler_out = self.inference(x, t, cv, cell, num_atoms, dt, aatype=aatype, fragments_idx=fragments_idx)
             assert (torch.where(v_mask.ravel() == 0)[0]).size(0) + (torch.where((1-v_mask).ravel() == 0)[0]).size(0) == (v_mask.ravel()).size(0)
             return scaler_out
         elif self.latt_path:

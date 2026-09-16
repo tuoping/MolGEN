@@ -197,7 +197,7 @@ def lattice_polar_decompose_torch(lattices: th.Tensor):
 from .path import wrap_frac_pos
 import math
 
-def compute_jsd_loss(mu_t_x1, standard_bandwidth_factor, mu_theta, k_max=3):
+def compute_jsd_loss(mu_t_x1, standard_bandwidth_factor, mu_theta, k_max=1):
     """
     Monte Carlo estimate of the full JSD:
     JSD(p || q) = 0.5 * E_p[log(p/m)] + 0.5 * E_q[log(q/m)]
@@ -210,10 +210,10 @@ def compute_jsd_loss(mu_t_x1, standard_bandwidth_factor, mu_theta, k_max=3):
         k_max: int - number of periodic images per dimension
     """
     x = 0.0
-    if isinstance(standard_bandwidth_factor, th.Tensor):
-        bandwidth_factor = standard_bandwidth_factor[:, None, None] ** 2  # scalar or (B,)
-    else:
-        bandwidth_factor = standard_bandwidth_factor ** 2
+    # if isinstance(standard_bandwidth_factor, th.Tensor):
+    #     bandwidth_factor = standard_bandwidth_factor ** 2  # scalar or (B,)
+    # else:
+    #     bandwidth_factor = standard_bandwidth_factor ** 2
 
     ks = th.arange(-k_max, k_max + 1, device=mu_t_x1.device)
     kx, ky, kz = th.meshgrid(ks, ks, ks, indexing='ij')
@@ -221,20 +221,26 @@ def compute_jsd_loss(mu_t_x1, standard_bandwidth_factor, mu_theta, k_max=3):
 
     # Broadcast: mu_t_x1 is (B, N, 3), k_vecs is (K, 3)
     # diff: (B, N, K, 3)
-    diff = (x - mu_t_x1[:, :, None, :] + k_vecs[None, None, :, :])   # @cell[:, None, :, :]
+    diff = th.einsum(
+        "bnki,bij->bnkj",
+        x - mu_t_x1[:, :, None, :] + k_vecs[None, None, :, :], standard_bandwidth_factor)   # @cell[:, None, :, :]
     sq_norms = th.sum(diff ** 2, dim=-1)  # (B, N, K)
-    logZ_P = th.logsumexp(-sq_norms / (2) * bandwidth_factor, dim=-1) # (B, N)
-    logP_ = (-sq_norms / (2) * bandwidth_factor) # - logZ_P[:,:,None]  # (B, N, K)
+    # logZ_P = th.logsumexp(-sq_norms / (2), dim=-1) # (B, N)
+    logP_ = (-sq_norms / (2)) # - logZ_P[:,:,None]  # (B, N, K)
 
-    pred_diff = (x - mu_theta[:, :, None, :] + k_vecs[None, None, :, :])   # @cell  # (B, None, N, 3)
+    pred_diff = th.einsum(
+        "bnki,bij->bnkj",
+        x - mu_theta[:, :, None, :] + k_vecs[None, None, :, :], standard_bandwidth_factor)   # @cell  # (B, None, N, 3)
     pred_sq_norms = th.sum(pred_diff ** 2, dim=-1) # (B, N, K)
-    logZ_Q = th.logsumexp(-pred_sq_norms / (2) * bandwidth_factor, dim=-1) # (B, N)
-    logQ_ = (-pred_sq_norms) / (2) * bandwidth_factor # - logZ_Q[:,:,None]  # (B, N, K)
+    # logZ_Q = th.logsumexp(-pred_sq_norms / (2), dim=-1) # (B, N)
+    logQ_ = (-pred_sq_norms) / (2) # - logZ_Q[:,:,None]  # (B, N, K)
 
     logm = th.logaddexp(logP_, logQ_) - th.log(th.tensor(2.0, device=mu_t_x1.device))# (B, N, K)
 
-    kl_p_m = (th.exp(logP_-logZ_P[:,:,None]) * (logP_ - logm)).sum(dim=-1)  # (B,N)
-    kl_q_m = (th.exp(logQ_-logZ_Q[:,:,None]) * (logQ_ - logm)).sum(dim=-1)  # (B,N)
+    # kl_p_m = (th.exp(logP_-logZ_P[:,:,None]) * (logP_ - logm)).sum(dim=-1)  # (B,N)
+    # kl_q_m = (th.exp(logQ_-logZ_Q[:,:,None]) * (logQ_ - logm)).sum(dim=-1)  # (B,N)
+    kl_p_m = (th.exp(logP_) * (logP_ - logm)).sum(dim=-1)  # (B,N)
+    kl_q_m = (th.exp(logQ_) * (logQ_ - logm)).sum(dim=-1)  # (B,N)
 
     jsd = 0.5 * kl_p_m + 0.5 * kl_q_m  # (B,N)
     return jsd
@@ -541,15 +547,6 @@ class Transport:
         - x1: datapoint
         - model_kwargs: additional arguments for the model
         """
-        #if global_step < 20:
-        #    self.pref_symmkl = 0.1*global_step
-        #    self.pref_alpha_div = 0.9 - 0.6*global_step/20
-        #else:
-        self.pref_symmkl = 1.
-        self.pref_alpha_div = 0.3
-        self.pref_reversekl = 0.3
-        assert self.pref_alpha_div >=0 and self.pref_alpha_div <= 1, "  ".join([str(self.pref_alpha_div), str(global_step)])
-
 
         if model_kwargs == None:
             model_kwargs = {}
@@ -622,12 +619,12 @@ class Transport:
                 # if self.args.KL == 'symm':
                 match self.args.KL:
                     case "symm":
-                        if self.args.path_type in ["Schrodinger_Linear", "Schrodinger_Linear_onemodel"]:
-                            raise Exception("Symm loss here doesn't work with Brownian path")
+                        # if self.args.path_type in ["Schrodinger_Linear", "Schrodinger_Linear_onemodel"]:
+                        #     raise Exception("Symm loss here doesn't work with Brownian path")
                         cell = model_kwargs['cell'].view(B*T,3,3)
                         terms['loss_l1'] = mean_flat((model_output.view(B*T,N,3)@cell - ut.view(B*T,N,3)@cell).norm(dim=-1), mask.view(B*T,N,3)[:,:,0])
                         
-                        jsd = compute_jsd_loss(xt.view(B*T,N,3), 1, (x0[0]+model_output*t[:,None,None,None]).view(B*T,N,3), 3) * (th.det(cell)[:,None])**(2./3.)  # (B,N)
+                        jsd = compute_jsd_loss(xt.view(B*T,N,3), cell, (x0[0]+model_output*t[:,None,None,None]).view(B*T,N,3), 1)   # (B,N)
                         terms['loss_symmkl'] = mean_flat(jsd, mask.view(B*T,N,3)[:,:,0])
                         terms['loss_flow'] = terms['loss_symmkl'] * self.args.pref_symmkl + terms['loss_l1'] 
                     case "L1":

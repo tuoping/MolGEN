@@ -606,11 +606,137 @@ def lattice_polar_decompose_torch(lattices: torch.Tensor):
     k = decompose_symmetric_matrix(S)
     return k
 
-from .transport.path import wrap_frac_pos
+
+from .spring import NNSpring
+class EquivariantTransformerDataset_FF(torch.utils.data.Dataset):
+    def __init__(self, args, species, num_species, localmask=False, sim_condition=False, stage="train", save_dir=None, sel_idx=None, calculator=None):
+        traj_dir = args.data_dir
+        self.cutoff = args.cutoff
+        self.num_species = num_species
+        self.species = np.array(species)
+        self.num_frames = 1
+        self.stage = stage
+        self.localmask = localmask
+        self.sim_condition = sim_condition
+
+        self.checkpoint_files = None
+        self.checkpoint_lengths = None
+        self.checkpoint_cumulative_sizes = None
+        self._checkpoint_cache_index = None
+        self._checkpoint_cache = None
+
+        import glob
+        import json
+
+        checkpoint_dir = os.path.join(traj_dir, stage)
+        manifest_path = os.path.join(traj_dir, "split_manifest.json")
+        if os.path.isdir(checkpoint_dir) and os.path.isfile(manifest_path):
+            with open(manifest_path, "r", encoding="utf-8") as handle:
+                manifest = json.load(handle)
+            if manifest.get("checkpoint_format") != "batched-v1":
+                raise RuntimeError(
+                    f"Unsupported checkpoint format in {manifest_path}"
+                )
+
+            self.checkpoint_files = sorted(
+                glob.glob(os.path.join(checkpoint_dir, "*.pt"))
+            )
+            checkpoint_batch_size = int(manifest["checkpoint_batch_size"])
+            split_size = len(manifest["splits"][stage])
+            expected_chunks = (
+                split_size + checkpoint_batch_size - 1
+            ) // checkpoint_batch_size
+            if len(self.checkpoint_files) != expected_chunks:
+                raise RuntimeError(
+                    f"Incomplete {stage} checkpoints: found "
+                    f"{len(self.checkpoint_files)} of {expected_chunks} chunks"
+                )
+
+            self.checkpoint_lengths = [
+                min(checkpoint_batch_size, split_size - chunk_idx * checkpoint_batch_size)
+                for chunk_idx in range(expected_chunks)
+            ]
+            self.checkpoint_cumulative_sizes = np.cumsum(self.checkpoint_lengths)
+            self.all_dataset = None
+        else:
+            self.all_dataset = torch.load(
+                os.path.join(traj_dir, f"{stage}.pt"), weights_only=False
+            )
+
+
+    def __len__(self):
+        if self.checkpoint_files is not None:
+            return int(self.checkpoint_cumulative_sizes[-1])
+        return len(self.all_dataset)
+
+    def __getitem__(self, idx, inference=False):
+        idx = idx % len(self)
+        if self.checkpoint_files is not None:
+            chunk_idx = int(np.searchsorted(
+                self.checkpoint_cumulative_sizes, idx, side="right"
+            ))
+            chunk_start = (
+                0 if chunk_idx == 0
+                else int(self.checkpoint_cumulative_sizes[chunk_idx - 1])
+            )
+            if self._checkpoint_cache_index != chunk_idx:
+                self._checkpoint_cache = torch.load(
+                    self.checkpoint_files[chunk_idx], weights_only=False
+                )
+                if len(self._checkpoint_cache) != self.checkpoint_lengths[chunk_idx]:
+                    raise RuntimeError(
+                        f"Checkpoint length mismatch in {self.checkpoint_files[chunk_idx]}"
+                    )
+                self._checkpoint_cache_index = chunk_idx
+            data = self._checkpoint_cache[idx - chunk_start]
+        else:
+            data = self.all_dataset[idx]
+        dataset = [data]
+        cell = torch.stack([data.cell for data in dataset])
+
+        x = torch.stack([data.frac_pos for data in dataset])
+        nn_spring = NNSpring(x, cell)
+        inv_cell = torch.linalg.inv(cell)
+        noise = torch.randn(x.shape) * 8.
+        x += noise @ inv_cell
+        forces = nn_spring.build_force(x)
+
+        T,L,_ = x.shape
+
+        dataset_z = torch.stack([data.z for data in dataset])
+        padded_z = torch.stack([ torch.zeros((*data.z.shape[:-1], self.num_species)) for data in dataset]) # T,L,num_species
+        padded_z[:,:,:dataset_z.shape[-1]] = dataset_z
+
+        # labels = torch.argmax(padded_z, dim=2)  # T,L
+        # atomic_numbers = torch.tensor([self.species[label] for label in labels.flatten()]).reshape(T,L)  # T,L
+        _mask = torch.ones([T,L]) # T,L
+        _v_mask = _mask.unsqueeze(-1).expand(-1,-1,3) # T,L,3
+        _h_mask = _mask.unsqueeze(-1).expand(-1,-1,self.num_species) # T,L,num_species
+
+        if self.localmask:
+            raise Exception("Yet to implement localmask")
+        else:
+            mask = _mask
+            v_mask = _v_mask
+            h_mask = _h_mask
+
+        return {
+            "name": "Material Project",
+            "species": padded_z,
+            "x": x,
+            "forces": forces,
+            "cell": cell,
+            "num_atoms": torch.stack([data.num_atoms for data in dataset]),
+            "mask": mask,
+            "v_mask": v_mask,
+            "h_mask": h_mask,
+        }
+
 
 class EquivariantTransformerDataset_MaterialProject(torch.utils.data.Dataset):
     def __init__(self, args, species, num_species, localmask=False, sim_condition=False, stage="train", save_dir=None, sel_idx=None, calculator=None):
         self.uniform_prior = getattr(args, "uniform_prior", False)
+        self.target_std = getattr(args, "target_std")
         traj_dir = args.data_dir
         self.cutoff = args.cutoff
         self.num_species = num_species
@@ -866,10 +992,11 @@ class EquivariantTransformerDataset_MaterialProject(torch.utils.data.Dataset):
 
         x = torch.stack([data.frac_pos for data in dataset])
         if self.uniform_prior:
+            nn_spring = NNSpring(x, cell)
             inv_cell = torch.linalg.inv(cell)
-            noise = torch.randn(x.shape)
+            noise = torch.randn(x.shape) * self.target_std
             x += noise @ inv_cell
-
+            forces = nn_spring.build_force(x)
         T,L,_ = x.shape
 
         dataset_z = torch.stack([data.z for data in dataset])
@@ -893,7 +1020,7 @@ class EquivariantTransformerDataset_MaterialProject(torch.utils.data.Dataset):
                 "name": "Material Project",
                 "species": padded_z,
                 "x": x,
-                "forces": -noise,
+                "forces": forces,
                 "cell": cell,
                 "x0std": torch.ones(T) * torch.linalg.det(cell)**(1./3),
                 "num_atoms": torch.stack([data.num_atoms for data in dataset]),

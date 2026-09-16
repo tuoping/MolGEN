@@ -78,6 +78,7 @@ def parse_train_args():
     group.add_argument("--pref_TSMloss", type=float, default=1E-2)
     group.add_argument("--pref_loss_SDE", type=float, default=1E-2)
     group.add_argument('--uniform_prior', action='store_true')
+    group.add_argument('--target-std', type=float, default=1.)
     group.add_argument("--sampling_method", type=str, default="dopri5", choices=["dopri5", 'rk4', "euler", "Heun"])
     group.add_argument('--K_hutchinson_probe', type=float, default=4)
     group.add_argument('--K_hutchinson_probe_chunk', type=float, default=2)
