@@ -81,8 +81,8 @@ def plot_1losses(dir_dir_b1024, key="\'train_loss\'", c_key=None, after_epoch=No
         
         
     ### remove the loss value when restart training 
-    stable_idx = np.arange(len(alltrainsteps_dir_b1024), dtype=int)
-    # stable_idx = np.where((np.abs(np.array(alltrainsteps_dir_b1024)) < 500) )[0]
+    # stable_idx = np.arange(len(alltrainsteps_dir_b1024), dtype=int)
+    stable_idx = np.where((np.abs(np.array(alltrainlosses_dir_b1024)) > 0) )[0]
     alltrainlosses_dir_b1024 = np.array(alltrainlosses_dir_b1024)[stable_idx]
     alltrainsteps_dir_b1024 = np.array(alltrainsteps_dir_b1024)[stable_idx]
     allcolor = np.array(allcolor)[stable_idx]

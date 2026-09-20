@@ -24,6 +24,7 @@ class sde:
         reverse_drift = None,
         score = None,
         cell = th.eye(3).unsqueeze(0).unsqueeze(0),
+        logit_flow = None,
         num_corrector_step = 0,
     ):
         # assert t0 < t1, "SDE sampler has to be in forward time"
@@ -38,6 +39,7 @@ class sde:
         self.score = score
         self.num_corrector_step = num_corrector_step
         self.cell = cell
+        self.logit_flow = logit_flow
 
     def __Euler_Maruyama_step(self, x, mean_x, t, model, score_model, **model_kwargs):
         w_cur = th.randn(x.size()).to(x)
@@ -130,6 +132,26 @@ class sde:
                 samples.append(x)
         return samples
 
+
+    def sample_with_logits(self, init, model, score_model, **model_kwargs):
+        """forward loop of sde"""
+        a, x = init
+        model_kwargs['aatype'] = a
+        mean_x = init[1]
+        
+        samples = []
+        a_samples = []
+        sampler = self.__forward_fn()
+        with th.inference_mode():
+            for ti in self.t[:-1]:
+                x, mean_x = sampler(x, mean_x, ti, model, score_model, **model_kwargs)
+                samples.append(x)
+                a += self.logit_flow()*self.dt
+                model_kwargs['aatype'] = a
+                a_samples.append(a)
+                print(ti, a[0,0,0].max(), th.argmax(a[0,0,0]), a[0,0,1].max(), th.argmax(a[0,0,1]))
+        return samples, a_samples
+
     def sample_likelihood(self, init, model, score_model, **model_kwargs):
         """forward loop of sde"""
         x = init
@@ -154,6 +176,36 @@ class sde:
             # print(f"Step {ti:.3f} took {time.time() - t_start:.3f} seconds")
         return samples, logprob_samples, _logprob_samples
 
+
+    def sample_likelihood_and_logits(self, init, model, score_model, **model_kwargs):
+        """forward loop of sde"""
+        a, x = init
+        model_kwargs['aatype'] = a
+        mean_x = init[1]
+        assert not th.allclose(mean_x, th.zeros_like(mean_x))
+        samples = []
+        a_samples = []
+        logprob_samples = th.zeros(x.shape[:2]).to(x.device)
+        _logprob_samples = th.zeros(x.shape[:2]).to(x.device)
+        sampler = self.__forward_fn()
+        # import time
+        for idx_ti, ti in enumerate(self.t[:-1]):
+            # t_start = time.time()
+            with th.no_grad():
+                x, mean_x, logprob_x, _logprob_x = sampler(x, mean_x, ti, model, score_model, **model_kwargs)
+                x = x.detach()
+                mean_x = mean_x.detach()
+                logprob_x = logprob_x.detach()
+                _logprob_x = _logprob_x.detach()
+                samples.append(x)
+                logprob_samples += logprob_x.sum(dim=-1).sum(dim=-1)
+                _logprob_samples += _logprob_x.sum(dim=-1).sum(dim=-1)
+                a += self.logit_flow()*self.dt
+                model_kwargs['aatype'] = a
+                a_samples.append(a)
+            # print(f"Step {ti:.3f} took {time.time() - t_start:.3f} seconds")
+        return samples, logprob_samples, _logprob_samples, a_samples
+
 from . import path
 
 class ode:
@@ -174,7 +226,8 @@ class ode:
 
         self.drift = drift
         self.t = th.linspace(t0, t1, num_steps)
-        # self.t = t0 + (t1 - t0) * (1 - (1 - th.linspace(0, 1, num_steps))**2)
+        # self.t = t0 + (t1 - t0) * (1 - (1 - th.linspace(0, 1, num_steps))**2)  # denser near t1
+        # self.t = t0 + (t1 - t0) * th.linspace(0, 1, num_steps)**2 # denser near t0
         self.atol = atol
         self.rtol = rtol
         self.sampler_type = sampler_type

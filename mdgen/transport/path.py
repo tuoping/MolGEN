@@ -189,17 +189,77 @@ class ICPlan:
         noise = (reverse_alpha_ratio * velocity - mean) / var
         return noise
 
-    def get_velocity_from_score(self, score, x, t):
-        """Wrapper function: transfrom score prediction model to velocity
-        Args:
-            score: [batch_dim, ...] shaped tensor; score model output
-            x: [batch_dim, ...] shaped tensor; x_t data point
-            t: [batch_dim,] time tensor
+    # def get_velocity_from_score(self, score, x, t):
+    #     """Wrapper function: transfrom score prediction model to velocity
+    #     Args:
+    #         score: [batch_dim, ...] shaped tensor; score model output
+    #         x: [batch_dim, ...] shaped tensor; x_t data point
+    #         t: [batch_dim,] time tensor
+    #     """
+    #     t = expand_t_like_x(t, x)
+    #     drift, var = self.compute_drift(x, t)
+    #     velocity = var * score - drift
+    #     return velocity
+
+    def get_velocity_from_score(
+        self, score_frac, x_frac, t, x0std, cell, diffusion=1.
+    ):
         """
+        Convert the log-density score ∇_x log p_t(x) back to the
+        IC control / velocity field b_t(x).
+        This is the inverse of get_score_from_velocity().
+
+        From
+            score = (reverse_alpha_ratio * velocity - x) / denom
+        where
+            reverse_alpha_ratio = alpha_t / d_alpha_t
+            denom = (
+                var * x0std**2
+                + diffusion * t
+            )
+            var = sigma_t**2
+                  - reverse_alpha_ratio * d_sigma_t * sigma_t
+        we obtain
+            velocity = (score * denom + x) / reverse_alpha_ratio
+        For alpha_t=t, sigma_t=1-t:
+            velocity = (
+                score * ((1-t) * x0std**2 + diffusion*t)
+                + x
+            ) / t
+        Note:
+            The inverse is singular at points where alpha_t / d_alpha_t = 0,
+            e.g. t=0 for alpha_t=t.
+        """
+
+        # Fractional -> Cartesian
+        x = x_frac @ cell
+        score = score_frac @ cell
+
         t = expand_t_like_x(t, x)
-        drift, var = self.compute_drift(x, t)
-        velocity = var * score - drift
-        return velocity
+
+        alpha_t, d_alpha_t = self.compute_alpha_t(t)
+        sigma_t, d_sigma_t = self.compute_sigma_t(t)
+
+        reverse_alpha_ratio = alpha_t / d_alpha_t
+
+        var = (
+            sigma_t**2
+            - reverse_alpha_ratio * d_sigma_t * sigma_t
+        )
+
+        denom = (
+            var * (x0std**2)[:, None, None]
+            + diffusion * t
+        )
+
+        velocity = (score * denom + x) / reverse_alpha_ratio
+
+        assert velocity.dim() == 4, "Velocity term must be a 4D tensor"
+
+        inv_cell = th.linalg.inv(cell)
+
+        # Cartesian -> fractional
+        return velocity @ inv_cell
 
     def compute_mu_t(self, t, x0, x1):
         """Compute the mean of time-dependent density p_t"""

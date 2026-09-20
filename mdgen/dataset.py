@@ -699,7 +699,8 @@ class EquivariantTransformerDataset_FF(torch.utils.data.Dataset):
         inv_cell = torch.linalg.inv(cell)
         noise = torch.randn(x.shape) * 8.
         x += noise @ inv_cell
-        forces = nn_spring.build_force(x)
+        # forces = nn_spring.build_force(x)
+        forces = -noise
 
         T,L,_ = x.shape
 
@@ -736,7 +737,8 @@ class EquivariantTransformerDataset_FF(torch.utils.data.Dataset):
 class EquivariantTransformerDataset_MaterialProject(torch.utils.data.Dataset):
     def __init__(self, args, species, num_species, localmask=False, sim_condition=False, stage="train", save_dir=None, sel_idx=None, calculator=None):
         self.uniform_prior = getattr(args, "uniform_prior", False)
-        self.target_std = getattr(args, "target_std")
+        self.target_std = getattr(args, "target_std", 1)
+        self.prior_std = getattr(args, "prior_std", 1)
         traj_dir = args.data_dir
         self.cutoff = args.cutoff
         self.num_species = num_species
@@ -996,7 +998,8 @@ class EquivariantTransformerDataset_MaterialProject(torch.utils.data.Dataset):
             inv_cell = torch.linalg.inv(cell)
             noise = torch.randn(x.shape) * self.target_std
             x += noise @ inv_cell
-            forces = nn_spring.build_force(x)
+            # forces = nn_spring.build_force(x)
+            forces = -noise
         T,L,_ = x.shape
 
         dataset_z = torch.stack([data.z for data in dataset])
@@ -1049,7 +1052,7 @@ class EquivariantTransformerDataset_MaterialProject(torch.utils.data.Dataset):
                     "x": x,
                     "forces": torch.stack([data.forces for data in dataset]),
                     "cell": cell,
-                    "x0std": torch.ones(T),
+                    "x0std": torch.ones(T)* self.prior_std,
                     "num_atoms": torch.stack([data.num_atoms for data in dataset]),
                     "mask": mask,
                     "v_mask": v_mask,

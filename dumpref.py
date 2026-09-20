@@ -7,19 +7,25 @@ import os
 # Dynamic neighbor graphs use differently sized CUDA allocations at each SDE
 # step. Expandable segments reduce allocator fragmentation for this workload.
 os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
-
-run_tag=4
-ckpt_tag = 499
+### Stage 1
+run_tag=11
+ckpt_tag = 704
+stage_tag = 1
+### Stage 2
+# run_tag=5
+# ckpt_tag = 99
+# stage_tag = 2
 ### ODE
 # inference_steps = 50
 # sampling_method = "rk4"
 ### SDE
-inference_steps = 1000
+inference_steps = 100
 sampling_method = "euler"
 
-# print("workdir/default/epoch=%03d-step=*-val_loss*.ckpt"%ckpt_tag)
-# sim_ckpt = glob.glob(f"workdir/default/run{run_tag}/epoch=%03d-step=*-val_loss*.ckpt"%ckpt_tag)[0]
-sim_ckpt = glob.glob(f"workdir/default/bk.3.run{run_tag}/last.ckpt")[0]
+# sim_ckpt = glob.glob("workdir/Stage1/run9/best_val_loss_path/best-val_loss_path-epoch=016-step=0000544-val_loss_path=3.8929.ckpt")[0]
+# sim_ckpt = glob.glob(f"workdir/bk.1.Stage1.D1/run{run_tag}.targetstd0.1/last.ckpt")[0]
+sim_ckpt = glob.glob(f"workdir/bk.1.Stage1.D1/run{run_tag}.targetstd0.01/epoch={ckpt_tag:03d}-step=*.ckpt")[0]
+# sim_ckpt = "workdir/bk.1.Stage1.D1/run10.targetstd0.1/best_val_loss_path/best-val_loss_path-epoch=1369-step=0043840-val_loss_path=3.1695.ckpt"
 
 import torch, tqdm, time
 import numpy as np
@@ -27,7 +33,7 @@ from mdgen.equivariant_wrapper import EquivariantMDGenWrapper
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-out_dir = f"experiments/MOF/Stage1/allref_train"
+out_dir = f"experiments/MOF/ref_test/"
 print("Output folder: ", out_dir)
 os.makedirs(out_dir, exist_ok=True)
 with open(f"{out_dir}/README.md", "w") as fp:
@@ -59,7 +65,7 @@ dataset = EquivariantTransformerDataset_MaterialProject(
                                         species=species, 
                                         num_species=args.num_species, 
                                         sim_condition=False, 
-                                        stage="train",)
+                                        stage="test",)
 
 
 
@@ -108,7 +114,7 @@ all_rollout_atoms = []
 all_rollout_atoms_ref = []
 start = time.time()
 all_logp = []
-for i_rollout in range(0, len(dataset)):
+for i_rollout in range(0, 30):
     # idx = idx_rollouts[i_rollout]
     idx = i_rollout
     print(i_rollout, idx)

@@ -158,7 +158,7 @@ class NNSpring:
         # --------------------------------------------------------
         F_pair = (
             -self.k_parallel
-            * (r - ref_r)[..., None]**2
+            * (r - ref_r)[..., None]
             * n
         )                                             # [B, P, 3]
     

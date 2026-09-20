@@ -258,11 +258,6 @@ class Decoder(nn.Module):
         v_out = torch.einsum('ndk,df->nfk', v, self.Ov)  # [N, F, 3]
         l_out = torch.einsum('ndkl,df->nfkl', l, self.Ol)  # [N, F, 3, 3]
         # Optional species softmax on scalars ONLY
-        if h_out.shape[-1] >= self.num_species:
-            head = h_out[..., :-self.num_species]
-            species = torch.softmax(h_out[..., -self.num_species:], dim=-1)
-            h_out = torch.hstack([head, species])
-
         # IMPORTANT: do NOT squeeze — preserve [N, F, 3] even when F==1 or N==1
         return h_out, v_out, l_out
         
@@ -571,7 +566,9 @@ class EquivariantTransformer_dpm(EquivariantTransformer):
         inv_lattice = torch.linalg.inv(lattice_vec)
 
         if self.design:
-            return scaler_out.view(B, T, N, -1)
+            vector_out = vector_out.view(B*T,N,3)
+            frac_vector_out = vector_out @ inv_lattice
+            return scaler_out.view(B, T, N, -1), frac_vector_out.reshape(B, T, N, 3), _lattice_tensor_out.reshape(B, T, N, 3, 3).mean(dim=2)
         elif self.potential_model:
             return scaler_out.reshape(B, T, N, -1)
         else:
@@ -585,12 +582,12 @@ class EquivariantTransformer_dpm(EquivariantTransformer):
                 dt=None,
                 conditions=None,
                 aatype=None, x_latt=None, x1=None, v_mask=None, fragments_idx = None):
+        lattice_tensor_out = None
         if self.design:
-            x_ = x_latt
-            aatype_ = x
-            if v_mask is not None: x_ = x_*v_mask+x1*(1-v_mask)
-            scaler_out = self.inference(x_, t, cell, num_atoms, dt, conditions, aatype_, fragments_idx=fragments_idx)
-            return scaler_out*v_mask
+            if v_mask is not None: x = x*v_mask+x1*(1-v_mask)
+            scaler_out, vector_out, lattice_tensor_out = self.inference(x, t, cv, cell, num_atoms, dt, conditions, aatype, fragments_idx=fragments_idx)
+            h_mask = v_mask[...,-1][...,None]
+            return scaler_out*h_mask, vector_out*v_mask, lattice_tensor_out
         elif self.potential_model:
             if v_mask is not None:
                 x = x*v_mask+x1*(1-v_mask)
@@ -604,7 +601,7 @@ class EquivariantTransformer_dpm(EquivariantTransformer):
         else:
             if v_mask is not None: x = x*v_mask+x1*(1-v_mask)
             vector_out, lattice_tensor_out = self.inference(x, t, cv, cell, num_atoms, dt, conditions, aatype, fragments_idx=fragments_idx)
-            return vector_out*v_mask
+            return vector_out*v_mask 
 
     def forward_inference(self, x: Tensor, t: Tensor, cv: Tensor=None,
                 cell=None, 
@@ -613,12 +610,11 @@ class EquivariantTransformer_dpm(EquivariantTransformer):
                 conditions=None,
                 aatype=None, x_latt=None, x1=None, v_mask=None, fragments_idx = None):
         if self.design:
-            x_ = x_latt
-            aatype_ = x
             if v_mask is not None:
-                x_ = x_*v_mask+x1*(1-v_mask)
-            scaler_out = self.inference(x_, t, cell, num_atoms, dt, conditions, aatype_, fragments_idx=fragments_idx)
-            return scaler_out*v_mask
+                x = x*v_mask+x1*(1-v_mask)
+            scaler_out, vector_out, lattice_tensor_out = self.inference(x, t, cv, cell, num_atoms, dt, conditions, aatype, fragments_idx=fragments_idx)
+            h_mask = v_mask[...,-1][...,None]
+            return scaler_out*h_mask, vector_out*v_mask, lattice_tensor_out
         elif self.potential_model:
             if v_mask is not None:
                 x = x*v_mask+x1*(1-v_mask)
