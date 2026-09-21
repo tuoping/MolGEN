@@ -139,6 +139,17 @@ else:
         ),
     
         ModelSummary(max_depth=2),
+
+        ModelCheckpoint(
+            dirpath=os.environ["MODEL_DIR"], 
+            filename="{epoch:03d}-{step:07d}-{val_err_energy:.4f}",
+            monitor="val_err_energy",
+            mode="min",
+            save_top_k=1,
+            save_last=False
+        ),
+
+        ModelSummary(max_depth=2)
     ]
 
 trainer = pl.Trainer(

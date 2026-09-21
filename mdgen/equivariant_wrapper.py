@@ -23,6 +23,8 @@ from torch import Tensor
 from typing import List, Optional, Tuple
 from .transport.transport import create_transport, Sampler
 
+from scipy.special import logsumexp
+
 _TORCH_FLOAT_PRECISION=torch.float32
 
 map_to_chemical_symbol = {
@@ -278,6 +280,7 @@ class EquivariantMDGenWrapper(Wrapper):
     def load_state_dict(self, state_dict, strict=True):
         return super().load_state_dict(state_dict, strict=False)
 
+
     def on_validation_epoch_end(self):
         if self.args.ema:
             self.restore_cached_weights()
@@ -286,7 +289,6 @@ class EquivariantMDGenWrapper(Wrapper):
         log = gather_log(log, self.trainer.world_size)
         mean_log = get_log_mean(log)
         self.log("val_loss", mean_log['val_loss'])
-        # self.log("val_loss_gen", mean_log['val_loss_gen'])
         if self.args.path_type in ["Schrodinger_Linear", "Schrodinger_Linear_onemodel"]:
             self.log("val_loss_path", mean_log['val_loss_path'])
         self.print_log(prefix='val', save=False)
@@ -444,7 +446,6 @@ class EquivariantMDGenWrapper(Wrapper):
         self.prefix_log('general_step_dur', time.time() - start1)
         self.last_log_time = time.time()
         if stage == "val":
-            # self._val_saddle_point_object_aware(batch, prep)
             pass
 
         if not torch.isfinite(loss.mean()):
@@ -453,6 +454,7 @@ class EquivariantMDGenWrapper(Wrapper):
             return None
         return loss.mean()
 
+    
     def _val_saddle_point_object_aware(self, batch, prep, stage="val"):
             B,T,L,_ = prep['latents'].shape
             try:
@@ -491,6 +493,7 @@ class EquivariantMDGenWrapper(Wrapper):
             except:
                 print("WARNNING:: Inference failed !!!")
                 self.prefix_log('meanRMSD_Kabsch', torch.nan)
+    
 
     def guided_velocity(self, x, t, cell=None, 
                 num_atoms=None,
@@ -511,8 +514,7 @@ class EquivariantMDGenWrapper(Wrapper):
                     conditions=conditions,
                     aatype=aatype, x1=x1, v_mask=v_mask).sum(dim=2).squeeze(-1)[:,1], x, create_graph=False)[0].detach()
         self.integration_step += 1
-        return v + self.args.guidance_pref*g
-
+        return v + self.args.guidance_pref*g 
     
     def inference(self, batch, stage='inference'):
         s_time= time.time()

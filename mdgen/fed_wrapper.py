@@ -17,6 +17,7 @@ from .wrapper import Wrapper, gather_log, get_log_mean
 from pymatgen.core import Molecule
 from pymatgen.analysis.molecule_matcher import BruteForceOrderMatcher, GeneticOrderMatcher, HungarianOrderMatcher, KabschMatcher
 from pymatgen.io.xyz import XYZ
+from ase import Atoms
 
 # Typing
 from torch import Tensor
@@ -274,6 +275,9 @@ class EquivariantFEDWrapper(Wrapper):
         if self.args.precision == '32-true':
             _TORCH_FLOAT_PRECISION = torch.float32
 
+        from deepmd.calculator import DP
+        self.mlp_calc = DP(model="data/SiO2/DP_R2SCAN.pb")
+
     def load_state_dict(self, state_dict, strict=True):
         return super().load_state_dict(state_dict, strict=False)
 
@@ -285,9 +289,11 @@ class EquivariantFEDWrapper(Wrapper):
         log = gather_log(log, self.trainer.world_size)
         mean_log = get_log_mean(log)
         self.log("val_loss", mean_log['val_loss'])
-        # self.log("val_loss_gen", mean_log['val_loss_gen'])
+        
         if self.args.path_type in ["Schrodinger_Linear", "Schrodinger_Linear_onemodel"]:
             self.log("val_loss_path", mean_log['val_loss_path'])
+        else:
+            self.log("val_err_energy", mean_log['val_err_energy'])
         self.print_log(prefix='val', save=False)
 
     def prep_batch(self, batch):
@@ -350,6 +356,7 @@ class EquivariantFEDWrapper(Wrapper):
         self.transport.prior_cell = batch["cell0"]
         self.transport.prior_mean = batch["x0"]
         self.transport.x0std = batch["x0std"]
+        self.transport.init_prior_noise(batch['atomic_numbers'])
 
         if "inpainting_mask" not in batch.keys():
             batch['inpainting_mask'] = torch.ones(B,T,L, dtype=int, device=species.device)
@@ -461,6 +468,8 @@ class EquivariantFEDWrapper(Wrapper):
             self.prefix_log('loss_l1', out_dict['loss_l1'].detach().cpu())
         if self.args.loss_consistency:
             self.prefix_log('loss_consistency', out_dict['loss_consistency'].detach().cpu())
+        if self.args.hessian:
+            self.prefix_log('loss_hessian', out_dict['loss_hessian'].detach().cpu())
 
         if self.args.potential_model:
             self.prefix_log('loss_gen', loss_gen.detach().cpu())
@@ -485,14 +494,40 @@ class EquivariantFEDWrapper(Wrapper):
         self.prefix_log('general_step_dur', time.time() - start1)
         self.last_log_time = time.time()
         if stage == "val":
-            # self._val_saddle_point_object_aware(batch, prep)
-            pass
+            self._val_EJE(batch, prep)
 
         if not torch.isfinite(loss.mean()):
             return None
         if torch.isnan(loss.mean()):
             return None
         return loss.mean()
+
+
+    def _val_EJE(self, batch, prep, stage="val"):
+        B,T,L,_ = prep['latents'].shape
+        map_to_chemical_symbol = {
+            0: "O",
+            1: "Si"
+        }
+        all_pred_frac_pos, _ = self.inference(batch, stage)
+        err_batch = torch.zeros(B)
+        for i in range(B):
+            labels = torch.argmax(batch["species"], dim=3)[i]
+            symbols = [[map_to_chemical_symbol[int(i_elem.to('cpu'))] for i_elem in labels[i_conf]] for i_conf in range(len(labels))]
+            formula = "".join(symbols[0])
+            
+            pred_pos = all_pred_frac_pos[-1][i][0] @ batch['cell'][i][0]
+            atoms = Atoms(formula,
+                        positions=pred_pos.to('cpu').numpy(),
+                        cell=batch['cell'][i][0].to('cpu').numpy(),
+                        pbc=[1,1,1]
+                    )
+            atoms.calc = self.mlp_calc
+            U_1 = atoms.get_potential_energy()
+            err_i = (U_1 - batch['E'][i][0]).abs()
+            err_batch[i] = err_i
+        self.prefix_log('err_energy', err_batch)
+
 
     def _val_saddle_point_object_aware(self, batch, prep, stage="val"):
             B,T,L,_ = prep['latents'].shape
@@ -641,15 +676,7 @@ class EquivariantFEDWrapper(Wrapper):
             vector_out = prep["model_kwargs"]["x_latt"]
             return vector_out, aa_out
         else:
-            # from .transport.path import wrap_frac_pos
-            # zs = wrap_frac_pos(torch.randn(B, T, N, D, device=self.device)*self.args.x0std/(N)**(1./3.))
-            # zs = torch.rand(B,T,N,D, device=self.device)
-
-            # m = math.ceil(N ** (1/3))
-            # g = (torch.arange(m, device=self.device) + 0.5) / m
-            # X, Y, Z = torch.meshgrid(g, g, g, indexing='ij')
-            # zs =  torch.stack([X.reshape(-1), Y.reshape(-1), Z.reshape(-1)], dim=1)[:N].unsqueeze(0).expand(T, -1, -1).unsqueeze(0).expand(B, -1, -1, -1)
-            _, zs, zs_mean = self.transport.sample(latents.shape, self.device, x0std)
+            _, zs, zs_mean, beta_U0, logq0 = self.transport.sample_with_logq(latents.shape, self.device, x0std)
             zs = zs[0]
             zs_mean = zs_mean[0]
             if self.transport.latt_path:
@@ -671,11 +698,11 @@ class EquivariantFEDWrapper(Wrapper):
                 case "FND":
                     last_step = getattr(self.args, "last_step", None)
                     if self.score_model is not None:
-                        with torch.no_grad(): sample_fn = self.transport_sampler.sample_sde_likelihood(num_steps=self.args.inference_steps, diffusion_form=self.args.diffusion_form, diffusion_norm=torch.tensor(self.args.diffusion_norm), score_model=partial(self.score_model.forward_inference, **prep['model_kwargs']), last_step=last_step )
-                        with torch.no_grad(): sample_fn_reverse = self.transport_sampler.sample_sde_likelihood(num_steps=self.args.inference_steps, diffusion_form=self.args.diffusion_form, diffusion_norm=torch.tensor(self.args.diffusion_norm), reverse=True, score_model=partial(self.score_model.forward_inference, **prep['model_kwargs']), last_step=last_step )
+                        with torch.no_grad(): sample_fn = self.transport_sampler.sample_sde_likelihood(num_steps=self.args.inference_steps, diffusion_form=self.args.diffusion_form, diffusion_norm=torch.tensor(self.args.diffusion_norm), score_model=partial(self.score_model.forward_inference, **prep['model_kwargs']), last_step=last_step, last_step_size=0.001 if last_step is None else self.args.last_step_size, )
+                        with torch.no_grad(): sample_fn_reverse = self.transport_sampler.sample_sde_likelihood(num_steps=self.args.inference_steps, diffusion_form=self.args.diffusion_form, diffusion_norm=torch.tensor(self.args.diffusion_norm), reverse=True, score_model=partial(self.score_model.forward_inference, **prep['model_kwargs']), last_step=last_step, last_step_size=0.001 if last_step is None else self.args.last_step_size, )
                     else:
-                        with torch.no_grad(): sample_fn = self.transport_sampler.sample_sde_likelihood(num_steps=self.args.inference_steps, diffusion_form=self.args.diffusion_form, diffusion_norm=torch.tensor(self.args.diffusion_norm), score_model=partial(self.model.forward_inference, **prep['model_kwargs']), last_step=last_step )
-                        with torch.no_grad(): sample_fn_reverse = self.transport_sampler.sample_sde_likelihood(num_steps=self.args.inference_steps, diffusion_form=self.args.diffusion_form, diffusion_norm=torch.tensor(self.args.diffusion_norm), reverse=True, score_model=partial(self.model.forward_inference, **prep['model_kwargs']), last_step=last_step )
+                        with torch.no_grad(): sample_fn = self.transport_sampler.sample_sde_likelihood(num_steps=self.args.inference_steps, diffusion_form=self.args.diffusion_form, diffusion_norm=torch.tensor(self.args.diffusion_norm), score_model=partial(self.model.forward_inference, **prep['model_kwargs']), last_step=last_step, last_step_size=0.001 if last_step is None else self.args.last_step_size, )
+                        with torch.no_grad(): sample_fn_reverse = self.transport_sampler.sample_sde_likelihood(num_steps=self.args.inference_steps, diffusion_form=self.args.diffusion_form, diffusion_norm=torch.tensor(self.args.diffusion_norm), reverse=True, score_model=partial(self.model.forward_inference, **prep['model_kwargs']), last_step=last_step, last_step_size=0.001 if last_step is None else self.args.last_step_size, )
                 case None:
                     with torch.no_grad(): sample_fn = self.transport_sampler.sample_sde(num_steps=self.args.inference_steps, diffusion_form=self.args.diffusion_form, diffusion_norm=torch.tensor(self.args.diffusion_norm), score_model=partial(self.score_model.forward_inference, **prep['model_kwargs']) )
                 case _:
@@ -740,10 +767,20 @@ class EquivariantFEDWrapper(Wrapper):
                     )
                 case "FND":
                     with torch.no_grad(): 
-                        samples_logp, _samples_logp, samples = sample_fn(
-                            zs,
-                            partial(self.model.forward_inference, **prep['model_kwargs'])
-                        )
+                        if self.args.last_step is None:
+                            samples_logp, _samples_logp, samples = sample_fn(
+                                zs,
+                                partial(self.model.forward_inference, **prep['model_kwargs'])
+                            )
+                        elif self.args.last_step == 'Euler':
+                            _model_kwargs = extend_kwargs(prep['model_kwargs'])
+                            samples_logp, _samples_logp, samples, logp_grad_mean_last_step, logp_grad_var_last_step = sample_fn(
+                                zs,
+                                partial(self.model.forward_inference, **prep['model_kwargs']),
+                                last_step_model_kwargs=_model_kwargs
+                            )
+                        else:
+                            raise Exception(f"Wrong last_step parameter: {self.args.last_step}")
                     _samples_logp = _samples_logp.detach().cpu()
                     samples_logp = samples_logp.detach().cpu()
                 case None:
@@ -803,11 +840,16 @@ class EquivariantFEDWrapper(Wrapper):
         # if self.args.likelihood == "EJE":
         match self.args.likelihood:
             case "EJE":
-                return torch.concatenate([samples_logp, samples_logp_var], dim=-1), samples, aa_out, zs-zs_mean
+                return torch.concatenate([samples_logp, samples_logp_var, logq0], dim=-1), samples, aa_out, zs-zs_mean
             case "FND":
                 if self.transport.latt_path:
                     raise Exception("FND for latt_path not implemented")
-                return torch.concatenate([samples_logp, _samples_logp], dim=-1), samples, aa_out, zs-zs_mean
+                if self.args.last_step is None:
+                    return torch.concatenate([samples_logp, _samples_logp, logq0.cpu()], dim=-1), samples, aa_out, zs-zs_mean
+                elif self.args.last_step == 'Euler':
+                    return torch.concatenate([samples_logp, _samples_logp, logq0.cpu()], dim=-1), samples, aa_out, zs-zs_mean, torch.stack([logp_grad_mean_last_step, logp_grad_var_last_step], dim=-1)
+                else:
+                    raise Exception(f"Wrong last_step parameter: {self.args.last_step}")
             case _:
                 if self.transport.latt_path:
                     return samples[0], aa_out, samples[1]

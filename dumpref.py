@@ -1,0 +1,126 @@
+# from mdgen.parsing import parse_train_args
+# args = parse_train_args()
+
+import glob
+
+ckpt_tag = 10
+inference_steps = 10
+
+sampling_method = "rk4"
+sim_ckpt = "workdir/fixlatt/run10.bk006.Tcv_l1/last.ckpt" # r10 e=111(actually 193)
+
+device = "cuda"
+
+import os, torch, tqdm, time
+import numpy as np
+from mdgen.fed_wrapper import EquivariantFEDWrapper
+
+out_dir = f"experiments/smallcell_SiO2_nvt_nowrap/1600K1GPa/test_quartz_x0varkBT/ref"
+print("Output folder: ", out_dir)
+os.makedirs(out_dir, exist_ok=True)
+with open(f"{out_dir}/README.md", "w") as fp:
+    fp.write(sim_ckpt)
+
+
+torch.set_float32_matmul_precision('medium')
+
+ckpt = torch.load(sim_ckpt, weights_only=False)
+hparams = ckpt["hyper_parameters"]
+args = hparams['args']
+args.sampling_method = sampling_method
+args.inference_steps = inference_steps
+args.k_spring = 1.0
+args.data_dir = "data/SiO2/npt_1600K_1GPa/npt_quartz_dense/nvt/"
+args.likelihood = None # "EJE"
+args.K_hutchinson_probe = 16
+args.K_hutchinson_probe_chunk = 4
+
+
+from mdgen.dataset import EquivariantTransformerDataset_phasediagram
+dataset = EquivariantTransformerDataset_phasediagram(args, species=[14, 8], num_species=args.num_species, sim_condition=False, stage="test", T=1600)
+
+
+
+model = EquivariantFEDWrapper(**hparams)
+print(model.model)
+model.load_state_dict(ckpt["state_dict"], strict=True)
+del ckpt, hparams
+model.eval().to(device)
+
+print(model.args)
+print(model.args.path_type)
+print(model.args.sampling_method)
+print(model.args.inference_steps)
+print(model.args.likelihood)
+
+batch_size = 1
+val_loader = torch.utils.data.DataLoader(
+    dataset,
+    batch_size=batch_size,
+    num_workers=0,
+    shuffle=True,
+)
+sample_batch = next(iter(val_loader))
+
+
+
+map_to_chemical_symbol = {
+    0: "O",
+    1: "Si"
+}
+
+idx_rollouts = np.arange(len(dataset))
+
+from ase import Atoms
+from ase.geometry.geometry import get_distances
+import shutil, os
+from ase.io import write
+import sys
+
+all_rollout_atoms_ref_0 = []
+all_rollout_atoms = []
+all_rollout_atoms_ref = []
+start = time.time()
+all_logp = []
+for i_rollout in range(0, 100):
+    # idx = idx_rollouts[i_rollout]
+    idx = i_rollout
+    filename = os.path.join(out_dir, f"gentraj_{idx}.xyz")
+    filename_ref = os.path.join(out_dir, f"reftraj_{idx}.xyz")
+    for f in [filename, filename_ref, ]:
+        if os.path.exists(f):
+            os.remove(f)
+
+    if args.likelihood is not None:
+        filename_reverse = os.path.join(out_dir, f"reverse_gentraj_{idx}.xyz")
+        filename_logp = os.path.join(out_dir, f"Logp_{idx}.txt")
+        filename_reverse_logp = os.path.join(out_dir, f"reverse_Logp_{idx}.txt")
+        filename_zs = os.path.join(out_dir, f"Uzs_{idx}.txt")
+        for f in [filename_reverse, filename_logp, filename_reverse_logp, filename_zs]:
+            if os.path.exists(f):
+                os.remove(f)
+
+    for i_sample in range(1):
+        item = dataset.__getitem__(idx)
+        batch = next(iter(torch.utils.data.DataLoader([item])))
+
+        for key in batch.keys():
+            if isinstance(batch[key], torch.Tensor):
+                batch[key] = batch[key].to(device)
+        x0std = batch['x0std']
+        labels = torch.argmax(batch["species"], dim=3).squeeze(0)
+        symbols = [[map_to_chemical_symbol[int(i_elem.to('cpu'))] for i_elem in labels[i_conf]] for i_conf in range(len(labels))]
+
+        print("rollout", i_rollout, "idx = ", idx+i_sample)
+        formula = "".join(symbols[0])
+
+
+        ref_pos = batch["x"][0][0] @ batch['cell'][0][0]
+        atoms_ref = Atoms(formula, positions=ref_pos.cpu().numpy(), cell=batch['cell'][0][0].cpu().numpy(), pbc=[1,1,1])
+        write(filename_ref, atoms_ref, append=True)
+
+        
+        # del pred_frac_pos
+        # del pred_pos
+        # del cell_out
+        # del ref_pos

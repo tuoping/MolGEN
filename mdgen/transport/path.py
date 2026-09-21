@@ -225,12 +225,18 @@ class ICPlan:
         ut = self.compute_ut(t, x0, x1, xt)
         return xt, ut
     
-    def plan_fractional(self, t, x0, x1):
+    def plan_fractional(self, t, x0, x1, hessian=False):
         t = expand_t_like_x(t, x1)
         alpha_t, d_alpha_t = self.compute_alpha_t(t)
         sigma_t, d_sigma_t = self.compute_sigma_t(t)
-        xt = wrap_frac_pos(x0 + t*(wrap_frac_pos(x1 - x0 - 0.5) - 0.5))
-        ut = wrap_frac_pos(x1 - x0 - 0.5) - 0.5
+        # xt = wrap_frac_pos(x0 + t*(wrap_frac_pos(x1 - x0 - 0.5) - 0.5))
+        # ut = wrap_frac_pos(x1 - x0 - 0.5) - 0.5
+        xt = x0 + t*(wrap_frac_pos(x1 - x0 - 0.5) - 0.5)
+        if hessian:
+            xt.requires_grad_(True)
+        # if hessian:
+        #     with th.enable_grad():
+        ut = (wrap_frac_pos(x1 - x0 - 0.5) - 0.5)
         return xt, ut 
 
     def plan_latt(self, t, latt0, latt1):

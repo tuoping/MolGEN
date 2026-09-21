@@ -50,6 +50,7 @@ def parse_train_args():
     group.add_argument('--data_dir', type=str, default="tests/test_data/Transition1x")
     group.add_argument('--num_frames', type=int, default=1)
     group.add_argument('--suffix', type=str, default='')
+    group.add_argument('--select_crystal', type=str, default=None)
 
     ### Masking settings
     group = parser.add_argument_group("Masking settings")
@@ -70,15 +71,18 @@ def parse_train_args():
 
     group = parser.add_argument_group("Transport arguments")
     group.add_argument("--path-type", type=str, default="Linear", choices=["Linear", "GVP", "VP", "Schrodinger_Linear", "Schrodinger_Linear_onemodel"])
-    group.add_argument("--last-step", type=str, default=None, choices=['Mean'])
+    group.add_argument("--last-step", type=str, default=None, choices=['Mean, Euler'])
+    group.add_argument("--last-step-size", type=float, default=0.01)
     group.add_argument("--prediction", type=str, default="velocity", choices=["velocity", "score", "noise"])
     group.add_argument("--KL", type=str, default="L1", choices=['forward', 'reverse', 'symm', "L2", 'L1', 'alpha', 'score'])
-    group.add_argument("--pref_symmkl", type=float, default=0.01)
+    group.add_argument('--hessian', action='store_true')
+    group.add_argument("--pref_loss_hessian", type=float, default=0.001, )
+    group.add_argument("--pref_symmkl", type=float, default=1)
     group.add_argument("--TSMloss", action='store_true')
     group.add_argument("--pref_TSMloss", type=float, default=1E-2)
-    group.add_argument("--sampling_method", type=str, default="dopri5", choices=["dopri5", 'rk4', "euler", "Heun"])
-    group.add_argument('--K_hutchinson_probe', type=float, default=4)
-    group.add_argument('--K_hutchinson_probe_chunk', type=float, default=2)
+    group.add_argument("--sampling_method", type=str, default="euler", choices=["dopri5", 'rk4', "euler", "Heun"])
+    group.add_argument('--K_hutchinson_probe', type=float, default=1)
+    group.add_argument('--K_hutchinson_probe_chunk', type=float, default=1)
     group.add_argument('--alpha_max', type=float, default=8)
     group.add_argument('--discrete_loss_weight', type=float, default=0.5)
     group.add_argument("--dirichlet_flow_temp", type=float, default=1.0)
@@ -116,6 +120,10 @@ def parse_train_args():
     group.add_argument('--num_heads', type=int, default=8)
     group.add_argument('--ff_dim', type=int, default=128)
     group.add_argument('--cutoff', type=float, default=5)
+
+    group.add_argument('--k-parallel', type=float, default=30.)
+    group.add_argument('--k-perp', type=float, default=3.)
+    group.add_argument('--k-pin', type=float, default=1.)
     
     ## nonequil. simulation settings
     group.add_argument('--potential_model', action='store_true')
@@ -123,7 +131,7 @@ def parse_train_args():
     group.add_argument("--guided", action='store_true')
     group.add_argument("--latt_path", action="store_true")
 
-    group.add_argument("--inference_steps", type=int, default=20)
+    group.add_argument("--inference_steps", type=int, default=3)
 
     args = parser.parse_args()
     os.environ["MODEL_DIR"] = os.path.join("workdir", args.run_name)

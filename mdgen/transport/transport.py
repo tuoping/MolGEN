@@ -194,7 +194,7 @@ def lattice_polar_decompose_torch(lattices: th.Tensor):
 from .path import wrap_frac_pos
 import math
 
-def compute_jsd_loss(mu_t_x1, standard_bandwidth_factor, mu_theta, k_max=3):
+def compute_jsd_loss(mu_t_x1, standard_bandwidth_factor, mu_theta, k_max=1):
     """
     Monte Carlo estimate of the full JSD:
     JSD(p || q) = 0.5 * E_p[log(p/m)] + 0.5 * E_q[log(q/m)]
@@ -207,10 +207,10 @@ def compute_jsd_loss(mu_t_x1, standard_bandwidth_factor, mu_theta, k_max=3):
         k_max: int - number of periodic images per dimension
     """
     x = 0.0
-    if isinstance(standard_bandwidth_factor, th.Tensor):
-        bandwidth_factor = standard_bandwidth_factor[:, None, None] ** 2  # scalar or (B,)
-    else:
-        bandwidth_factor = standard_bandwidth_factor ** 2
+    # if isinstance(standard_bandwidth_factor, th.Tensor):
+    #     bandwidth_factor = standard_bandwidth_factor ** 2  # scalar or (B,)
+    # else:
+    #     bandwidth_factor = standard_bandwidth_factor ** 2
 
     ks = th.arange(-k_max, k_max + 1, device=mu_t_x1.device)
     kx, ky, kz = th.meshgrid(ks, ks, ks, indexing='ij')
@@ -218,15 +218,19 @@ def compute_jsd_loss(mu_t_x1, standard_bandwidth_factor, mu_theta, k_max=3):
 
     # Broadcast: mu_t_x1 is (B, N, 3), k_vecs is (K, 3)
     # diff: (B, N, K, 3)
-    diff = (x - mu_t_x1[:, :, None, :] + k_vecs[None, None, :, :])   # @cell[:, None, :, :]
+    diff = th.einsum(
+        "bnki,bij->bnkj",
+        x - mu_t_x1[:, :, None, :] + k_vecs[None, None, :, :], standard_bandwidth_factor)   # @cell[:, None, :, :]
     sq_norms = th.sum(diff ** 2, dim=-1)  # (B, N, K)
-    logZ_P = th.logsumexp(-sq_norms / (2) * bandwidth_factor, dim=-1) # (B, N)
-    logP_ = (-sq_norms / (2) * bandwidth_factor) # - logZ_P[:,:,None]  # (B, N, K)
+    logZ_P = th.logsumexp(-sq_norms / (2), dim=-1) # (B, N)
+    logP_ = (-sq_norms / (2)) # - logZ_P[:,:,None]  # (B, N, K)
 
-    pred_diff = (x - mu_theta[:, :, None, :] + k_vecs[None, None, :, :])   # @cell  # (B, None, N, 3)
+    pred_diff = th.einsum(
+        "bnki,bij->bnkj",
+        x - mu_theta[:, :, None, :] + k_vecs[None, None, :, :], standard_bandwidth_factor)   # @cell  # (B, None, N, 3)
     pred_sq_norms = th.sum(pred_diff ** 2, dim=-1) # (B, N, K)
-    logZ_Q = th.logsumexp(-pred_sq_norms / (2) * bandwidth_factor, dim=-1) # (B, N)
-    logQ_ = (-pred_sq_norms) / (2) * bandwidth_factor # - logZ_Q[:,:,None]  # (B, N, K)
+    logZ_Q = th.logsumexp(-pred_sq_norms / (2), dim=-1) # (B, N)
+    logQ_ = (-pred_sq_norms) / (2) # - logZ_Q[:,:,None]  # (B, N, K)
 
     logm = th.logaddexp(logP_, logQ_) - th.log(th.tensor(2.0, device=mu_t_x1.device))# (B, N, K)
 
@@ -236,6 +240,7 @@ def compute_jsd_loss(mu_t_x1, standard_bandwidth_factor, mu_theta, k_max=3):
     jsd = 0.5 * kl_p_m + 0.5 * kl_q_m  # (B,N)
     return jsd
 
+from .spring_prior import SiO2SpringNoise
 class Transport:
 
     def __init__(
@@ -267,6 +272,27 @@ class Transport:
         self.prior_mean = None
         self.prior_cell = None
         self.weightfunction_x = weightfunction_x
+        self.print_prior_diagnostics = True
+
+    def init_prior_noise(self, atomic_numbers):
+        self.spring_noise = SiO2SpringNoise(
+            ref_frac=self.prior_mean[0, 0],
+            cell=self.prior_cell[0, 0],
+            atomic_numbers=atomic_numbers[0,0],
+            cutoff=2.0,
+            k_parallel=self.args.k_parallel,
+            k_perp=self.args.k_perp,
+            k_pin=self.args.k_pin,
+            # k_parallel=30.0,
+            # k_perp=3.0,
+            # k_pin=1.0,
+            device=self.prior_mean.device,
+            dtype=self.prior_mean.dtype,
+        )
+
+        if self.print_prior_diagnostics:
+            self.spring_noise.diagnostics()
+            self.print_prior_diagnostics = False
 
     def prior_logp(self, z):
         '''
@@ -323,10 +349,12 @@ class Transport:
                 _x0_mean = th.zeros(shape, device=device)
                 x0.append(th.rand(shape, device=device) - th.ones(shape, device=device)*0.5)
             else:
-                _x0_mean = self.prior_mean
-                inv_cell = th.linalg.inv(self.prior_cell)
-                x0.append((th.randn(shape, device=device)*x0std[:,:,None,None])@inv_cell + _x0_mean)
-            x0_mean.append(_x0_mean)
+                noise_frac = self.spring_noise.sample(x0std**2).unsqueeze(1).view(B,T,N,C)
+                x0.append(self.prior_mean + noise_frac)
+                # _x0_mean = self.prior_mean
+                # inv_cell = th.linalg.inv(self.prior_cell)
+                # x0.append((th.randn(shape, device=device)*x0std[:,:,None,None])@inv_cell + _x0_mean)
+            x0_mean.append(self.prior_mean)
         
         t0, t1 = self.check_interval(self.train_eps, self.sample_eps)
         # t = th.rand((x1.shape[0],))
@@ -334,6 +362,30 @@ class Transport:
         t = t*(t1-t0) + t0
         t = t.to(device)
         return t, x0, x0_mean
+
+    def sample_with_logq(self, shape, device, x0std):
+        """Sampling x0 & t based on shape of x1 (if needed)
+          Args:
+            x1 - data point; [batch, *dim]
+        """
+        B,T,N,C = shape
+        x0 = []
+        x0_mean = []
+        for i in range(1):
+            noise_frac, beta_U0, logq0 = self.spring_noise.sample_with_logq(x0std**2)
+            noise_frac = noise_frac.unsqueeze(1).view(B,T,N,C)
+            x0.append(self.prior_mean + noise_frac)
+            # _x0_mean = self.prior_mean
+            # inv_cell = th.linalg.inv(self.prior_cell)
+            # x0.append((th.randn(shape, device=device)*x0std[:,:,None,None])@inv_cell + _x0_mean)
+            x0_mean.append(self.prior_mean)
+        
+        t0, t1 = self.check_interval(self.train_eps, self.sample_eps)
+        # t = th.rand((x1.shape[0],))
+        t, _ = sample_t_u_shaped(shape[0], self.args.beta_sample_t, eps=0)
+        t = t*(t1-t0) + t0
+        t = t.to(device)
+        return t, x0, x0_mean, beta_U0, logq0
 
 
     def sample_latt(self, shape, device):
@@ -449,15 +501,6 @@ class Transport:
         - x1: datapoint
         - model_kwargs: additional arguments for the model
         """
-        #if global_step < 20:
-        #    self.pref_symmkl = 0.1*global_step
-        #    self.pref_alpha_div = 0.9 - 0.6*global_step/20
-        #else:
-        self.pref_symmkl = 1.
-        self.pref_alpha_div = 0.3
-        self.pref_reversekl = 0.3
-        assert self.pref_alpha_div >=0 and self.pref_alpha_div <= 1, "  ".join([str(self.pref_alpha_div), str(global_step)])
-
 
         if model_kwargs == None:
             model_kwargs = {}
@@ -478,7 +521,10 @@ class Transport:
             xt = x_d
         else:
             if self.args.path_type not in ["Schrodinger_Linear", "Schrodinger_Linear_onemodel"]:
-                xt, ut = self.path_sampler.plan_fractional(t, x0[0], x1)
+                if self.args.hessian:
+                    xt, ut = self.path_sampler.plan_fractional(t, x0[0], x1, self.args.hessian)
+                else:
+                    xt, ut = self.path_sampler.plan_fractional(t, x0[0], x1,)
                 alpha_t, _ = self.path_sampler.compute_alpha_t(path.expand_t_like_x(t, xt))
                 assert self.args.weight_loss_var_x0 == 0
             else:
@@ -504,7 +550,11 @@ class Transport:
         if self.latt_path:
             model_output, lattflow_output = model(xt, t, **model_kwargs)
         else:
-            model_output = model(xt, t, **model_kwargs)
+            if self.args.hessian:
+                with th.enable_grad():
+                    model_output = model(xt, t, **model_kwargs)
+            else:
+                model_output = model(xt, t, **model_kwargs)
         assert self.args.weight_loss_var_x0 == 0
         if self.args.path_type in ["Schrodinger_Linear", "Schrodinger_Linear_onemodel"]:
             if self.latt_path:
@@ -532,14 +582,18 @@ class Transport:
                         if self.args.path_type in ["Schrodinger_Linear", "Schrodinger_Linear_onemodel"]:
                             raise Exception("Symm loss here doesn't work with Brownian path")
                         cell = model_kwargs['cell'].view(B*T,3,3)
+                        # inv_cell = th.linalg.inv(cell)
                         terms['loss_l1'] = mean_flat((model_output.view(B*T,N,3)@cell - ut.view(B*T,N,3)@cell).norm(dim=-1), mask.view(B*T,N,3)[:,:,0])
-                        ### the bandwidth factor should be 1/(1-t), which approaches infinity as t approaches 1.
-                        jsd = compute_jsd_loss(xt.view(B*T,N,3), t.exp(), (x0[0]+model_output*t[:,None,None,None]).view(B*T,N,3), 3) * (th.det(cell)[:,None])**(2./3.)  # (B,N)
+                        
+                        jsd = compute_jsd_loss(xt.view(B*T,N,3), cell, (x0[0]+model_output*t[:,None,None,None]).view(B*T,N,3), 1)   # (B,N)
                         terms['loss_symmkl'] = mean_flat(jsd, mask.view(B*T,N,3)[:,:,0])
                         terms['loss_flow'] = terms['loss_symmkl'] * self.args.pref_symmkl + terms['loss_l1'] 
                     case "L1":
                         cell = model_kwargs['cell'].view(B*T,3,3)
                         terms['loss_flow'] = mean_flat((model_output.view(B*T,N,3)@cell - ut.view(B*T,N,3)@cell).norm(dim=-1), mask.view(B*T,N,3)[:,:,0])
+                    case "L2":
+                        cell = model_kwargs['cell'].view(B*T,3,3)
+                        terms['loss_flow'] = mean_flat(((model_output.view(B*T,N,3)@cell - ut.view(B*T,N,3)@cell).norm(dim=-1))**2, mask.view(B*T,N,3)[:,:,0])
                     case "score":
                         cell = model_kwargs['cell'].view(B*T,3,3)
                         terms['loss_l1'] = mean_flat((model_output.view(B*T,N,3)@cell - ut.view(B*T,N,3)@cell).norm(dim=-1), mask.view(B*T,N,3)[:,:,0])
@@ -575,6 +629,23 @@ class Transport:
                         terms['loss'] = terms['loss_flow'] + terms['loss_dsm']
                 else:
                     terms['loss'] = terms['loss_flow']
+
+                if self.args.hessian:
+                    with th.enable_grad():
+                        eps = th.randint(2, xt.size(), dtype=th.float, device=xt.device) * 2 - 1
+                        grad = th.autograd.grad(th.sum((model_output)*eps), xt, create_graph=True, retain_graph=True)[0]
+                        logp_grad = th.sum(
+                            grad * eps,
+                            dim = tuple(range(2, len(xt.size()))),
+                        )
+                        grad_ref = -eps / (1.0 - t[:,None,None,None]) # th.autograd.grad(th.sum(ut*eps), xt)[0]
+                        logp_grad_ref = th.sum(
+                            grad_ref * eps,
+                            dim = tuple(range(2, len(xt.size())))
+                        )
+                        logp_grad_ref.requires_grad_(False)
+                    terms['loss_hessian'] = mean_flat((logp_grad - logp_grad_ref).abs(), mask[:,:,0,0])
+                    terms['loss'] += terms['loss_hessian'] * self.args.pref_loss_hessian
                     
                 if self.latt_path:
                     lowertrigflow_output = th.stack([lattflow_output[:,:,0,0], lattflow_output[:,:,1,0], lattflow_output[:,:,1,1], lattflow_output[:,:,2,0], lattflow_output[:,:,2,1], lattflow_output[:,:,2,2]], dim=-1)
@@ -876,6 +947,95 @@ class Sampler:
 
         return last_step_fn
 
+    def __get_last_step_likelihood(
+            self,
+            sde_drift,
+            *,
+            last_step,
+            last_step_size,
+            reverse=False
+    ):
+        """Get the last step function of the SDE solver"""
+        K_hutchinson_probe = self.transport.args.K_hutchinson_probe
+        K_hutchinson_probe_chunk = self.transport.args.K_hutchinson_probe_chunk
+
+        def _likelihood_drift(x, t, model, score_model, **model_kwargs):
+            import time
+            t_start = time.time()
+            B = x.shape[0]
+            if reverse:
+                t = th.ones_like(t) * (1 - t)
+
+            # for k in range(K_hutchinson_probe):
+            logp_grad_samples_list = []
+            drift0 = None
+            with th.enable_grad():
+                for k0 in range(0, K_hutchinson_probe, K_hutchinson_probe_chunk):
+                    K_now = min(K_hutchinson_probe_chunk, K_hutchinson_probe - k0)
+            
+                    x_rep = (
+                        x.detach()
+                         .unsqueeze(0)
+                         .repeat((K_now,) + (1,) * x.dim())
+                         .reshape(K_now * B, *x.shape[1:])
+                         .requires_grad_(True)
+                    )
+            
+                    eps = th.randint(2, x_rep.size(), dtype=th.float, device=x.device) * 2 - 1
+            
+                    t_rep = (
+                        t.detach()
+                         .unsqueeze(0)
+                         .repeat((K_now,) + (1,) * t.dim())
+                         .reshape(K_now * B,)
+                         .requires_grad_(False)
+                    )
+            
+                    ### This way doesn't accumulate the gradient through the ODE steps
+                    if reverse:
+                        drift = -sde_drift(x_rep, t_rep, model, **model_kwargs)
+                    else:
+                        drift = sde_drift(x_rep, t_rep, model, **model_kwargs)
+            
+                    if drift0 is None:
+                        # first probe copy, original batch
+                        drift0 = drift[:B].detach()
+            
+                    grad = th.autograd.grad(th.sum((drift) * eps), x_rep)[0]
+            
+                    logp_grad = th.sum(
+                        grad * eps,
+                        dim=tuple(range(2, len(x_rep.size())))
+                    )
+            
+                    # [K_now * B] -> [K_now, B]
+                    logp_grad = logp_grad.reshape(K_now, B)
+            
+                    logp_grad_samples_list.append(logp_grad.detach())
+            
+            logp_grad_samples = th.cat(logp_grad_samples_list, dim=0)  # [K, B]
+
+            drift = drift0.detach()
+            logp_grad_mean = logp_grad_samples.mean(dim=0)
+            if K_hutchinson_probe > 1:
+                logp_grad_var = logp_grad_samples.var(dim=0)/K_hutchinson_probe
+            else:
+                logp_grad_var = th.zeros_like(logp_grad_mean, device=x.device)
+            return (x + drift * last_step_size, logp_grad_mean, logp_grad_var)
+
+        if last_step is None:
+            last_step_fn = \
+                lambda x, t, model, score_model, **model_kwargs: \
+                    x
+        elif last_step == "Euler":
+            last_step_fn = \
+                lambda x, t, model, score_model, **model_kwargs: \
+                    _likelihood_drift(x, t, model, score_model, **model_kwargs)
+        else:
+            raise NotImplementedError()
+
+        return last_step_fn
+
     def sample_sde(
             self,
             *,
@@ -998,15 +1158,18 @@ class Sampler:
             cell=self.transport.prior_cell
         )
 
-        last_step_fn = self.__get_last_step(sde_drift, last_step=last_step, last_step_size=last_step_size)
+        # last_step_fn = self.__get_last_step(sde_drift, last_step=last_step, last_step_size=last_step_size)
+        last_step_fn = self.__get_last_step_likelihood(self.drift, last_step=last_step, last_step_size=last_step_size)
 
-        def _sample(init, model, **model_kwargs):
+        def _sample(init, model, *, last_step_model_kwargs=None, **model_kwargs):
             assert not th.allclose(init, th.zeros_like(init))
             xs, logprob_xs, _logprob_xs = _sde.sample_likelihood(init, model, score_model, **model_kwargs)
             if last_step is not None:
                 ts = th.ones(init.size(0), device=init.device) * t1
-                x = last_step_fn(xs[-1], ts, model, score_model, **model_kwargs)
+                x, logp_grad_mean, logp_grad_var = last_step_fn(xs[-1], ts, model, score_model, **last_step_model_kwargs, **model_kwargs)
                 xs.append(x)
+                xs = th.stack(xs)
+                return logprob_xs, _logprob_xs, xs, logp_grad_mean, logp_grad_var
 
             # assert len(xs) == num_steps, "Samples does not match the number of steps"
             xs = th.stack(xs)

@@ -762,7 +762,7 @@ class EquivariantTransformerDataset_phasediagram(torch.utils.data.Dataset):
             self.calculator = DP(model="data/SiO2/DP_R2SCAN.pb")
         
             traj_filename = os.path.join(traj_dir, "dump.equi")
-            atoms_list = ase.io.read(traj_filename, index=":", format="lammps-dump-text")[100::10]
+            atoms_list = ase.io.read(traj_filename, index=":", format="lammps-dump-text")[100::5]
             atom_encoder = OneHotEncoder(sparse_output=False)
             atom_encoder.fit(np.array(species).reshape(-1,1))
             
@@ -815,76 +815,82 @@ class EquivariantTransformerDataset_phasediagram(torch.utils.data.Dataset):
         else:
             if stage in ["train", 'val']:
                 self.all_dataset = []
-                for P in [0,1,5]:
+                for P in [1,5]:
                     for T in [2400,1600, 800]:
                         p = torch.tensor(P/100.)
                         t = torch.tensor((T-0)/(5000.-0.))
-                    
+                        
                         dirname = os.path.join(traj_dir, f"npt_{T}K_{P}GPa/npt_coesite_dense/npt")
                         if not os.path.exists(dirname):
                             print("Skipping ", dirname)
                             continue
-                        dataset_1 = torch.load(os.path.join(dirname, f"{stage}.pt"), weights_only=False)
-                        vol_0 = torch.linalg.det(dataset_1[0].cell_0)
-                        # vol = torch.stack([torch.linalg.det(data.cell) for data in dataset_1]).mean()
-                        for data in dataset_1:
-                            data.P = p
-                            data.T = t
-                            data.forces = data.forces/(kB*T)
-                            data.cell_0 = data.cell
-                            data.kBT = torch.tensor(kB*T)
-                        self.all_dataset += dataset_1
+                        
+                        if args.select_crystal is None or args.select_crystal == 'coesite':
+                            print("         ", dirname)
+                            dataset_1 = torch.load(os.path.join(dirname, f"{stage}.pt"), weights_only=False)
+                            vol_0 = torch.linalg.det(dataset_1[0].cell_0)
+                            # vol = torch.stack([torch.linalg.det(data.cell) for data in dataset_1]).mean()
+                            for data in dataset_1:
+                                data.P = p
+                                data.T = t
+                                data.forces = data.forces/(kB*T)
+                                data.cell_0 = data.cell
+                                data.kBT = torch.tensor(kB*T)
+                            self.all_dataset += dataset_1
+                        
+                        if args.select_crystal is None or args.select_crystal == 'quartz':
+                            print("         ", dirname)
+                            dirname = os.path.join(traj_dir, f"npt_{T}K_{P}GPa/npt_quartz_dense/npt")
+                            dataset_1 = torch.load(os.path.join(dirname, f"{stage}.pt"), weights_only=False)
+                            vol_0 = torch.linalg.det(dataset_1[0].cell_0)
+                            # vol = torch.stack([torch.linalg.det(data.cell) for data in dataset_1]).mean()
+                            for data in dataset_1:
+                                data.P = p
+                                data.T = t
+                                data.cell_0 = data.cell
+                                data.forces = data.forces/(kB*T)
+                                data.kBT = torch.tensor(kB*T)
+                            self.all_dataset += dataset_1
+                        if args.select_crystal is not None and not args.select_crystal in ['coesite', 'quartz']:
+                            raise Exception("Wrong select_crystal = ", args.select_crystal)
+                # dirname = os.path.join(traj_dir, "npt_1600K_1GPa/npt_coesite_dense/npt")
+                # dataset_1 = torch.load(os.path.join(dirname, f"{stage}.pt"), weights_only=False)
+                # dataset_3 = []
+                # for i in range(len(dataset_1)//2):
+                #     data = Data(
+                #         z          = dataset_1[i].z,
+                #         num_atoms  = dataset_1[i].num_atoms,
+                #         cell       = dataset_1[i].cell_0,
+                #         frac_pos   = dataset_1[i].frac_pos_0,
+                #         forces     = torch.zeros_like(dataset_1[i].forces),
+                #         cell_0     = dataset_1[i].cell_0,
+                #         frac_pos_0 = dataset_1[i].frac_pos_0,
+                #         kBT = torch.tensor(0.)
+                #     )
+                #     data.P = torch.tensor(0.)
+                #     data.T = torch.tensor(0.)
+                #     dataset_3.append(data)
+                # self.all_dataset += dataset_3
 
-                        dirname = os.path.join(traj_dir, f"npt_{T}K_{P}GPa/npt_quartz_dense/npt")
-                        dataset_1 = torch.load(os.path.join(dirname, f"{stage}.pt"), weights_only=False)
-                        vol_0 = torch.linalg.det(dataset_1[0].cell_0)
-                        # vol = torch.stack([torch.linalg.det(data.cell) for data in dataset_1]).mean()
-                        for data in dataset_1:
-                            data.P = p
-                            data.T = t
-                            data.cell_0 = data.cell
-                            data.forces = data.forces/(kB*T)
-                            data.kBT = torch.tensor(kB*T)
-                        self.all_dataset += dataset_1
+                # dirname = os.path.join(traj_dir, "npt_1600K_1GPa/npt_quartz_dense/npt")
+                # dataset_2 = torch.load(os.path.join(dirname, f"{stage}.pt"), weights_only=False)
+                # dataset_4 = []
+                # for i in range(len(dataset_2)//2):
+                #     data = Data(
+                #         z          = dataset_2[i].z,
+                #         num_atoms  = dataset_2[i].num_atoms,
+                #         cell       = dataset_2[i].cell_0,
+                #         frac_pos   = dataset_2[i].frac_pos_0,
+                #         forces     = torch.zeros_like(dataset_2[i].forces),
+                #         cell_0     = dataset_2[i].cell_0,
+                #         frac_pos_0 = dataset_2[i].frac_pos_0
+                #     )
+                #     data.P = torch.tensor(0.)
+                #     data.T = torch.tensor(0.)
+                #     data.kBT = torch.tensor(0.)
+                #     dataset_4.append(data)
 
-                dirname = os.path.join(traj_dir, "npt_1600K_1GPa/npt_coesite_dense/npt")
-                dataset_1 = torch.load(os.path.join(dirname, f"{stage}.pt"), weights_only=False)
-                dataset_3 = []
-                for i in range(len(dataset_1)//2):
-                    data = Data(
-                        z          = dataset_1[i].z,
-                        num_atoms  = dataset_1[i].num_atoms,
-                        cell       = dataset_1[i].cell_0,
-                        frac_pos   = dataset_1[i].frac_pos_0,
-                        forces     = torch.zeros_like(dataset_1[i].forces),
-                        cell_0     = dataset_1[i].cell_0,
-                        frac_pos_0 = dataset_1[i].frac_pos_0,
-                        kBT = torch.tensor(0.)
-                    )
-                    data.P = torch.tensor(0.)
-                    data.T = torch.tensor(0.)
-                    dataset_3.append(data)
-                self.all_dataset += dataset_3
-
-                dirname = os.path.join(traj_dir, "npt_1600K_1GPa/npt_quartz_dense/npt")
-                dataset_2 = torch.load(os.path.join(dirname, f"{stage}.pt"), weights_only=False)
-                dataset_4 = []
-                for i in range(len(dataset_2)//2):
-                    data = Data(
-                        z          = dataset_2[i].z,
-                        num_atoms  = dataset_2[i].num_atoms,
-                        cell       = dataset_2[i].cell_0,
-                        frac_pos   = dataset_2[i].frac_pos_0,
-                        forces     = torch.zeros_like(dataset_2[i].forces),
-                        cell_0     = dataset_2[i].cell_0,
-                        frac_pos_0 = dataset_2[i].frac_pos_0
-                    )
-                    data.P = torch.tensor(0.)
-                    data.T = torch.tensor(0.)
-                    data.kBT = torch.tensor(0.)
-                    dataset_4.append(data)
-
-                self.all_dataset += dataset_4
+                # self.all_dataset += dataset_4
                         
             else:   
                 if "npt_0K_0GPa" in traj_dir:
@@ -946,6 +952,15 @@ class EquivariantTransformerDataset_phasediagram(torch.utils.data.Dataset):
         padded_z = torch.stack([ torch.zeros((*data.z.shape[:-1], self.num_species)) for data in dataset]) # T,L,num_species
         padded_z[:,:,:dataset_z.shape[-1]] = dataset_z
 
+        labels = torch.argmax(padded_z, dim=2).squeeze(0)
+        map_to_atomic_numbers = torch.tensor(
+            [8, 14],
+            device=labels.device,
+            dtype=torch.long,
+        )
+        atomic_numbers = map_to_atomic_numbers[labels].unsqueeze(0)
+
+
         if self.localmask:
             raise Exception("Yet to implement localmask")
         else:
@@ -968,6 +983,8 @@ class EquivariantTransformerDataset_phasediagram(torch.utils.data.Dataset):
             "mask": mask,
             "v_mask": v_mask,
             "h_mask": h_mask,
+            'atomic_numbers': atomic_numbers,
+            "E": torch.stack([data.E for data in dataset])
         }
     
 
