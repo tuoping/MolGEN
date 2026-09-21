@@ -8,10 +8,12 @@ import os
 # step. Expandable segments reduce allocator fragmentation for this workload.
 os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
 ### Stage 1
-run_tag=2
-ckpt_tag = 93
+run_tag=6
+ckpt_tag = 999
 stage_tag = 1
-suffix = ""
+
+pref_guidance = 0.5
+suffix = f"_g{pref_guidance}_schs0.5_sample1"
 ### Stage 2
 # run_tag=5
 # ckpt_tag = 99
@@ -20,12 +22,12 @@ suffix = ""
 # inference_steps = 100
 # sampling_method = "dopri5"
 ### SDE
-inference_steps = 1000
+inference_steps = 100
 sampling_method = "euler"
 
-sim_ckpt = glob.glob(f"workdir/bk.2.Stage1/run{run_tag}/epoch={ckpt_tag:03d}-step=*.ckpt")[0]
-# sim_ckpt = glob.glob(f"workdir/Stage1/run{run_tag}.linear/last.ckpt")[0]
-# sim_ckpt = "workdir/bk.1.Stage1.D1/run6/best_val_loss_path/best-val_loss_path-epoch=684-step=0021920-val_loss_path=3.9286.ckpt"
+# sim_ckpt = glob.glob(f"workdir/bk.1.Stage1.D1/run{run_tag}.targetstd0.01_symmkl_ff/epoch={ckpt_tag:03d}-step=*.ckpt")[0]
+sim_ckpt = glob.glob(f"workdir/bk.1.Stage1.D1/run{run_tag}/last.ckpt")[0]
+# sim_ckpt = glob.glob(f"workdir/bk.2.Stage1/run{run_tag}/epoch={ckpt_tag:03d}-step=*.ckpt")[0]
 
 import torch, tqdm, time
 import numpy as np
@@ -35,7 +37,7 @@ device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 torch.set_float32_matmul_precision('medium')
 
 guidance_ckpt = torch.load(
-    "workdir/Springff/epoch=029-step=0000960-val_loss=0.0018.ckpt",
+    "workdir/Springff/epoch=119-step=0001080-val_loss=0.0018.ckpt",
     weights_only=False,
     map_location="cpu",
 )
@@ -63,12 +65,12 @@ def _guidance(_x, t, **kwargs):
             **guidance_kwargs,
         )
         grad_frac = torch.autograd.grad(energy.sum(), x)[0]
-        force = -torch.einsum(
-            "btni,btij->btnj",
-            grad_frac,
-            torch.linalg.inv(guidance_kwargs["cell"]).transpose(-1, -2),
-        )
-    return force.detach() * 0.1
+        # force = -torch.einsum(
+        #     "btni,btij->btnj",
+        #     grad_frac,
+        #     torch.linalg.inv(guidance_kwargs["cell"]).transpose(-1, -2),
+        # )
+    return -grad_frac.detach() * pref_guidance
 
 
 # Keep the checkpoint state dict off the GPU. Loading it directly onto CUDA
@@ -83,9 +85,10 @@ args.data_dir = "data/MOF/CoRE_MOF/CR/ASR/"
 args.likelihood = None
 args.K_hutchinson_probe = 1
 args.K_hutchinson_probe_chunk = 1
+args.guidance = True
 
 
-out_dir = f"experiments/MOF/bk.2.Stage1/sde_TSMloss_r{run_tag}e{ckpt_tag}_{sampling_method}_step{inference_steps}{suffix}/"
+out_dir = f"experiments/MOF/bk.1.Stage1.D1/sde_TSMloss_r{run_tag}e{ckpt_tag}_{sampling_method}_step{inference_steps}{suffix}/"
 # out_dir = f"experiments/MOF/bk.1.Stage1.D1/r{run_tag}e{ckpt_tag}_{sampling_method}_step{inference_steps}/"
 print("Output folder: ", out_dir)
 os.makedirs(out_dir, exist_ok=True)

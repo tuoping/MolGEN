@@ -261,6 +261,47 @@ class ICPlan:
         # Cartesian -> fractional
         return velocity @ inv_cell
 
+    def get_velocity_guidance_from_score(
+        self, score_guidance_frac, x_frac, t, x0std, cell, diffusion=1.
+    ):
+        """
+        Convert an additive score perturbation delta_score into the
+        corresponding additive velocity perturbation delta_velocity.
+    
+            delta_velocity = D / r * delta_score
+    
+        This is NOT the same as converting a complete score field
+        into a complete velocity field.
+        """
+    
+        x = x_frac @ cell
+        score_guidance = score_guidance_frac @ cell
+    
+        t = expand_t_like_x(t, x)
+    
+        alpha_t, d_alpha_t = self.compute_alpha_t(t)
+        sigma_t, d_sigma_t = self.compute_sigma_t(t)
+    
+        reverse_alpha_ratio = alpha_t / d_alpha_t
+    
+        var = (
+            sigma_t**2
+            - reverse_alpha_ratio * d_sigma_t * sigma_t
+        )
+    
+        denom = (
+            var * (x0std**2)[:, None, None]
+            + diffusion * t
+        )
+    
+        velocity_guidance = (
+            score_guidance * denom / reverse_alpha_ratio
+        )
+    
+        inv_cell = th.linalg.inv(cell)
+    
+        return velocity_guidance @ inv_cell
+
     def compute_mu_t(self, t, x0, x1):
         """Compute the mean of time-dependent density p_t"""
         t = expand_t_like_x(t, x1)

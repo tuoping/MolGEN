@@ -974,12 +974,12 @@ class Sampler:
 
             drift = self.drift_from_output(x, t, model_output)
             score = self.score_from_output(x, t, model_output)
-            if self.guidance is not None:
+            if self.guidance is not None and th.any(t>0.5):
                 _g_score = self.guidance(x, t, **kwargs)
                 score += _g_score
                 prior_mean = self.transport.prior_mean
                 centered_x = x if prior_mean is None else x - prior_mean
-                _g_drift = self.transport.path_sampler.get_velocity_from_score(
+                _g_drift = self.transport.path_sampler.get_velocity_guidance_from_score(
                     _g_score,
                     centered_x,
                     t,
@@ -987,6 +987,11 @@ class Sampler:
                     self.transport.prior_cell,
                 )
                 drift += _g_drift
+                # drift = self.transport.path_sampler.get_velocity_from_score(score,
+                #                                                             centered_x,
+                #                                                             t,
+                #                                                             self.transport.x0std,
+                #                                                             self.transport.prior_cell)
             if self.transport.args.design:
                 self._current_logit_flow = self.logitflow_from_output(kwargs['aatype'], t, model_output)
 

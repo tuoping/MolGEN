@@ -703,11 +703,18 @@ class EquivariantMDGenWrapper(Wrapper):
                     _samples_logp = _samples_logp.detach().cpu()
                     samples_logp = samples_logp.detach().cpu()
                 case None:
-                    with torch.no_grad(): 
-                        samples = sample_fn(
-                            zs,
-                            partial(self.model.forward_inference, **prep['model_kwargs'])
-                        )
+                    if self.args.guidance:
+                        with torch.no_grad(): 
+                            samples = sample_fn(
+                                zs,
+                                partial(self.model.forward_inference, **prep['model_kwargs']),
+                                **prep["model_kwargs"]
+                            )
+                    else:
+                            samples = sample_fn(
+                                zs,
+                                partial(self.model.forward_inference, **prep['model_kwargs']),
+                            )
                 case _:
                     raise Exception(f"Wrong likelihood parameter: {self.args.likelihood}")
 

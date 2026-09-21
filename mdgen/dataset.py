@@ -699,8 +699,8 @@ class EquivariantTransformerDataset_FF(torch.utils.data.Dataset):
         inv_cell = torch.linalg.inv(cell)
         noise = torch.randn(x.shape) * 8.
         x += noise @ inv_cell
-        # forces = nn_spring.build_force(x)
-        forces = -noise
+        forces = nn_spring.build_force(x)
+        # forces = -noise
 
         T,L,_ = x.shape
 
