@@ -222,20 +222,22 @@ def compute_jsd_loss(mu_t_x1, standard_bandwidth_factor, mu_theta, k_max=1):
         "bnki,bij->bnkj",
         x - mu_t_x1[:, :, None, :] + k_vecs[None, None, :, :], standard_bandwidth_factor)   # @cell[:, None, :, :]
     sq_norms = th.sum(diff ** 2, dim=-1)  # (B, N, K)
-    logZ_P = th.logsumexp(-sq_norms / (2), dim=-1) # (B, N)
+    # logZ_P = th.logsumexp(-sq_norms / (2), dim=-1) # (B, N)
     logP_ = (-sq_norms / (2)) # - logZ_P[:,:,None]  # (B, N, K)
 
     pred_diff = th.einsum(
         "bnki,bij->bnkj",
         x - mu_theta[:, :, None, :] + k_vecs[None, None, :, :], standard_bandwidth_factor)   # @cell  # (B, None, N, 3)
     pred_sq_norms = th.sum(pred_diff ** 2, dim=-1) # (B, N, K)
-    logZ_Q = th.logsumexp(-pred_sq_norms / (2), dim=-1) # (B, N)
+    # logZ_Q = th.logsumexp(-pred_sq_norms / (2), dim=-1) # (B, N)
     logQ_ = (-pred_sq_norms) / (2) # - logZ_Q[:,:,None]  # (B, N, K)
 
     logm = th.logaddexp(logP_, logQ_) - th.log(th.tensor(2.0, device=mu_t_x1.device))# (B, N, K)
 
-    kl_p_m = (th.exp(logP_-logZ_P[:,:,None]) * (logP_ - logm)).sum(dim=-1)  # (B,N)
-    kl_q_m = (th.exp(logQ_-logZ_Q[:,:,None]) * (logQ_ - logm)).sum(dim=-1)  # (B,N)
+    # kl_p_m = (th.exp(logP_-logZ_P[:,:,None]) * (logP_ - logm)).sum(dim=-1)  # (B,N)
+    # kl_q_m = (th.exp(logQ_-logZ_Q[:,:,None]) * (logQ_ - logm)).sum(dim=-1)  # (B,N)
+    kl_p_m = (th.exp(logP_) * (logP_ - logm)).sum(dim=-1)  # (B,N)
+    kl_q_m = (th.exp(logQ_) * (logQ_ - logm)).sum(dim=-1)  # (B,N)
 
     jsd = 0.5 * kl_p_m + 0.5 * kl_q_m  # (B,N)
     return jsd
