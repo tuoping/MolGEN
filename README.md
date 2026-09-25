@@ -120,15 +120,12 @@ MIT. Additional licenses may apply for third-party source code noted in file hea
 
 ## Citation
 ```
-@misc{tuo2025accurate,
-  title        = {Flow matching for reaction pathway generation},
-  author       = {Tuo, Ping and Che n, Jiale and Li, Ju},
-  year         = {2025},
-  eprint       = {2507.10530},
-  archivePrefix= {arXiv},
-  primaryClass = {physics.chem-ph},
-  doi          = {10.48550/arXiv.2507.10530},
-  url          = {https://arxiv.org/abs/2507.10530}
+@article{tuo2026flow,
+  title={Flow matching for reaction pathway generation},
+  author={Tuo, Ping and Chen, Jiale and Li, Ju},
+  journal={Nature Communications},
+  year={2026},
+  publisher={Nature Publishing Group UK London}
 }
 ```
 
