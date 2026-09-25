@@ -11,7 +11,7 @@ MolGEN initiates with a standard Gaussian distribution. Therefore, it also incor
 
 Please feel free to reach out to us at tuoping@berkeley.edu, liju@mit.edu with any questions.
 
-A version for periodic system generation is actively developed under the latt-design branch. Welcome to try it out!
+A version for periodic system generation is actively developed under the [latt-design branch](https://github.com/tuoping/MolGEN/tree/latt-design). Welcome to try it out!
 
 ![algo.png](https://github.com/tuoping/MolGEN/blob/main/algo_schematic.png)
 
