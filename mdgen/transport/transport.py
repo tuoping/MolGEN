@@ -277,6 +277,7 @@ class Transport:
         self.prior_mean = None
         self.prior_cell = None
         self.weightfunction_x = weightfunction_x
+        self.guidance = None
         if self.args.design:
             self.condflow = DirichletConditionalFlow(K=self.args.num_species, alpha_spacing=0.001, alpha_max=self.args.alpha_max)
 
@@ -562,9 +563,9 @@ class Transport:
         ### Species-constrained, periodic OT in the atom-number dimension
         if self.prior_mean is None:
             if self.args.design:
-                x0 = self._OT_atom_permutation(x0, x1, forces, model_kwargs)
+                x0 = self._OT_atom_permutation(x0, x1, model_kwargs)
             else:
-                x0 = self._atypeaware_OT_atom_permutation(x0, x1, forces, model_kwargs)
+                x0 = self._atypeaware_OT_atom_permutation(x0, x1, model_kwargs)
 
 
         if self.args.design:  # alterations made to the original SIT code to include dirichlet flow matching for design
@@ -609,7 +610,7 @@ class Transport:
                 logits, model_output, _ = model(xt, t, **model_kwargs)
                 assert logits.shape == aatype1.shape
             else:
-                model_output = model(xt, t, **model_kwargs)
+                model_output = model(xt, th.zeros_like(t), **model_kwargs)
         assert self.args.weight_loss_var_x0 == 0
         if self.args.path_type in ["Schrodinger_Linear", "Schrodinger_Linear_onemodel"]:
             if self.latt_path:
@@ -777,6 +778,9 @@ class Transport:
 
         return body_fn
 
+    def _init_guidance(self, _guidance):
+        self.guidance = _guidance
+
     def get_drift(
             self
     ):
@@ -795,11 +799,26 @@ class Transport:
             return (-drift_mean + drift_var * score)
 
         def velocity_ode(x, t, model, **model_kwargs):
-            model_output = model(x, t, **model_kwargs)
+            model_output = model(x, th.zeros_like(t), **model_kwargs)
             if self.args.design:
                 velocity = model_output[1]
             else:
                 velocity = model_output
+            if self.args.guidance and th.any(t>0.5):
+                _g_score = self.guidance(x, t, **model_kwargs)
+                _scale = (t*2-1)
+                # score = (1-_scale)*score + _scale*_g_score
+                prior_mean = self.prior_mean
+                centered_x = x if prior_mean is None else x - prior_mean
+                _g_drift = self.path_sampler.get_velocity_guidance_from_score(
+                    _g_score,
+                    centered_x,
+                    t,
+                    self.x0std,
+                    self.prior_cell,
+                )
+                velocity = (1-_scale)*velocity + _scale*_g_drift
+            
             return velocity
 
         if self.model_type == ModelType.NOISE:
@@ -950,10 +969,7 @@ class Sampler:
         else:
             self.logitflow_from_output = None
         self._current_logit_flow = None
-        self.guidance = None
     
-    def _init_guidance(self, _guidance):
-        self.guidance = _guidance
 
     def __get_sde_diffusion_and_drift(
             self,
@@ -970,13 +986,15 @@ class Sampler:
         inv_cell = th.linalg.inv(self.transport.prior_cell)
 
         def _sde_drift(x, t, model, **kwargs):
-            model_output = model(x, t, **kwargs)
+            model_output = model(x, th.zeros_like(t), **kwargs)
 
             drift = self.drift_from_output(x, t, model_output)
             score = self.score_from_output(x, t, model_output)
-            if self.guidance is not None and th.any(t>0.5):
-                _g_score = self.guidance(x, t, **kwargs)
-                score += _g_score
+            if self.transport.args.guidance and th.any(t>0.5):
+                _g_score = self.transport.guidance(x, t, **kwargs)
+                _scale = (t*2-1)**2
+                # score = (1-_scale)*score + _scale*_g_score
+                score = score + _scale*_g_score
                 prior_mean = self.transport.prior_mean
                 centered_x = x if prior_mean is None else x - prior_mean
                 _g_drift = self.transport.path_sampler.get_velocity_guidance_from_score(
@@ -986,12 +1004,9 @@ class Sampler:
                     self.transport.x0std,
                     self.transport.prior_cell,
                 )
-                drift += _g_drift
-                # drift = self.transport.path_sampler.get_velocity_from_score(score,
-                #                                                             centered_x,
-                #                                                             t,
-                #                                                             self.transport.x0std,
-                #                                                             self.transport.prior_cell)
+                # drift = (1-_scale)*drift + _scale*_g_drift
+                drift = drift + _scale*_g_drift
+
             if self.transport.args.design:
                 self._current_logit_flow = self.logitflow_from_output(kwargs['aatype'], t, model_output)
 
@@ -1023,7 +1038,7 @@ class Sampler:
 
         inv_cell = th.linalg.inv(self.transport.prior_cell)
         def _sde_drift(x, t, model, **kwargs):
-            model_output = model(x, t, **kwargs)
+            model_output = model(x, th.zeros_like(t), **kwargs)
 
             drift = self.drift_from_output(x, t, model_output)
             score = self.score_from_output(x, t, model_output)
