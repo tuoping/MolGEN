@@ -289,11 +289,14 @@ class EquivariantFEDWrapper(Wrapper):
         log = gather_log(log, self.trainer.world_size)
         mean_log = get_log_mean(log)
         self.log("val_loss", mean_log['val_loss'])
-        
+        if self.args.loss_graph:
+            self.log("val_loss_graph", mean_log['val_loss_graph'])
+        if self.args.hessian:
+            self.log("val_hessian", mean_log['val_hessian'])
         if self.args.path_type in ["Schrodinger_Linear", "Schrodinger_Linear_onemodel"]:
             self.log("val_loss_path", mean_log['val_loss_path'])
-        else:
-            self.log("val_err_energy", mean_log['val_err_energy'])
+        
+        self.log("val_err_energy", mean_log['val_err_energy'])
         self.print_log(prefix='val', save=False)
 
     def prep_batch(self, batch):
@@ -436,71 +439,78 @@ class EquivariantFEDWrapper(Wrapper):
         x0std = self.args.x0std
         if "x0std" in prep:
             x0std = prep['x0std']
-        out_dict = self.transport.training_losses(
-            model=self.model,
-            x1=prep['latents'],
-            aatype1=batch['species'],
-            mask=prep['loss_mask'],
-            model_kwargs=prep['model_kwargs'],
-            forces = forces,
-            x0std = x0std,
-            global_step = self.current_epoch,
-        )
-        self.prefix_log('model_dur', time.time() - start)
-        self.prefix_log('time', out_dict['t'].detach().cpu())
-        # self.prefix_log('conditional_batch', prep['conditional_batch'].to(torch.float32))
-        loss_gen = out_dict['loss']
-        assert self.args.weight_loss_var_x0 == 0
-        loss = loss_gen
-        if self.args.path_type in ["Schrodinger_Linear", "Schrodinger_Linear_onemodel"]:
-            self.prefix_log("loss_dsm", out_dict['loss_dsm'].detach().cpu())
-            # self.prefix_log("loss_tsm_0", out_dict['loss_tsm_0'].detach().cpu())
-            self.prefix_log("loss_tsm_1", out_dict['loss_tsm_1'].detach().cpu())
-            self.prefix_log("loss_path", out_dict['loss_dsm'].detach().cpu()+out_dict['loss_flow'].detach().cpu())
-        if self.args.KL == 'symm':
-            self.prefix_log('loss_symmkl', out_dict['loss_symmkl'].detach().cpu())
-            self.prefix_log('loss_l1', out_dict['loss_l1'].detach().cpu())
-        if self.args.KL == 'alpha':
-            self.prefix_log('loss_alphadiv', out_dict['loss_alphadiv'].detach().cpu())
-            self.prefix_log('loss_l1', out_dict['loss_l1'].detach().cpu())
-        if self.args.KL == 'score':
-            self.prefix_log('loss_score', out_dict['loss_score'].detach().cpu())
-            self.prefix_log('loss_l1', out_dict['loss_l1'].detach().cpu())
-        if self.args.loss_consistency:
-            self.prefix_log('loss_consistency', out_dict['loss_consistency'].detach().cpu())
         if self.args.hessian:
-            self.prefix_log('loss_hessian', out_dict['loss_hessian'].detach().cpu())
+            prep['latents'].requires_grad_(True)
+        else:
+            hessian = 0.0
+        grad_needed = self.args.hessian
 
-        if self.args.potential_model:
-            self.prefix_log('loss_gen', loss_gen.detach().cpu())
-            B,T,L,_ = prep["latents"].shape
-            t = torch.ones((B,), device=prep["latents"].device).to(_TORCH_FLOAT_PRECISION)
-            energy = self.potential_model(prep['latents'], t, **prep["model_kwargs"])
-            energy = energy.sum(dim=2).squeeze(-1)
-            # forces = -torch.autograd.grad(energy, prep['latents'])[0]
-            loss_energy = (((energy -prep["E"])**2)*prep['loss_mask_potential_model']).sum(-1)
-            self.prefix_log('loss_energy', loss_energy.detach().cpu())        
-            loss += loss_energy * 0.1
+        with torch.set_grad_enabled(stage == "train" or grad_needed):
+            out_dict = self.transport.training_losses(
+                model=self.model,
+                x1=prep['latents'],
+                aatype1=batch['species'],
+                mask=prep['loss_mask'],
+                model_kwargs=prep['model_kwargs'],
+                forces = forces,
+                x0std = x0std,
+                global_step = self.current_epoch,
+            )
+            self.prefix_log('model_dur', time.time() - start)
+            self.prefix_log('time', out_dict['t'].detach().cpu())
+            # self.prefix_log('conditional_batch', prep['conditional_batch'].to(torch.float32))
+            loss_gen = out_dict['loss']
+            assert self.args.weight_loss_var_x0 == 0
+            loss = loss_gen
+            if self.args.path_type in ["Schrodinger_Linear", "Schrodinger_Linear_onemodel"]:
+                self.prefix_log("loss_dsm", out_dict['loss_dsm'].detach().cpu())
+                # self.prefix_log("loss_tsm_0", out_dict['loss_tsm_0'].detach().cpu())
+                self.prefix_log("loss_tsm_1", out_dict['loss_tsm_1'].detach().cpu())
+                self.prefix_log("loss_path", out_dict['loss_dsm'].detach().cpu()+out_dict['loss_flow'].detach().cpu())
+            if self.args.KL == 'symm':
+                self.prefix_log('loss_symmkl', out_dict['loss_symmkl'].detach().cpu())
+                self.prefix_log('loss_l1', out_dict['loss_l1'].detach().cpu())
+            if self.args.KL == 'score':
+                self.prefix_log('loss_score', out_dict['loss_score'].detach().cpu())
+                self.prefix_log('loss_l1', out_dict['loss_l1'].detach().cpu())
 
-        self.prefix_log('model_dur', time.time() - start)
-        self.prefix_log('loss', loss.detach().cpu())
-        self.prefix_log("loss_flow", out_dict['loss_flow'].detach().cpu())
-        if self.transport.latt_path:
-            self.prefix_log('loss_lattflow', out_dict['loss_lattflow'].detach().cpu())
+            FMloss = out_dict['loss_l1']
+            
+            if self.args.loss_consistency:
+                self.prefix_log('loss_consistency', out_dict['loss_consistency'].detach().cpu())
 
-        self.prefix_log('dur', time.time() - self.last_log_time)
-        if 'name' in batch:
-            self.prefix_log('name', ','.join(batch['name']))
-        self.prefix_log('general_step_dur', time.time() - start1)
-        self.last_log_time = time.time()
+            if self.args.loss_graph:
+                self.prefix_log('loss_graph', out_dict['loss_graph'].detach().cpu())
+
+            self.prefix_log('model_dur', time.time() - start)
+            self.prefix_log('loss', loss.detach().cpu())
+            self.prefix_log("loss_flow", out_dict['loss_flow'].detach().cpu())
+            if self.transport.latt_path:
+                self.prefix_log('loss_lattflow', out_dict['loss_lattflow'].detach().cpu())
+
+            self.prefix_log('dur', time.time() - self.last_log_time)
+            if 'name' in batch:
+                self.prefix_log('name', ','.join(batch['name']))
+            self.prefix_log('general_step_dur', time.time() - start1)
+            self.last_log_time = time.time()
+
+            if not torch.isfinite(loss.mean()):
+                return None
+            if torch.isnan(loss.mean()):
+                return None
+
+            if self.args.hessian:
+                grad_loss = torch.autograd.grad(
+                    FMloss.sum(),
+                    prep['latents'],
+                    create_graph=True
+                )[0]
+                hessian = ((grad_loss @ prep['model_kwargs']['cell']) ** 2).mean()
+                self.prefix_log('hessian', hessian.detach().cpu())
+        
         if stage == "val":
             self._val_EJE(batch, prep)
-
-        if not torch.isfinite(loss.mean()):
-            return None
-        if torch.isnan(loss.mean()):
-            return None
-        return loss.mean()
+        return loss.mean() + hessian
 
 
     def _val_EJE(self, batch, prep, stage="val"):
@@ -523,8 +533,8 @@ class EquivariantFEDWrapper(Wrapper):
                         pbc=[1,1,1]
                     )
             atoms.calc = self.mlp_calc
-            U_1 = atoms.get_potential_energy()
-            err_i = (U_1 - batch['E'][i][0]).abs()
+            U_1 = atoms.get_potential_energy()/L
+            err_i = (U_1 - batch['Elim'][i][0][0]/L + U_1 - batch['Elim'][i][0][1]/L).abs()
             err_batch[i] = err_i
         self.prefix_log('err_energy', err_batch)
 
@@ -694,9 +704,9 @@ class EquivariantFEDWrapper(Wrapper):
                     raise Exception(f"Wrong likelihood parameter: {self.args.likelihood}")
         else:
             # if self.args.likelihood == "FND":
+            last_step = getattr(self.args, "last_step", None)
             match self.args.likelihood:
                 case "FND":
-                    last_step = getattr(self.args, "last_step", None)
                     if self.score_model is not None:
                         with torch.no_grad(): sample_fn = self.transport_sampler.sample_sde_likelihood(num_steps=self.args.inference_steps, diffusion_form=self.args.diffusion_form, diffusion_norm=torch.tensor(self.args.diffusion_norm), score_model=partial(self.score_model.forward_inference, **prep['model_kwargs']), last_step=last_step, last_step_size=0.001 if last_step is None else self.args.last_step_size, )
                         with torch.no_grad(): sample_fn_reverse = self.transport_sampler.sample_sde_likelihood(num_steps=self.args.inference_steps, diffusion_form=self.args.diffusion_form, diffusion_norm=torch.tensor(self.args.diffusion_norm), reverse=True, score_model=partial(self.score_model.forward_inference, **prep['model_kwargs']), last_step=last_step, last_step_size=0.001 if last_step is None else self.args.last_step_size, )
@@ -704,7 +714,11 @@ class EquivariantFEDWrapper(Wrapper):
                         with torch.no_grad(): sample_fn = self.transport_sampler.sample_sde_likelihood(num_steps=self.args.inference_steps, diffusion_form=self.args.diffusion_form, diffusion_norm=torch.tensor(self.args.diffusion_norm), score_model=partial(self.model.forward_inference, **prep['model_kwargs']), last_step=last_step, last_step_size=0.001 if last_step is None else self.args.last_step_size, )
                         with torch.no_grad(): sample_fn_reverse = self.transport_sampler.sample_sde_likelihood(num_steps=self.args.inference_steps, diffusion_form=self.args.diffusion_form, diffusion_norm=torch.tensor(self.args.diffusion_norm), reverse=True, score_model=partial(self.model.forward_inference, **prep['model_kwargs']), last_step=last_step, last_step_size=0.001 if last_step is None else self.args.last_step_size, )
                 case None:
-                    with torch.no_grad(): sample_fn = self.transport_sampler.sample_sde(num_steps=self.args.inference_steps, diffusion_form=self.args.diffusion_form, diffusion_norm=torch.tensor(self.args.diffusion_norm), score_model=partial(self.score_model.forward_inference, **prep['model_kwargs']) )
+                    if self.score_model is not None:
+                        with torch.no_grad(): sample_fn = self.transport_sampler.sample_sde(num_steps=self.args.inference_steps, diffusion_form=self.args.diffusion_form, diffusion_norm=torch.tensor(self.args.diffusion_norm), score_model=partial(self.score_model.forward_inference, **prep['model_kwargs']), last_step=last_step, last_step_size=0.001 if last_step is None else self.args.last_step_size,  )
+                    else:
+                        with torch.no_grad(): sample_fn = self.transport_sampler.sample_sde(num_steps=self.args.inference_steps, diffusion_form=self.args.diffusion_form, diffusion_norm=torch.tensor(self.args.diffusion_norm), score_model=partial(self.model.forward_inference, **prep['model_kwargs']), last_step=last_step, last_step_size=0.001 if last_step is None else self.args.last_step_size, )
+
                 case _:
                     raise Exception("Wrong likelihood argument (not implemented for SDE): "+self.args.likelihood)
 

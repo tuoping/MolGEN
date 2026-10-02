@@ -816,7 +816,7 @@ class EquivariantTransformerDataset_phasediagram(torch.utils.data.Dataset):
             if stage in ["train", 'val']:
                 self.all_dataset = []
                 for P in [1,5]:
-                    for T in [2400,1600, 800]:
+                    for T in [2400,1600]:
                         p = torch.tensor(P/100.)
                         t = torch.tensor((T-0)/(5000.-0.))
                         
@@ -830,12 +830,15 @@ class EquivariantTransformerDataset_phasediagram(torch.utils.data.Dataset):
                             dataset_1 = torch.load(os.path.join(dirname, f"{stage}.pt"), weights_only=False)
                             vol_0 = torch.linalg.det(dataset_1[0].cell_0)
                             # vol = torch.stack([torch.linalg.det(data.cell) for data in dataset_1]).mean()
+                            Emin = min([data.E for data in dataset_1])
+                            Emax = max([data.E for data in dataset_1])
                             for data in dataset_1:
                                 data.P = p
                                 data.T = t
                                 data.forces = data.forces/(kB*T)
                                 data.cell_0 = data.cell
                                 data.kBT = torch.tensor(kB*T)
+                                data.Elim = torch.tensor([Emin, Emax])
                             self.all_dataset += dataset_1
                         
                         if args.select_crystal is None or args.select_crystal == 'quartz':
@@ -844,12 +847,15 @@ class EquivariantTransformerDataset_phasediagram(torch.utils.data.Dataset):
                             dataset_1 = torch.load(os.path.join(dirname, f"{stage}.pt"), weights_only=False)
                             vol_0 = torch.linalg.det(dataset_1[0].cell_0)
                             # vol = torch.stack([torch.linalg.det(data.cell) for data in dataset_1]).mean()
+                            Emin = min([data.E for data in dataset_1])
+                            Emax = max([data.E for data in dataset_1])
                             for data in dataset_1:
                                 data.P = p
                                 data.T = t
                                 data.cell_0 = data.cell
                                 data.forces = data.forces/(kB*T)
                                 data.kBT = torch.tensor(kB*T)
+                                data.Elim = torch.tensor([Emin, Emax])
                             self.all_dataset += dataset_1
                         if args.select_crystal is not None and not args.select_crystal in ['coesite', 'quartz']:
                             raise Exception("Wrong select_crystal = ", args.select_crystal)
@@ -893,33 +899,36 @@ class EquivariantTransformerDataset_phasediagram(torch.utils.data.Dataset):
                 # self.all_dataset += dataset_4
                         
             else:   
-                if "npt_0K_0GPa" in traj_dir:
-                    dataset_1 = torch.load(os.path.join(traj_dir.replace("npt_0K_0GPa", "npt_1600K_1GPa"), f"{stage}.pt"), weights_only=False)
-                    self.all_dataset = []
-                    for i in range(len(dataset_1)//2):
-                        data = Data(
-                            z          = dataset_1[i].z,
-                            num_atoms  = dataset_1[i].num_atoms,
-                            cell       = dataset_1[i].cell_0,
-                            frac_pos   = dataset_1[i].frac_pos_0,
-                            forces     = torch.zeros_like(dataset_1[i].forces),
-                            cell_0     = dataset_1[i].cell_0,
-                            frac_pos_0 = dataset_1[i].frac_pos_0
-                        )
-                        data.P = torch.tensor(0.)
-                        data.T = torch.tensor(0.)
-                        data.kBT = torch.tensor(0.)
-                        self.all_dataset.append(data)
-                else:
-                    assert T is not None
-                    t = torch.tensor((T-0)/(5000.-0.))
-                    self.all_dataset = torch.load(os.path.join(traj_dir, f"{stage}.pt"), weights_only=False)
-                    vol_0 = torch.linalg.det(self.all_dataset[0].cell_0)
-                    vol = torch.stack([torch.linalg.det(data.cell) for data in self.all_dataset]).mean()
-                    for data in self.all_dataset:
-                        data.cell_0 = data.cell_0 * (vol/vol_0)**(1./3.)
-                        data.T = torch.tensor(t)
-                        data.kBT = torch.tensor(kB*T)
+                # if "npt_0K_0GPa" in traj_dir:
+                #     dataset_1 = torch.load(os.path.join(traj_dir.replace("npt_0K_0GPa", "npt_1600K_1GPa"), f"{stage}.pt"), weights_only=False)
+                #     self.all_dataset = []
+                #     for i in range(len(dataset_1)//2):
+                #         data = Data(
+                #             z          = dataset_1[i].z,
+                #             num_atoms  = dataset_1[i].num_atoms,
+                #             cell       = dataset_1[i].cell_0,
+                #             frac_pos   = dataset_1[i].frac_pos_0,
+                #             forces     = torch.zeros_like(dataset_1[i].forces),
+                #             cell_0     = dataset_1[i].cell_0,
+                #             frac_pos_0 = dataset_1[i].frac_pos_0
+                #         )
+                #         data.P = torch.tensor(0.)
+                #         data.T = torch.tensor(0.)
+                #         data.kBT = torch.tensor(0.)
+                #         self.all_dataset.append(data)
+                # else:
+                assert T is not None
+                t = torch.tensor((T-0)/(5000.-0.))
+                self.all_dataset = torch.load(os.path.join(traj_dir, f"{stage}.pt"), weights_only=False)
+                vol_0 = torch.linalg.det(self.all_dataset[0].cell_0)
+                vol = torch.stack([torch.linalg.det(data.cell) for data in self.all_dataset]).mean()
+                Emin = min([data.E for data in self.all_dataset])
+                Emax = max([data.E for data in self.all_dataset])
+                for data in self.all_dataset:
+                    data.cell_0 = data.cell_0 * (vol/vol_0)**(1./3.)
+                    data.T = torch.tensor(t)
+                    data.kBT = torch.tensor(kB*T)
+                    data.Elim = torch.tensor([Emin, Emax])
 
             self.gibbs_sampling = False
             if self.gibbs_sampling:
@@ -984,7 +993,7 @@ class EquivariantTransformerDataset_phasediagram(torch.utils.data.Dataset):
             "v_mask": v_mask,
             "h_mask": h_mask,
             'atomic_numbers': atomic_numbers,
-            "E": torch.stack([data.E for data in dataset])
+            "Elim": torch.stack([data.Elim for data in dataset])
         }
     
 

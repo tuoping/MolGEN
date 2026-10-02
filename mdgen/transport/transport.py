@@ -18,7 +18,7 @@ def mean_flat(x, mask):
 
 
 from .integrators import ode, sde
-
+from .utils import graph_loss
 
 class ModelType(enum.Enum):
     """
@@ -523,10 +523,7 @@ class Transport:
             xt = x_d
         else:
             if self.args.path_type not in ["Schrodinger_Linear", "Schrodinger_Linear_onemodel"]:
-                if self.args.hessian:
-                    xt, ut = self.path_sampler.plan_fractional(t, x0[0], x1, self.args.hessian)
-                else:
-                    xt, ut = self.path_sampler.plan_fractional(t, x0[0], x1,)
+                xt, ut = self.path_sampler.plan_fractional(t, x0[0], x1,)
                 alpha_t, _ = self.path_sampler.compute_alpha_t(path.expand_t_like_x(t, xt))
                 assert self.args.weight_loss_var_x0 == 0
             else:
@@ -552,11 +549,7 @@ class Transport:
         if self.latt_path:
             model_output, lattflow_output = model(xt, t, **model_kwargs)
         else:
-            if self.args.hessian:
-                with th.enable_grad():
-                    model_output = model(xt, t, **model_kwargs)
-            else:
-                model_output = model(xt, t, **model_kwargs)
+            model_output = model(xt, t, **model_kwargs)
         assert self.args.weight_loss_var_x0 == 0
         if self.args.path_type in ["Schrodinger_Linear", "Schrodinger_Linear_onemodel"]:
             if self.latt_path:
@@ -576,14 +569,13 @@ class Transport:
         terms['t'] = t
         terms['pred'] = model_output
         terms['x0'] = x0
+        cell = model_kwargs['cell'].view(B*T,3,3)
         if not (self.args.design):
             if self.model_type == ModelType.VELOCITY:
                 # if self.args.KL == 'symm':
                 match self.args.KL:
                     case "symm":
-                        if self.args.path_type in ["Schrodinger_Linear", "Schrodinger_Linear_onemodel"]:
-                            raise Exception("Symm loss here doesn't work with Brownian path")
-                        cell = model_kwargs['cell'].view(B*T,3,3)
+                        
                         # inv_cell = th.linalg.inv(cell)
                         terms['loss_l1'] = mean_flat((model_output.view(B*T,N,3)@cell - ut.view(B*T,N,3)@cell).norm(dim=-1), mask.view(B*T,N,3)[:,:,0])
                         
@@ -591,13 +583,11 @@ class Transport:
                         terms['loss_symmkl'] = mean_flat(jsd, mask.view(B*T,N,3)[:,:,0])
                         terms['loss_flow'] = terms['loss_symmkl'] * self.args.pref_symmkl + terms['loss_l1'] 
                     case "L1":
-                        cell = model_kwargs['cell'].view(B*T,3,3)
-                        terms['loss_flow'] = mean_flat((model_output.view(B*T,N,3)@cell - ut.view(B*T,N,3)@cell).norm(dim=-1), mask.view(B*T,N,3)[:,:,0])
+                        terms['loss_l1'] = mean_flat((model_output.view(B*T,N,3)@cell - ut.view(B*T,N,3)@cell).norm(dim=-1), mask.view(B*T,N,3)[:,:,0])
+                        terms['loss_flow'] = terms['loss_l1']
                     case "L2":
-                        cell = model_kwargs['cell'].view(B*T,3,3)
                         terms['loss_flow'] = mean_flat(((model_output.view(B*T,N,3)@cell - ut.view(B*T,N,3)@cell).norm(dim=-1))**2, mask.view(B*T,N,3)[:,:,0])
                     case "score":
-                        cell = model_kwargs['cell'].view(B*T,3,3)
                         terms['loss_l1'] = mean_flat((model_output.view(B*T,N,3)@cell - ut.view(B*T,N,3)@cell).norm(dim=-1), mask.view(B*T,N,3)[:,:,0])
                         score_ot = self.path_sampler.get_score_from_velocity(model_output, xt-x0_mean[0], t, x0std, cell)
                         if self.weightfunction_x is not None:
@@ -632,22 +622,14 @@ class Transport:
                 else:
                     terms['loss'] = terms['loss_flow']
 
-                if self.args.hessian:
-                    with th.enable_grad():
-                        eps = th.randint(2, xt.size(), dtype=th.float, device=xt.device) * 2 - 1
-                        grad = th.autograd.grad(th.sum((model_output)*eps), xt, create_graph=True, retain_graph=True)[0]
-                        logp_grad = th.sum(
-                            grad * eps,
-                            dim = tuple(range(2, len(xt.size()))),
-                        )
-                        grad_ref = -eps / (1.0 - t[:,None,None,None]) # th.autograd.grad(th.sum(ut*eps), xt)[0]
-                        logp_grad_ref = th.sum(
-                            grad_ref * eps,
-                            dim = tuple(range(2, len(xt.size())))
-                        )
-                        logp_grad_ref.requires_grad_(False)
-                    terms['loss_hessian'] = mean_flat((logp_grad - logp_grad_ref).abs(), mask[:,:,0,0])
-                    terms['loss'] += terms['loss_hessian'] * self.args.pref_loss_hessian
+                if self.args.loss_graph:
+                    terms['loss_graph'], _ = graph_loss(
+                        (x0[0]+model_output*t[:,None,None,None]).view(B*T,N,3),
+                        xt.view(B*T,N,3),
+                        cell,
+                        self.args.cutoff,
+                    )
+                    terms['loss'] += terms['loss_graph']
                     
                 if self.latt_path:
                     lowertrigflow_output = th.stack([lattflow_output[:,:,0,0], lattflow_output[:,:,1,0], lattflow_output[:,:,1,1], lattflow_output[:,:,2,0], lattflow_output[:,:,2,1], lattflow_output[:,:,2,2]], dim=-1)
@@ -1096,7 +1078,7 @@ class Sampler:
             xs.append(x)
 
             assert len(xs) == num_steps, "Samples does not match the number of steps"
-
+            xs = th.stack(xs)
             return xs
 
         return _sample
