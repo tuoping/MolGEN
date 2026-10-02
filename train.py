@@ -128,6 +128,31 @@ if args.path_type in ["Schrodinger_Linear", "Schrodinger_Linear_onemodel"]:
         
         ModelSummary(max_depth=2),
     ]
+    if args.loss_graph:
+        callbacks_fn.append(
+            ModelCheckpoint(
+                dirpath=os.path.join(os.environ["MODEL_DIR"], "best_val_loss_path"),
+                filename="best-val_loss_graph-{epoch:03d}-{step:07d}-{val_loss_graph:.4f}",
+                monitor="val_loss_graph",
+                mode="min",
+                save_top_k=1,
+                save_last=False,
+            )
+        )
+        callbacks_fn.append(ModelSummary(max_depth=2))
+
+    if args.hessian:
+        callbacks_fn.append(
+            ModelCheckpoint(
+                dirpath=os.path.join(os.environ["MODEL_DIR"], "best_val_loss_path"),
+                filename="best-val_hessian-{epoch:03d}-{step:07d}-{val_hessian:.4f}",
+                monitor="val_hessian",
+                mode="min",
+                save_top_k=1,
+                save_last=False,
+            )
+        )
+        callbacks_fn.append(ModelSummary(max_depth=2))
 else:
     callbacks_fn = [
         ModelCheckpoint(
@@ -151,6 +176,31 @@ else:
 
         ModelSummary(max_depth=2)
     ]
+    if args.loss_graph:
+        callbacks_fn.append(
+            ModelCheckpoint(
+                dirpath=os.path.join(os.environ["MODEL_DIR"], "best_val_loss_path"),
+                filename="best-val_loss_graph-{epoch:03d}-{step:07d}-{val_loss_graph:.4f}",
+                monitor="val_loss_graph",
+                mode="min",
+                save_top_k=1,
+                save_last=False,
+            )
+        )
+        callbacks_fn.append(ModelSummary(max_depth=2))
+
+    if args.hessian:
+        callbacks_fn.append(
+            ModelCheckpoint(
+                dirpath=os.path.join(os.environ["MODEL_DIR"], "best_val_loss_path"),
+                filename="best-val_hessian-{epoch:03d}-{step:07d}-{val_hessian:.4f}",
+                monitor="val_hessian",
+                mode="min",
+                save_top_k=1,
+                save_last=False,
+            )
+        )
+        callbacks_fn.append(ModelSummary(max_depth=2))
 
 trainer = pl.Trainer(
     accelerator="gpu" if torch.cuda.is_available() else 'auto',
