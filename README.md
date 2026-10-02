@@ -4,6 +4,20 @@ Implementation of [Flow matching for reaction pathway generation](https://arxiv.
 
 ## Installation
 
+Create or activate a Python 3.9--3.12 environment, then run this command from
+the repository root:
+
+```bash
+pip install .
+```
+
+This installs `mdgen` and the dependencies below using the PyTorch 2.6/CUDA
+12.4 PyG wheels. Run `pip install .` again after changing the source, or use
+`pip install -e .` during development so imports immediately reflect edits in
+this checkout.
+
+The equivalent manual installation is:
+
 ```
 pip install numpy==1.26.0 pandas==1.5.3 scikit-learn==1.6.1
 pip install torch==2.6.0 -f https://download.pytorch.org/whl/torch_stable.html
