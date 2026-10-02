@@ -7,7 +7,7 @@ import matplotlib.pyplot as plt
 import ase.io
 
 all_idx_sample = np.arange(10000)
-num_atoms = 864
+num_atoms = 1125
 crystal_type = "coesite"
 
 import os
@@ -40,6 +40,25 @@ all_logp_backward = np.array(all_logp_backward)
 all_ex = np.array(all_ex)
 all_Uzs = np.array(all_Uzs)
 all_volumes = np.array(all_volumes)
+
+ref_ex = np.loadtxt(f"/home/tuoping/odefed_mdgen/workdir_odefed_mdgen/data/SiO2/npt_1600K_1GPa/npt_quartz_dense/npt/thermo-lammps.dat")[100:,2]
+ref_ex_c = np.loadtxt(f"/home/tuoping/odefed_mdgen/workdir_odefed_mdgen/data/SiO2/npt_1600K_1GPa/npt_coesite_dense/npt/thermo-lammps.dat")[100:,2]
+
+_ = plt.hist(all_ex/num_atoms, bins=100, color='k', density=True, label=f"{temperature_K} K (ODE)")
+plt.axvline(all_ex.max()/num_atoms, ls='--', c='k')
+plt.axvline(all_ex.min()/num_atoms, ls='--', c='k')
+
+_ = plt.hist(ref_ex/1125, bins=100, alpha=0.5, color='r', density=True, label="Quartz 1600 K")
+plt.axvline(ref_ex.max()/1125, ls='--', c='r')
+plt.axvline(ref_ex.min()/1125, ls='--', c='r')
+
+
+_ = plt.hist(ref_ex_c/864, bins=100, alpha=0.5, color='green', density=True, label="Coesite 1600 K")
+plt.axvline(ref_ex_c.max()/864, ls='--', c='green')
+plt.axvline(ref_ex_c.min()/864, ls='--', c='green')
+plt.legend()
+
+plt.savefig("E.png")
 
 
 _Ediff_forward = []
