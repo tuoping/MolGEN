@@ -1,9 +1,9 @@
-
 from deepmd.calculator import DP
-import numpy as np
+from pathlib import Path
+import re
+import time
 
-
-import ase, ase.io
+import ase.io
 
 MODEL_PATH = "./DP_R2SCAN.pb"
 
@@ -27,34 +27,55 @@ def validate_elements(atoms, type_dict, traj_path):
         )
 
 
-calculator = make_dp_calculator(MODEL_PATH)
+def trajectory_sort_key(path):
+    """Sort numeric trajectory suffixes numerically and other suffixes by name."""
+    suffix = path.stem.removeprefix("gentraj_")
+    return (0, int(suffix)) if suffix.isdigit() else (1, suffix)
 
-import matplotlib.pyplot as plt
-import numpy as np
 
-import sys
-num_trials = int(sys.argv[1])
+def main():
+    work_dir = Path.cwd()
+    trajectory_paths = sorted(work_dir.glob("gentraj_*.xyz"), key=trajectory_sort_key)
+    if not trajectory_paths:
+        print(f"No gentraj_*.xyz files found in {work_dir}")
+        return
 
-import time
-import os
+    calculator = None
+    for trajectory_path in trajectory_paths:
+        suffix = trajectory_path.stem.removeprefix("gentraj_")
+        if not re.fullmatch(r"[A-Za-z0-9_.-]+", suffix):
+            print(f"WARNING:: skipping unexpected filename {trajectory_path.name}")
+            continue
 
-dirname = f'./'
-for i_trial in range(0, num_trials):
-    s_time = time.time()
-    if os.path.exists(f"{dirname}/all_energy_atoms_{i_trial}.dat") and isinstance(np.loadtxt(f"{dirname}/all_energy_atoms_{i_trial}.dat"), int):
-        print(f"WARNING:: skipping {i_trial}", np.loadtxt(f"{dirname}/all_energy_atoms_{i_trial}.dat"))
-        continue
-    
-    traj = ase.io.read(f'{dirname}/gentraj_{i_trial}.xyz', format='extxyz', index=":")
-    ofile_e = open(f"{dirname}/all_energy_atoms_{i_trial}.dat", "w")
-    atoms = traj[-1]
-    validate_elements(atoms, calculator.type_dict, f"{dirname}/gentraj_{i_trial}.xyz")
-    atoms.calc = calculator
-    energy_atoms = atoms.get_potential_energy()
-           
-    ofile_e.write(f"{energy_atoms}\n")
-    ofile_e.flush()
-    ofile_e.close()
-    e_time = time.time()
-    print(f"Rollout {i_trial} done, time: {e_time - s_time:.2f} s")
-    
+        energy_path = work_dir / f"all_energy_atoms_{suffix}.dat"
+        # A non-empty output indicates that this trajectory was already handled.
+        # Missing and zero-byte outputs are (re)calculated.
+        if energy_path.is_file() and energy_path.stat().st_size > 0:
+            print(
+                f"WARNING:: skipping {trajectory_path.name}; "
+                f"{energy_path.name} exists and is non-empty"
+            )
+            continue
+
+        if calculator is None:
+            calculator = make_dp_calculator(MODEL_PATH)
+
+        start_time = time.time()
+        traj = ase.io.read(trajectory_path, format="extxyz", index=":")
+        if not traj:
+            print(f"WARNING:: skipping empty trajectory {trajectory_path.name}")
+            continue
+
+        atoms = traj[-1]
+        validate_elements(atoms, calculator.type_dict, trajectory_path)
+        atoms.calc = calculator
+        energy_atoms = atoms.get_potential_energy()
+        energy_path.write_text(f"{energy_atoms}\n", encoding="utf-8")
+        print(
+            f"{trajectory_path.name} done, time: "
+            f"{time.time() - start_time:.2f} s"
+        )
+
+
+if __name__ == "__main__":
+    main()

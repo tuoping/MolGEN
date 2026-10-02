@@ -7,7 +7,7 @@ ckpt_tag = 10
 inference_steps = 10
 
 sampling_method = "rk4"
-sim_ckpt = "workdir/fixlatt/run10.bk006.Tcv_l1/last.ckpt" # r10 e=111(actually 193)
+sim_ckpt = "workdir/smallcell/springprior_k_parallel_10/fixlatt_1_embed32/run8/epoch=003-step=0006920-val_err_energy=0.1873.ckpt" 
 
 device = "cuda"
 
@@ -15,7 +15,7 @@ import os, torch, tqdm, time
 import numpy as np
 from mdgen.fed_wrapper import EquivariantFEDWrapper
 
-out_dir = f"experiments/smallcell_SiO2_nvt_nowrap/1600K1GPa/test_quartz_x0varkBT/ref"
+out_dir = f"ref/coesite/"
 print("Output folder: ", out_dir)
 os.makedirs(out_dir, exist_ok=True)
 with open(f"{out_dir}/README.md", "w") as fp:
@@ -30,7 +30,7 @@ args = hparams['args']
 args.sampling_method = sampling_method
 args.inference_steps = inference_steps
 args.k_spring = 1.0
-args.data_dir = "data/SiO2/npt_1600K_1GPa/npt_quartz_dense/nvt/"
+args.data_dir = "data/SiO2/npt_1600K_1GPa/npt_coesite_dense/nvt/"
 args.likelihood = None # "EJE"
 args.K_hutchinson_probe = 16
 args.K_hutchinson_probe_chunk = 4
