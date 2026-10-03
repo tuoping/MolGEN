@@ -1,33 +1,38 @@
-# from mdgen.parsing import parse_train_args
-# args = parse_train_args()
-
 import glob
 import os
+import re
 
-# Dynamic neighbor graphs use differently sized CUDA allocations at each SDE
-# step. Expandable segments reduce allocator fragmentation for this workload.
 os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
-### Stage 1
-run_tag=6
-ckpt_tag = 999
-stage_tag = 1
-
-pref_guidance = 0.5
-suffix = f"_g{pref_guidance}_schs0.5_sample1"
-### Stage 2
-# run_tag=5
-# ckpt_tag = 99
-# stage_tag = 2
-### ODE
-# inference_steps = 100
-# sampling_method = "dopri5"
 ### SDE
 inference_steps = 100
 sampling_method = "euler"
+guidance = False
+if guidance:
+    suffix = f"_gtcubic"
+else:
+    suffix = ""
 
-# sim_ckpt = glob.glob(f"workdir/bk.1.Stage1.D1/run{run_tag}.targetstd0.01_symmkl_ff/epoch={ckpt_tag:03d}-step=*.ckpt")[0]
-sim_ckpt = glob.glob(f"workdir/bk.1.Stage1.D1/run{run_tag}/last.ckpt")[0]
-# sim_ckpt = glob.glob(f"workdir/bk.2.Stage1/run{run_tag}/epoch={ckpt_tag:03d}-step=*.ckpt")[0]
+### Stage 1
+run_tag = 4
+ckpt_tag = 459
+stage_tag = 1
+stage_subdirs = {
+    1: "lattpath_noTime/bk.1.Stage1",
+}
+
+
+print(f"workdir/{stage_subdirs[stage_tag]}/run{run_tag}/best_val_loss_path/best-val_loss_graph-epoch={ckpt_tag:03d}-step=*.ckpt")
+sim_ckpt = glob.glob(f"workdir/{stage_subdirs[stage_tag]}/run{run_tag}/best_val_loss_path/best-val_loss_graph-epoch={ckpt_tag:03d}-step=*.ckpt")[0]
+
+
+out_dir = f"experiments/MOF/{stage_subdirs[stage_tag]}/sde_TSMloss_r{run_tag}e{ckpt_tag}_{sampling_method}_step{inference_steps}{suffix}/"
+
+
+
+print("Output folder: ", out_dir)
+os.makedirs(out_dir, exist_ok=True)
+with open(f"{out_dir}/README.md", "w") as fp:
+    fp.write(sim_ckpt)
 
 import torch, tqdm, time
 import numpy as np
@@ -36,42 +41,11 @@ from mdgen.equivariant_wrapper import EquivariantMDGenWrapper
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 torch.set_float32_matmul_precision('medium')
 
-guidance_ckpt = torch.load(
-    "workdir/Springff/epoch=119-step=0001080-val_loss=0.0018.ckpt",
-    weights_only=False,
-    map_location="cpu",
-)
-guidance_args = guidance_ckpt["hyper_parameters"]["args"]
-guidance_model = EquivariantMDGenWrapper(guidance_args).to(device)
-guidance_model.load_state_dict(guidance_ckpt["state_dict"], strict=True)
-guidance_model.eval()
-guidance_model.requires_grad_(False)
-del guidance_ckpt
-
-def _guidance(_x, t, **kwargs):
-    # SDE sampling runs in inference mode. Clone its tensors with inference
-    # mode disabled so autograd can compute the energy gradient with respect
-    # to the current coordinates only.
-    with torch.inference_mode(False):
-        x = _x.detach().clone().requires_grad_(True)
-        guidance_t = t.detach().clone()
-        guidance_kwargs = {
-            key: value.detach().clone() if torch.is_tensor(value) else value
-            for key, value in kwargs.items()
-        }
-        energy = guidance_model.potential_model(
-            x,
-            guidance_t,
-            **guidance_kwargs,
-        )
-        grad_frac = torch.autograd.grad(energy.sum(), x)[0]
-        # force = -torch.einsum(
-        #     "btni,btij->btnj",
-        #     grad_frac,
-        #     torch.linalg.inv(guidance_kwargs["cell"]).transpose(-1, -2),
-        # )
-    return -grad_frac.detach() * pref_guidance
-
+species = [1, 3, 5, 6, 7, 8, 9, 11, 12, 13, 14, 15, 16, 17, 19, 20, 21,
+                                                22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 37, 39, 40,
+                                                41, 42, 44, 45, 46, 47, 48, 49, 51, 53, 55, 57, 58, 59, 60, 62, 63,
+                                                64, 65, 66, 67, 68, 69, 70, 71, 72, 74, 77, 78, 79, 80, 82, 83, 90,
+                                                92, 93, 94]
 
 # Keep the checkpoint state dict off the GPU. Loading it directly onto CUDA
 # otherwise leaves a second full copy of every parameter alive in `ckpt`.
@@ -81,25 +55,59 @@ args = hparams['args']
 args.sampling_method = sampling_method
 args.inference_steps = inference_steps
 # args.alpha_max = 16
-args.data_dir = "data/MOF/CoRE_MOF/CR/ASR/"
+
+args.data_dir = "data/MOF/CoRE_MOF/CR-most_frequent_composition_C12H8I2N4Zn/ASR/"
 args.likelihood = None
 args.K_hutchinson_probe = 1
 args.K_hutchinson_probe_chunk = 1
-args.guidance = True
+args.guidance = guidance
+args.cubic_priorcell = True
+
+from mdgen.spring import ZBLRepulsiveWall
+if args.guidance:
+    wall = ZBLRepulsiveWall()
+#     guidance_ckpt = torch.load(
+#         "workdir/Springff/run3/epoch=174-step=0005600-val_loss=0.0896.ckpt",
+#         weights_only=False,
+#         map_location="cpu",
+#     )
+#     guidance_args = guidance_ckpt["hyper_parameters"]["args"]
+#     guidance_model = EquivariantMDGenWrapper(guidance_args).to(device)
+#     guidance_model.load_state_dict(guidance_ckpt["state_dict"], strict=True)
+#     guidance_model.eval()
+#     guidance_model.requires_grad_(False)
+#     del guidance_ckpt
+
+def _guidance(_x, t, **kwargs):
+    # SDE sampling runs in inference mode. Clone its tensors with inference
+    # mode disabled so autograd can compute the energy gradient with respect
+    # to the current coordinates only.
+    with torch.inference_mode(False):
+        x = _x.detach().clone().requires_grad_(True)
+        # guidance_t = t.detach().clone()
+        # guidance_kwargs = {
+        #     key: value.detach().clone() if torch.is_tensor(value) else value
+        #     for key, value in kwargs.items()
+        # }
+        # energy = guidance_model.potential_model(
+        #     x,
+        #     guidance_t,
+        #     **guidance_kwargs,
+        # )
+        # grad_frac = torch.autograd.grad(energy.sum(), x)[0]
+        # # force = -torch.einsum(
+        # #     "btni,btij->btnj",
+        # #     grad_frac,
+        # #     torch.linalg.inv(guidance_kwargs["cell"]).transpose(-1, -2),
+        # # )
+        labels = torch.argmax(kwargs['aatype'], dim=-1).squeeze(0).squeeze(0)  # T,L
+        atomic_numbers = torch.tensor([species[label] for label in labels.flatten()]).to(x.device)  # T,L
+        wall_force = wall.build_force(x.squeeze(1), kwargs['cell'].squeeze(0).squeeze(0), atomic_numbers) @ kwargs['cell'].transpose(-1, -2)
+    # return -grad_frac.detach()
+    return wall_force * 0.0001
 
 
-out_dir = f"experiments/MOF/bk.1.Stage1.D1/sde_TSMloss_r{run_tag}e{ckpt_tag}_{sampling_method}_step{inference_steps}{suffix}/"
-# out_dir = f"experiments/MOF/bk.1.Stage1.D1/r{run_tag}e{ckpt_tag}_{sampling_method}_step{inference_steps}/"
-print("Output folder: ", out_dir)
-os.makedirs(out_dir, exist_ok=True)
-with open(f"{out_dir}/README.md", "w") as fp:
-    fp.write(sim_ckpt)
 
-species = [1, 3, 5, 6, 7, 8, 9, 11, 12, 13, 14, 15, 16, 17, 19, 20, 21,
-                                                22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 37, 39, 40,
-                                                41, 42, 44, 45, 46, 47, 48, 49, 51, 53, 55, 57, 58, 59, 60, 62, 63,
-                                                64, 65, 66, 67, 68, 69, 70, 71, 72, 74, 77, 78, 79, 80, 82, 83, 90,
-                                                92, 93, 94]
 from mdgen.dataset import EquivariantTransformerDataset_MaterialProject
 dataset = EquivariantTransformerDataset_MaterialProject(
                                         args, 
@@ -111,15 +119,18 @@ dataset = EquivariantTransformerDataset_MaterialProject(
 
 
 model = EquivariantMDGenWrapper(**hparams)
-print(model.model)
+# print(model.model)
 model.load_state_dict(ckpt["state_dict"], strict=True)
 del ckpt, hparams
 
-guidance = _guidance
-model.transport_sampler._init_guidance(guidance)
+if args.guidance:
+    guidance = _guidance
+    model.transport._init_guidance(guidance)
+
 model.eval().to(device)
 
-print(model.args)
+
+# print(model.args)
 print(model.args.path_type)
 print(model.args.sampling_method)
 print(model.args.inference_steps)
@@ -151,7 +162,7 @@ all_rollout_atoms = []
 all_rollout_atoms_ref = []
 start = time.time()
 all_logp = []
-for i_rollout in range(0, 1):
+for i_rollout in range(1, len(dataset)):
     # idx = idx_rollouts[i_rollout]
     idx = i_rollout
     print(i_rollout, idx)
