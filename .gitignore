@@ -6,10 +6,12 @@ python=3.10
 slurm-*
 *.log
 *.xyz
-misc_notebooks/check*
 experiments
 
 *.model
 *.tgz
 .vscode
 .codex
+*.egg-info/
+build/
+dist/
