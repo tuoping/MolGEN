@@ -167,8 +167,6 @@ def lattice_polar_decompose_torch(lattices: torch.Tensor):
     k = decompose_symmetric_matrix(S)
     return k
 
-from .spring import NNSpring
-from .spring import ZBLRepulsiveWall
 class EquivariantMDGenWrapper(Wrapper):
     def __init__(self, args):
         super().__init__(args)
@@ -265,7 +263,7 @@ class EquivariantMDGenWrapper(Wrapper):
                 weightfunction_x=PolynomialRepulsiveEnergy(1.4, prefactor=10, n_pow=4)
             )
             if self.transport.latt_path:
-                self.transport.mean_atomic_volume = getattr(args, "mean_atomic_volume", None)
+                self.transport.mean_atomic_volume = args.mean_atomic_volume
             self.transport_sampler = Sampler(self.transport)
 
         if not hasattr(args, 'ema'):
@@ -290,13 +288,7 @@ class EquivariantMDGenWrapper(Wrapper):
         log = gather_log(log, self.trainer.world_size)
         mean_log = get_log_mean(log)
         self.log("val_loss", mean_log['val_loss'])
-        if self.args.loss_graph:
-            self.log("val_loss_graph", mean_log['val_loss_graph'])
-        if self.transport.latt_path:
-            self.log('val_loss_lattflow', mean_log['val_loss_lattflow'])
-        if not self.args.potential_model:
-            self.log("val_meanRMSD", mean_log['val_meanRMSD'])
-            self.log("val_E_spring", mean_log['val_E_spring'])
+        # self.log("val_loss_gen", mean_log['val_loss_gen'])
         if self.args.path_type in ["Schrodinger_Linear", "Schrodinger_Linear_onemodel"]:
             self.log("val_loss_path", mean_log['val_loss_path'])
         self.print_log(prefix='val', save=False)
@@ -353,16 +345,8 @@ class EquivariantMDGenWrapper(Wrapper):
         v_loss_mask = batch["v_mask"]
 
         ### for schrodinger bridge
-        if not self.args.potential_model:
-            self.transport.x0std = batch['x0std']
-
-        if self.args.latt_path and self.args.cubic_priorcell:
-            _cell = batch['cell']
-            _volume = torch.linalg.det(_cell).abs().unsqueeze(-1).unsqueeze(-1)
-            self.transport.prior_cell = (torch.eye(3).unsqueeze(0).unsqueeze(0).to(_cell.device) * _volume**(1./3)).to(_TORCH_FLOAT_PRECISION)
-        else:
-            self.transport.prior_cell = batch["cell"].to(_TORCH_FLOAT_PRECISION)
-
+        self.transport.x0std = batch['x0std']
+        self.transport.prior_cell = batch["cell"]
         if not self.args.uniform_prior:
             self.transport.prior_mean = batch['x']
 
@@ -394,8 +378,7 @@ class EquivariantMDGenWrapper(Wrapper):
         
         if "forces" in batch:
             data["forces"] = batch['forces'].to(_TORCH_FLOAT_PRECISION)
-        if not self.args.potential_model:
-            data['x0std'] = batch['x0std'].to(_TORCH_FLOAT_PRECISION)
+        data['x0std'] = batch['x0std'].to(_TORCH_FLOAT_PRECISION)
         return data
 
     def prep_batch_x_potential_model(self, batch):
@@ -433,8 +416,6 @@ class EquivariantMDGenWrapper(Wrapper):
         
         if "forces" in batch:
             data["forces"] = batch['forces'].to(_TORCH_FLOAT_PRECISION)
-        if "E" in batch:
-            data["E"] = batch['E'].to(_TORCH_FLOAT_PRECISION)
         return data
     
     def general_step(self, batch, stage='train'):
@@ -442,23 +423,7 @@ class EquivariantMDGenWrapper(Wrapper):
         self.stage = stage
         start1 = time.time()
         prep = self.prep_batch(batch)
-        if stage == "val" and self.args.latt_path:
-            def clone_batch(x):
-                if torch.is_tensor(x):
-                    return x.clone()
-                elif isinstance(x, dict):
-                    return {k: clone_batch(v) for k, v in x.items()}
-                elif isinstance(x, list):
-                    return [clone_batch(v) for v in x]
-                elif isinstance(x, tuple):
-                    return tuple(clone_batch(v) for v in x)
-                else:
-                    return x
-            batch_val = clone_batch(batch)
-            prep_val = self.prep_batch(batch_val)
-        else:
-            batch_val = batch
-            prep_val = prep
+
         start = time.time()
 
         if self.args.potential_model:
@@ -468,6 +433,8 @@ class EquivariantMDGenWrapper(Wrapper):
                 xfrac = prep['latents'].detach().requires_grad_(True)
                 energy = self.potential_model(xfrac, t, **prep["model_kwargs"])
                 energy = energy.sum(dim=2).squeeze(-1)
+                # loss_energy = (((energy -prep["E"])**2)*prep['loss_mask_potential_model']).sum(-1)
+                # self.prefix_log('loss_energy', loss_energy.detach().cpu())      
                 
                 grad_frac = torch.autograd.grad(
                     energy.sum(),
@@ -480,12 +447,9 @@ class EquivariantMDGenWrapper(Wrapper):
                     grad_frac,
                     torch.linalg.inv(prep["model_kwargs"]['cell']).transpose(-1, -2),
                 )
-            loss_energy = ((energy -prep["E"]).abs()).sum(-1)
-            self.prefix_log('loss_energy', loss_energy.detach().cpu())      
             forces = -grad_cart
             loss_forces = (forces - prep['forces']).norm(dim=-1).sum(dim=-1)
-            self.prefix_log('loss_forces', loss_forces.detach().cpu())  
-            loss = loss_forces + loss_energy
+            loss = loss_forces
         else:
             forces = None
             if self.args.path_type in ["Schrodinger_Linear", "Schrodinger_Linear_onemodel"]:
@@ -493,7 +457,6 @@ class EquivariantMDGenWrapper(Wrapper):
             x0std = self.args.x0std
             if "x0std" in prep:
                 x0std = prep['x0std']
-
             out_dict = self.transport.training_losses(
                 model=self.model,
                 x1=prep['latents'],
@@ -528,8 +491,6 @@ class EquivariantMDGenWrapper(Wrapper):
                 self.prefix_log('loss_l1', out_dict['loss_l1'].detach().cpu())
             if self.args.loss_consistency:
                 self.prefix_log('loss_consistency', out_dict['loss_consistency'].detach().cpu())
-            if self.args.loss_graph:
-                self.prefix_log('loss_graph', out_dict['loss_graph'].detach().cpu())
 
             if self.args.design:
                 self.prefix_log('loss_logit', out_dict['loss_logit'].detach().cpu())
@@ -538,8 +499,6 @@ class EquivariantMDGenWrapper(Wrapper):
             self.prefix_log("loss_flow", out_dict['loss_flow'].detach().cpu())
             if self.transport.latt_path:
                 self.prefix_log('loss_lattflow', out_dict['loss_lattflow'].detach().cpu())
-            if stage == "val":
-                self._val_rmse(batch_val, prep_val)
                 
         self.prefix_log('loss', loss.detach().cpu())
         self.prefix_log('dur', time.time() - self.last_log_time)
@@ -547,56 +506,15 @@ class EquivariantMDGenWrapper(Wrapper):
             self.prefix_log('name', ','.join(batch['name']))
         self.prefix_log('general_step_dur', time.time() - start1)
         self.last_log_time = time.time()
+        if stage == "val":
+            # self._val_saddle_point_object_aware(batch, prep)
+            pass
 
         if not torch.isfinite(loss.mean()):
             return None
         if torch.isnan(loss.mean()):
             return None
         return loss.mean()
-
-
-    def _val_rmse(self, batch, prep, stage="val"):
-        species = [1, 3, 5, 6, 7, 8, 9, 11, 12, 13, 14, 15, 16, 17, 19, 20, 21,
-                                            22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 37, 39, 40,
-                                            41, 42, 44, 45, 46, 47, 48, 49, 51, 53, 55, 57, 58, 59, 60, 62, 63,
-                                            64, 65, 66, 67, 68, 69, 70, 71, 72, 74, 77, 78, 79, 80, 82, 83, 90,
-                                            92, 93, 94]
-        B,T,L,_ = prep['latents'].shape
-        try:
-            if self.args.latt_path:
-                pred_pos, _, pred_cell = self.inference(batch, stage=stage)
-                cell = pred_cell[-1]
-            else:
-                pred_pos, _ = self.inference(batch, stage=stage)
-                cell = prep['model_kwargs']['cell']
-            ref_pos = prep['latents']
-
-            with torch.no_grad():
-                ## (\Delta d per atom) # B,T,L
-                # x, x_ref: (..., N, 3), fractional coordinates
-                # RMSD = sqrt(mean_i |dx_i|^2)
-                dx = pred_pos[-1] - ref_pos
-                dx = dx - torch.round(dx)       # minimum image in fractional coords
-                dx_cart = dx @ cell             # cell: (..., 3, 3) or (3, 3)
-                err = torch.sqrt((dx_cart**2).sum(dim=-1).mean(dim=-1))
-                ## mean RMSD per sample # B
-                err = err.mean(dim=-1)
-                self.prefix_log('meanRMSD', err)  # An extra factor of 3 was divided when taking the mean over the T dimension
-
-                labels_B = torch.argmax(batch['species'], dim=-1)  # B,L
-                # energies_B = torch.zeros(B)
-                # for i in range(B):
-                atomic_numbers = torch.tensor([[species[label] for label in labels.flatten()] for labels in labels_B]).to(pred_pos.device)  # T,L
-                nn_spring = NNSpring(pred_pos[-1].squeeze(1), cell.squeeze(1), atomic_numbers=atomic_numbers)
-                wall = ZBLRepulsiveWall()
-                energies_B = nn_spring.build_energy(pred_pos[-1].squeeze(1)) + wall.build_energy(pred_pos[-1].squeeze(1), cell.squeeze(1), atomic_numbers)
-                # energies_B[i] = e.sum()
-                self.prefix_log("E_spring", energies_B)
-        except:
-                print("WARNNING:: Inference failed !!!")
-                self.prefix_log('meanRMSD', torch.nan)
-                self.prefix_log("E_spring", torch.nan)
-
 
     def _val_saddle_point_object_aware(self, batch, prep, stage="val"):
             B,T,L,_ = prep['latents'].shape
@@ -659,7 +577,7 @@ class EquivariantMDGenWrapper(Wrapper):
         return v + self.args.guidance_pref*g
 
     
-    def inference(self, batch, stage='inference', sample_latt=True):
+    def inference(self, batch, stage='inference'):
         s_time= time.time()
         self.stage = stage
         prep = self.prep_batch(batch)
@@ -679,10 +597,7 @@ class EquivariantMDGenWrapper(Wrapper):
         zs = zs[0]
         zs_mean = zs_mean[0]
         if self.transport.latt_path:
-            if sample_latt:
-                cell0 = self.transport.sample_latt(zs.shape, self.device)
-            else:
-                cell0 = self.transport.prior_cell.clone()
+            cell0 = self.transport.sample_latt(zs.shape, self.device)
         self.integration_step = 0
         if self.args.path_type not in ["Schrodinger_Linear", "Schrodinger_Linear_onemodel"]:
             # if self.args.likelihood == "EJE":
@@ -758,8 +673,7 @@ class EquivariantMDGenWrapper(Wrapper):
                     with torch.no_grad(): 
                         samples = sample_fn(
                             (zs, cell0),
-                            partial(self.model.forward_inference, **prep['model_kwargs']),
-                            **prep["model_kwargs"]
+                            partial(self.model.forward_inference, **prep['model_kwargs'])
                         )
         elif self.args.design:
             zs = zs.detach()
@@ -767,8 +681,7 @@ class EquivariantMDGenWrapper(Wrapper):
             with torch.no_grad(): 
                 samples, a_samples = sample_fn(
                     (zs_discrete, zs),
-                    partial(self.model.forward_inference, **prep['model_kwargs']),
-                    **prep["model_kwargs"]
+                    partial(self.model.forward_inference, **prep['model_kwargs'])
                 )
         else:
             zs = zs.detach()
@@ -788,19 +701,11 @@ class EquivariantMDGenWrapper(Wrapper):
                     _samples_logp = _samples_logp.detach().cpu()
                     samples_logp = samples_logp.detach().cpu()
                 case None:
-                    if self.args.guidance:
-                        with torch.no_grad(): 
-                            samples = sample_fn(
-                                zs,
-                                partial(self.model.forward_inference, **prep['model_kwargs']),
-                                **prep["model_kwargs"]
-                            )
-                    else:
-                        with torch.no_grad():
-                            samples = sample_fn(
-                                zs,
-                                partial(self.model.forward_inference, **prep['model_kwargs']),
-                            )
+                    with torch.no_grad(): 
+                        samples = sample_fn(
+                            zs,
+                            partial(self.model.forward_inference, **prep['model_kwargs'])
+                        )
                 case _:
                     raise Exception(f"Wrong likelihood parameter: {self.args.likelihood}")
 
@@ -808,9 +713,9 @@ class EquivariantMDGenWrapper(Wrapper):
         # print("WARNNING::")
         # print("Applying the following mask to the output vector:")
         if self.transport.latt_path:
-            samples[0] = torch.stack(samples[0])
-            samples[1] = torch.stack(samples[1])
             samples[0] = samples[0] *prep["model_kwargs"]['v_mask'] + prep["latents"]*(1-prep["model_kwargs"]['v_mask'])
+            cell_out = samples[1][-1]
+            cell_out = cell_out.detach().requires_grad_(False)
         else:
             if isinstance(samples, list):
                 samples = torch.stack(samples)

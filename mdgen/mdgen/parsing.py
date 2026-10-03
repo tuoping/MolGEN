@@ -47,13 +47,7 @@ def parse_train_args():
     
     ## Training data 
     group = parser.add_argument_group("Training data settings")
-    # group.add_argument('--data_dir', type=str, default="tests/test_data/Transition1x")
-    group.add_argument(
-        '--data_dir',
-        type=str,
-        nargs='+',
-        default=["tests/test_data/Transition1x"]
-    )
+    group.add_argument('--data_dir', type=str, default="tests/test_data/Transition1x")
     group.add_argument('--num_frames', type=int, default=1)
     group.add_argument('--suffix', type=str, default='')
 
@@ -84,12 +78,8 @@ def parse_train_args():
     group.add_argument("--pref_TSMloss", type=float, default=1E-2)
     group.add_argument("--pref_loss_SDE", type=float, default=1E-2)
     group.add_argument('--uniform_prior', action='store_true')
-    group.add_argument('--cubic_priorcell', action='store_true')
-    group.add_argument("--std_cell_diagonal", type=float, default=2)
-    group.add_argument("--std_cell_offdiagonal", type=float, default=0.2)
     group.add_argument('--target-std', type=float, default=1.)
-    group.add_argument('--prior-std', type=float, default=1.)
-    group.add_argument("--sampling_method", type=str, default="euler", choices=["dopri5", 'rk4', "euler", "Heun"])
+    group.add_argument("--sampling_method", type=str, default="dopri5", choices=["dopri5", 'rk4', "euler", "Heun"])
     group.add_argument('--K_hutchinson_probe', type=float, default=4)
     group.add_argument('--K_hutchinson_probe_chunk', type=float, default=2)
     group.add_argument('--alpha_max', type=float, default=8)
@@ -98,8 +88,6 @@ def parse_train_args():
     group.add_argument('--allow_nan_cfactor', action='store_true')
     group.add_argument('--x0std', type=float, default=None)
     group.add_argument('--loss_consistency', action='store_true')
-    group.add_argument('--loss_graph', action='store_true')
-    group.add_argument("--pref_loss_graph", type=float, default=1)
     group.add_argument('--beta_sample_t', type=float, default=0.8)
     group.add_argument("--loss-weight", type=str, default=None, choices=["None", "velocity", "likelihood"])
     group.add_argument('--weight_loss_var_x0', type=float, default=0)
@@ -135,7 +123,6 @@ def parse_train_args():
     # group.add_argument("--pbc", action='store_true')
     group.add_argument("--guided", action='store_true')
     group.add_argument("--latt_path", action="store_true")
-    group.add_argument("--guidance", action="store_true")
 
     group.add_argument("--inference_steps", type=int, default=20)
 

@@ -167,9 +167,7 @@ def lattice_polar_decompose_torch(lattices: torch.Tensor):
     k = decompose_symmetric_matrix(S)
     return k
 
-from .spring import NNSpring
-from .spring import ZBLRepulsiveWall
-class EquivariantMDGenWrapper(Wrapper):
+class EquivariantFEDWrapper(Wrapper):
     def __init__(self, args):
         super().__init__(args)
         for key in [
@@ -180,12 +178,12 @@ class EquivariantMDGenWrapper(Wrapper):
         
         num_species = args.num_species
         num_radial = 96
-        num_vector_out=1
         if args.design:
             num_scalar_out = self.args.num_species
+            num_vector_out=0
         else:
             num_scalar_out = 0
-            
+            num_vector_out=1
         latent_dim = args.embed_dim
         
         if args.tps_condition:
@@ -198,7 +196,22 @@ class EquivariantMDGenWrapper(Wrapper):
         processor = Processor(num_convs=5, node_dim=latent_dim, num_heads=8, ff_dim=args.ff_dim, edge_dim=latent_dim)
         print("Initializing drift model")
         latt_path = args.latt_path
-
+        self.model = EquivariantTransformer_dpm(
+            encoder = encoder,
+            processor = processor,
+            decoder = Decoder(dim=latent_dim, num_scalar_out=num_scalar_out, num_vector_out=num_vector_out, num_species=args.num_species),
+            cutoff=args.cutoff,
+            latent_dim=latent_dim,
+            num_radial = num_radial,
+            design=args.design,
+            potential_model = False,
+            tps_condition=args.tps_condition,
+            sim_condition=args.sim_condition,
+            num_species=args.num_species,
+            pbc=args.pbc,
+            object_aware=args.object_aware,
+            latt_path = latt_path
+        )
         if args.potential_model:
             num_scalar_out = 1
             num_vector_out = 0
@@ -216,8 +229,9 @@ class EquivariantMDGenWrapper(Wrapper):
                 pbc=args.pbc,
                 object_aware=args.object_aware
             )
-        else:
-            self.model = EquivariantTransformer_dpm(
+        if args.path_type == "Schrodinger_Linear":
+            print("Initializing score model")
+            self.score_model = EquivariantTransformer_dpm(
                 encoder = encoder,
                 processor = processor,
                 decoder = Decoder(dim=latent_dim, num_scalar_out=num_scalar_out, num_vector_out=num_vector_out, num_species=args.num_species),
@@ -233,40 +247,21 @@ class EquivariantMDGenWrapper(Wrapper):
                 object_aware=args.object_aware,
                 latt_path = latt_path
             )
-            if args.path_type == "Schrodinger_Linear":
-                print("Initializing score model")
-                self.score_model = EquivariantTransformer_dpm(
-                    encoder = encoder,
-                    processor = processor,
-                    decoder = Decoder(dim=latent_dim, num_scalar_out=num_scalar_out, num_vector_out=num_vector_out, num_species=args.num_species),
-                    cutoff=args.cutoff,
-                    latent_dim=latent_dim,
-                    num_radial = num_radial,
-                    design=args.design,
-                    potential_model = False,
-                    tps_condition=args.tps_condition,
-                    sim_condition=args.sim_condition,
-                    num_species=args.num_species,
-                    pbc=args.pbc,
-                    object_aware=args.object_aware,
-                    latt_path = latt_path
-                )
-            else:
-                self.score_model = None
-            from .model.polynomialRepulsiveEnergy import PolynomialRepulsiveEnergy
-            self.transport = create_transport(
-                args,
-                args.path_type,
-                args.prediction,
-                train_eps=1e-5,
-                sample_eps=1e-5,
-                score_model=self.score_model,
-                latt_path = latt_path,
-                weightfunction_x=PolynomialRepulsiveEnergy(1.4, prefactor=10, n_pow=4)
-            )
-            if self.transport.latt_path:
-                self.transport.mean_atomic_volume = getattr(args, "mean_atomic_volume", None)
-            self.transport_sampler = Sampler(self.transport)
+        else:
+            self.score_model = None
+        from .model.polynomialRepulsiveEnergy import PolynomialRepulsiveEnergy
+        self.transport = create_transport(
+            args,
+            args.path_type,
+            args.prediction,
+            train_eps=1e-5,
+            sample_eps=1e-5,
+            score_model=self.score_model,
+            latt_path = latt_path,
+            weightfunction_x=PolynomialRepulsiveEnergy(1.4, prefactor=10, n_pow=4)
+        )
+
+        self.transport_sampler = Sampler(self.transport)
 
         if not hasattr(args, 'ema'):
             args.ema = False
@@ -290,20 +285,14 @@ class EquivariantMDGenWrapper(Wrapper):
         log = gather_log(log, self.trainer.world_size)
         mean_log = get_log_mean(log)
         self.log("val_loss", mean_log['val_loss'])
-        if self.args.loss_graph:
-            self.log("val_loss_graph", mean_log['val_loss_graph'])
-        if self.transport.latt_path:
-            self.log('val_loss_lattflow', mean_log['val_loss_lattflow'])
-        if not self.args.potential_model:
-            self.log("val_meanRMSD", mean_log['val_meanRMSD'])
-            self.log("val_E_spring", mean_log['val_E_spring'])
+        # self.log("val_loss_gen", mean_log['val_loss_gen'])
         if self.args.path_type in ["Schrodinger_Linear", "Schrodinger_Linear_onemodel"]:
             self.log("val_loss_path", mean_log['val_loss_path'])
         self.print_log(prefix='val', save=False)
 
     def prep_batch(self, batch):
-        if self.args.potential_model:
-            return self.prep_batch_x_potential_model(batch)
+        if self.args.design:
+            return self.prep_batch_species(batch)
         else:
             return self.prep_batch_x(batch)
 
@@ -352,35 +341,54 @@ class EquivariantMDGenWrapper(Wrapper):
 
         v_loss_mask = batch["v_mask"]
 
-        ### for schrodinger bridge
-        if not self.args.potential_model:
-            self.transport.x0std = batch['x0std']
 
-        if self.args.latt_path and self.args.cubic_priorcell:
-            _cell = batch['cell']
-            _volume = torch.linalg.det(_cell).abs().unsqueeze(-1).unsqueeze(-1)
-            self.transport.prior_cell = (torch.eye(3).unsqueeze(0).unsqueeze(0).to(_cell.device) * _volume**(1./3)).to(_TORCH_FLOAT_PRECISION)
+        B, T, L, _ = latents.shape
+        assert _ == 3, f"latents shape should be (B, T, D, 3), but got {latents.shape}"
+        ########
+        
+    
+        self.transport.prior_cell = batch["cell0"]
+        self.transport.prior_mean = batch["x0"]
+        self.transport.x0std = batch["x0std"]
+
+        if "inpainting_mask" not in batch.keys():
+            batch['inpainting_mask'] = torch.ones(B,T,L, dtype=int, device=species.device)
+            batch['inpainting_v_mask'] = torch.ones(B,T,L,3, dtype=int, device=species.device)
+
+        if self.args.sim_condition:
+            cond_mask_f = torch.zeros(B, T, L, dtype=int, device=species.device)
+            cond_mask = torch.zeros(B, T, L, dtype=int, device=species.device)
+            cond_mask_f[:, 0] = 1
+            cond_mask[:, -1] = 1
+            if self.stage == "inference":
+                conditional_batch = True
+            else:
+                conditional_batch = torch.rand(1)[0] >= 1-self.args.ratio_conditional
+                # conditional_batch = True
+
+        elif self.args.tps_condition:
+            cond_mask_f = torch.zeros(B, T, L, dtype=int, device=species.device)
+            cond_mask_r = torch.zeros(B, T, L, dtype=int, device=species.device)
+            cond_mask = torch.zeros(B, T, L, dtype=int, device=species.device)
+            cond_mask_f[:, 0] = 1
+            cond_mask_r[:, -1] = 1
+            cond_mask[:, 1:-1] = 1
+            if self.stage == "inference":
+                conditional_batch = True
+            else:
+                conditional_batch = torch.rand(1)[0] >= 1-self.args.ratio_conditional
+                # conditional_batch = True
+
         else:
-            self.transport.prior_cell = batch["cell"].to(_TORCH_FLOAT_PRECISION)
+            conditional_batch = None
 
-        if not self.args.uniform_prior:
-            self.transport.prior_mean = batch['x']
-
-        B, T, L, _ = latents.shape
-        assert _ == 3, f"latents shape should be (B, T, D, 3), but got {latents.shape}"
-        ########
-        
-        if "inpainting_mask" not in batch.keys():
-            batch['inpainting_mask'] = torch.ones(B,T,L, dtype=int, device=species.device)
-            batch['inpainting_v_mask'] = torch.ones(B,T,L,3, dtype=int, device=species.device)
-
-        conditional_batch = None
         data = {
                     "species": species.to(_TORCH_FLOAT_PRECISION),
                     "latents": latents.to(_TORCH_FLOAT_PRECISION),
                     'loss_mask': v_loss_mask.to(_TORCH_FLOAT_PRECISION),
                     'model_kwargs': {
-                        "cv": None,
+                        # "cv": torch.zeros(B, T, 1, dtype=_TORCH_FLOAT_PRECISION, device=species.device),
+                        "cv": batch['cv'].view(B,T,1).to(_TORCH_FLOAT_PRECISION),
                         "aatype": species.to(_TORCH_FLOAT_PRECISION),
                         'x1': latents.to(_TORCH_FLOAT_PRECISION),
                         'v_mask': (v_loss_mask!=0).to(int),
@@ -392,49 +400,19 @@ class EquivariantMDGenWrapper(Wrapper):
                     'conditional_batch': conditional_batch
                 }
         
-        if "forces" in batch:
+        if (self.args.sim_condition and conditional_batch):
+            data['model_kwargs']["conditions"] = {
+                        'cond_f':{
+                            'x': batch["x0"].to(_TORCH_FLOAT_PRECISION),
+                            'cell': batch["cell0"].to(_TORCH_FLOAT_PRECISION),
+                            'mask': cond_mask_f[:,0,...].unsqueeze(1).expand(B,T,L),          # Since only 1st configuration is inputed and cond_mask already masked the prediction only to the TPS, cond_mask_f here is a place_holder
+                        }
+                    }
+
+        if self.args.path_type in ["Schrodinger_Linear", "Schrodinger_Linear_onemodel"]:
             data["forces"] = batch['forces'].to(_TORCH_FLOAT_PRECISION)
-        if not self.args.potential_model:
-            data['x0std'] = batch['x0std'].to(_TORCH_FLOAT_PRECISION)
-        return data
 
-    def prep_batch_x_potential_model(self, batch):
-        species = batch["species"]
-        latents = batch["x"]
-        B, T, L, num_elem = species.shape
-
-        v_loss_mask = batch["v_mask"]
-
-        B, T, L, _ = latents.shape
-        assert _ == 3, f"latents shape should be (B, T, D, 3), but got {latents.shape}"
-        ########
-        
-        if "inpainting_mask" not in batch.keys():
-            batch['inpainting_mask'] = torch.ones(B,T,L, dtype=int, device=species.device)
-            batch['inpainting_v_mask'] = torch.ones(B,T,L,3, dtype=int, device=species.device)
-
-        conditional_batch = None
-        data = {
-                    "species": species.to(_TORCH_FLOAT_PRECISION),
-                    "latents": latents.to(_TORCH_FLOAT_PRECISION),
-                    'loss_mask': v_loss_mask.to(_TORCH_FLOAT_PRECISION),
-                    'model_kwargs': {
-                        "cv": None,
-                        "aatype": species.to(_TORCH_FLOAT_PRECISION),
-                        'x1': latents.to(_TORCH_FLOAT_PRECISION),
-                        'v_mask': (v_loss_mask!=0).to(int),
-                        "cell": batch['cell'].to(_TORCH_FLOAT_PRECISION),
-                        "num_atoms": batch["num_atoms"],
-                        "dt": torch.zeros(B,T,1, dtype=_TORCH_FLOAT_PRECISION, device=species.device),
-                        "conditions": None
-                    },
-                    'conditional_batch': conditional_batch
-                }
-        
-        if "forces" in batch:
-            data["forces"] = batch['forces'].to(_TORCH_FLOAT_PRECISION)
-        if "E" in batch:
-            data["E"] = batch['E'].to(_TORCH_FLOAT_PRECISION)
+        data['x0std'] = batch['x0std'].to(_TORCH_FLOAT_PRECISION)
         return data
     
     def general_step(self, batch, stage='train'):
@@ -442,161 +420,79 @@ class EquivariantMDGenWrapper(Wrapper):
         self.stage = stage
         start1 = time.time()
         prep = self.prep_batch(batch)
-        if stage == "val" and self.args.latt_path:
-            def clone_batch(x):
-                if torch.is_tensor(x):
-                    return x.clone()
-                elif isinstance(x, dict):
-                    return {k: clone_batch(v) for k, v in x.items()}
-                elif isinstance(x, list):
-                    return [clone_batch(v) for v in x]
-                elif isinstance(x, tuple):
-                    return tuple(clone_batch(v) for v in x)
-                else:
-                    return x
-            batch_val = clone_batch(batch)
-            prep_val = self.prep_batch(batch_val)
-        else:
-            batch_val = batch
-            prep_val = prep
+
         start = time.time()
 
+        forces = None
+        if self.args.path_type in ["Schrodinger_Linear", "Schrodinger_Linear_onemodel"]:
+            forces = prep['forces']
+        x0std = self.args.x0std
+        if "x0std" in prep:
+            x0std = prep['x0std']
+        out_dict = self.transport.training_losses(
+            model=self.model,
+            x1=prep['latents'],
+            aatype1=batch['species'],
+            mask=prep['loss_mask'],
+            model_kwargs=prep['model_kwargs'],
+            forces = forces,
+            x0std = x0std,
+            global_step = self.current_epoch,
+        )
+        self.prefix_log('model_dur', time.time() - start)
+        self.prefix_log('time', out_dict['t'].detach().cpu())
+        # self.prefix_log('conditional_batch', prep['conditional_batch'].to(torch.float32))
+        loss_gen = out_dict['loss']
+        assert self.args.weight_loss_var_x0 == 0
+        loss = loss_gen
+        if self.args.path_type in ["Schrodinger_Linear", "Schrodinger_Linear_onemodel"]:
+            self.prefix_log("loss_dsm", out_dict['loss_dsm'].detach().cpu())
+            # self.prefix_log("loss_tsm_0", out_dict['loss_tsm_0'].detach().cpu())
+            self.prefix_log("loss_tsm_1", out_dict['loss_tsm_1'].detach().cpu())
+            self.prefix_log("loss_path", out_dict['loss_dsm'].detach().cpu()+out_dict['loss_flow'].detach().cpu())
+        if self.args.KL == 'symm':
+            self.prefix_log('loss_symmkl', out_dict['loss_symmkl'].detach().cpu())
+            self.prefix_log('loss_l1', out_dict['loss_l1'].detach().cpu())
+        if self.args.KL == 'alpha':
+            self.prefix_log('loss_alphadiv', out_dict['loss_alphadiv'].detach().cpu())
+            self.prefix_log('loss_l1', out_dict['loss_l1'].detach().cpu())
+        if self.args.KL == 'score':
+            self.prefix_log('loss_score', out_dict['loss_score'].detach().cpu())
+            self.prefix_log('loss_l1', out_dict['loss_l1'].detach().cpu())
+        if self.args.loss_consistency:
+            self.prefix_log('loss_consistency', out_dict['loss_consistency'].detach().cpu())
+
         if self.args.potential_model:
+            self.prefix_log('loss_gen', loss_gen.detach().cpu())
             B,T,L,_ = prep["latents"].shape
             t = torch.ones((B,), device=prep["latents"].device).to(_TORCH_FLOAT_PRECISION)
-            with torch.enable_grad():
-                xfrac = prep['latents'].detach().requires_grad_(True)
-                energy = self.potential_model(xfrac, t, **prep["model_kwargs"])
-                energy = energy.sum(dim=2).squeeze(-1)
-                
-                grad_frac = torch.autograd.grad(
-                    energy.sum(),
-                    xfrac,
-                    create_graph=(stage == "train"),
-                    retain_graph=(stage == "train"),
-                )[0]
-                grad_cart = torch.einsum(
-                    "btni,btij->btnj",
-                    grad_frac,
-                    torch.linalg.inv(prep["model_kwargs"]['cell']).transpose(-1, -2),
-                )
-            loss_energy = ((energy -prep["E"]).abs()).sum(-1)
-            self.prefix_log('loss_energy', loss_energy.detach().cpu())      
-            forces = -grad_cart
-            loss_forces = (forces - prep['forces']).norm(dim=-1).sum(dim=-1)
-            self.prefix_log('loss_forces', loss_forces.detach().cpu())  
-            loss = loss_forces + loss_energy
-        else:
-            forces = None
-            if self.args.path_type in ["Schrodinger_Linear", "Schrodinger_Linear_onemodel"]:
-                forces = prep['forces']
-            x0std = self.args.x0std
-            if "x0std" in prep:
-                x0std = prep['x0std']
+            energy = self.potential_model(prep['latents'], t, **prep["model_kwargs"])
+            energy = energy.sum(dim=2).squeeze(-1)
+            # forces = -torch.autograd.grad(energy, prep['latents'])[0]
+            loss_energy = (((energy -prep["E"])**2)*prep['loss_mask_potential_model']).sum(-1)
+            self.prefix_log('loss_energy', loss_energy.detach().cpu())        
+            loss += loss_energy * 0.1
 
-            out_dict = self.transport.training_losses(
-                model=self.model,
-                x1=prep['latents'],
-                aatype1=batch['species'],
-                mask=prep['loss_mask'],
-                model_kwargs=prep['model_kwargs'],
-                forces = forces,
-                x0std=x0std,
-                global_step = self.current_epoch
-            )
-            self.prefix_log('model_dur', time.time() - start)
-            self.prefix_log('time', out_dict['t'].detach().cpu())
-            # self.prefix_log('conditional_batch', prep['conditional_batch'].to(torch.float32))
-            loss_gen = out_dict['loss']
-            self.prefix_log('loss_gen', loss_gen.detach().cpu())
-            assert self.args.weight_loss_var_x0 == 0
-            loss = loss_gen
-            if self.args.path_type in ["Schrodinger_Linear", "Schrodinger_Linear_onemodel"]:
-                self.prefix_log("loss_dsm", out_dict['loss_dsm'].detach().cpu())
-                if self.args.TSMloss:
-                    self.prefix_log("loss_tsm_0", out_dict['loss_tsm_0'].detach().cpu())
-                    self.prefix_log("loss_tsm_1", out_dict['loss_tsm_1'].detach().cpu())
-                self.prefix_log("loss_path", out_dict['loss_dsm'].detach().cpu()+out_dict['loss_flow'].detach().cpu())
-            if self.args.KL == 'symm':
-                self.prefix_log('loss_symmkl', out_dict['loss_symmkl'].detach().cpu())
-                self.prefix_log('loss_l1', out_dict['loss_l1'].detach().cpu())
-            if self.args.KL == 'alpha':
-                self.prefix_log('loss_alphadiv', out_dict['loss_alphadiv'].detach().cpu())
-                self.prefix_log('loss_l1', out_dict['loss_l1'].detach().cpu())
-            if self.args.KL == 'score':
-                self.prefix_log('loss_score', out_dict['loss_score'].detach().cpu())
-                self.prefix_log('loss_l1', out_dict['loss_l1'].detach().cpu())
-            if self.args.loss_consistency:
-                self.prefix_log('loss_consistency', out_dict['loss_consistency'].detach().cpu())
-            if self.args.loss_graph:
-                self.prefix_log('loss_graph', out_dict['loss_graph'].detach().cpu())
-
-            if self.args.design:
-                self.prefix_log('loss_logit', out_dict['loss_logit'].detach().cpu())
-
-            self.prefix_log('model_dur', time.time() - start)
-            self.prefix_log("loss_flow", out_dict['loss_flow'].detach().cpu())
-            if self.transport.latt_path:
-                self.prefix_log('loss_lattflow', out_dict['loss_lattflow'].detach().cpu())
-            if stage == "val":
-                self._val_rmse(batch_val, prep_val)
-                
+        self.prefix_log('model_dur', time.time() - start)
         self.prefix_log('loss', loss.detach().cpu())
+        self.prefix_log("loss_flow", out_dict['loss_flow'].detach().cpu())
+        if self.transport.latt_path:
+            self.prefix_log('loss_lattflow', out_dict['loss_lattflow'].detach().cpu())
+
         self.prefix_log('dur', time.time() - self.last_log_time)
         if 'name' in batch:
             self.prefix_log('name', ','.join(batch['name']))
         self.prefix_log('general_step_dur', time.time() - start1)
         self.last_log_time = time.time()
+        if stage == "val":
+            # self._val_saddle_point_object_aware(batch, prep)
+            pass
 
         if not torch.isfinite(loss.mean()):
             return None
         if torch.isnan(loss.mean()):
             return None
         return loss.mean()
-
-
-    def _val_rmse(self, batch, prep, stage="val"):
-        species = [1, 3, 5, 6, 7, 8, 9, 11, 12, 13, 14, 15, 16, 17, 19, 20, 21,
-                                            22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 37, 39, 40,
-                                            41, 42, 44, 45, 46, 47, 48, 49, 51, 53, 55, 57, 58, 59, 60, 62, 63,
-                                            64, 65, 66, 67, 68, 69, 70, 71, 72, 74, 77, 78, 79, 80, 82, 83, 90,
-                                            92, 93, 94]
-        B,T,L,_ = prep['latents'].shape
-        try:
-            if self.args.latt_path:
-                pred_pos, _, pred_cell = self.inference(batch, stage=stage)
-                cell = pred_cell[-1]
-            else:
-                pred_pos, _ = self.inference(batch, stage=stage)
-                cell = prep['model_kwargs']['cell']
-            ref_pos = prep['latents']
-
-            with torch.no_grad():
-                ## (\Delta d per atom) # B,T,L
-                # x, x_ref: (..., N, 3), fractional coordinates
-                # RMSD = sqrt(mean_i |dx_i|^2)
-                dx = pred_pos[-1] - ref_pos
-                dx = dx - torch.round(dx)       # minimum image in fractional coords
-                dx_cart = dx @ cell             # cell: (..., 3, 3) or (3, 3)
-                err = torch.sqrt((dx_cart**2).sum(dim=-1).mean(dim=-1))
-                ## mean RMSD per sample # B
-                err = err.mean(dim=-1)
-                self.prefix_log('meanRMSD', err)  # An extra factor of 3 was divided when taking the mean over the T dimension
-
-                labels_B = torch.argmax(batch['species'], dim=-1)  # B,L
-                # energies_B = torch.zeros(B)
-                # for i in range(B):
-                atomic_numbers = torch.tensor([[species[label] for label in labels.flatten()] for labels in labels_B]).to(pred_pos.device)  # T,L
-                nn_spring = NNSpring(pred_pos[-1].squeeze(1), cell.squeeze(1), atomic_numbers=atomic_numbers)
-                wall = ZBLRepulsiveWall()
-                energies_B = nn_spring.build_energy(pred_pos[-1].squeeze(1)) + wall.build_energy(pred_pos[-1].squeeze(1), cell.squeeze(1), atomic_numbers)
-                # energies_B[i] = e.sum()
-                self.prefix_log("E_spring", energies_B)
-        except:
-                print("WARNNING:: Inference failed !!!")
-                self.prefix_log('meanRMSD', torch.nan)
-                self.prefix_log("E_spring", torch.nan)
-
 
     def _val_saddle_point_object_aware(self, batch, prep, stage="val"):
             B,T,L,_ = prep['latents'].shape
@@ -659,7 +555,7 @@ class EquivariantMDGenWrapper(Wrapper):
         return v + self.args.guidance_pref*g
 
     
-    def inference(self, batch, stage='inference', sample_latt=True):
+    def inference(self, batch, stage='inference'):
         s_time= time.time()
         self.stage = stage
         prep = self.prep_batch(batch)
@@ -671,18 +567,35 @@ class EquivariantMDGenWrapper(Wrapper):
             x0std = prep['x0std']
 
         if self.args.design:
-            zs_discrete = torch.distributions.Dirichlet(torch.ones(B*T, N, self.args.num_species, device=latents.device)).sample()
-            zs_discrete = zs_discrete.view(B, T, N, self.args.num_species)
+            # zs_continuous = torch.randn(B, T, N, self.latent_dim - self.args.num_species, device=latents.device)
+            zs_discrete = torch.distributions.Dirichlet(torch.ones(B, N, self.args.num_species, device=latents.device)).sample()
+            zs_discrete = zs_discrete[:, None].expand(-1, T, -1, -1)
+            # zs = torch.cat([zs_continuous, zs_discrete], -1)
+            zs = zs_discrete
 
+            x1 = prep['latents']
+            x_d = torch.zeros(x1.shape[0], x1.shape[1], x1.shape[2], self.args.num_species, device=self.device)
+            xt = torch.cat([x1, x_d], dim=-1)
+            logits = self.model.forward_inference(xt, torch.ones(B, device=self.device),
+                                                  **prep['model_kwargs'])
+            aa_out = torch.argmax(logits, -1)
+            # aa_out = logits
+            vector_out = prep["model_kwargs"]["x_latt"]
+            return vector_out, aa_out
+        else:
+            # from .transport.path import wrap_frac_pos
+            # zs = wrap_frac_pos(torch.randn(B, T, N, D, device=self.device)*self.args.x0std/(N)**(1./3.))
+            # zs = torch.rand(B,T,N,D, device=self.device)
 
-        _, zs, zs_mean = self.transport.sample(latents.shape, self.device, x0std)
-        zs = zs[0]
-        zs_mean = zs_mean[0]
-        if self.transport.latt_path:
-            if sample_latt:
+            # m = math.ceil(N ** (1/3))
+            # g = (torch.arange(m, device=self.device) + 0.5) / m
+            # X, Y, Z = torch.meshgrid(g, g, g, indexing='ij')
+            # zs =  torch.stack([X.reshape(-1), Y.reshape(-1), Z.reshape(-1)], dim=1)[:N].unsqueeze(0).expand(T, -1, -1).unsqueeze(0).expand(B, -1, -1, -1)
+            _, zs, zs_mean = self.transport.sample(latents.shape, self.device, x0std)
+            zs = zs[0]
+            zs_mean = zs_mean[0]
+            if self.transport.latt_path:
                 cell0 = self.transport.sample_latt(zs.shape, self.device)
-            else:
-                cell0 = self.transport.prior_cell.clone()
         self.integration_step = 0
         if self.args.path_type not in ["Schrodinger_Linear", "Schrodinger_Linear_onemodel"]:
             # if self.args.likelihood == "EJE":
@@ -695,9 +608,10 @@ class EquivariantMDGenWrapper(Wrapper):
                 case _:
                     raise Exception(f"Wrong likelihood parameter: {self.args.likelihood}")
         else:
-            last_step = getattr(self.args, "last_step", None)
+            # if self.args.likelihood == "FND":
             match self.args.likelihood:
                 case "FND":
+                    last_step = getattr(self.args, "last_step", None)
                     if self.score_model is not None:
                         with torch.no_grad(): sample_fn = self.transport_sampler.sample_sde_likelihood(num_steps=self.args.inference_steps, diffusion_form=self.args.diffusion_form, diffusion_norm=torch.tensor(self.args.diffusion_norm), score_model=partial(self.score_model.forward_inference, **prep['model_kwargs']), last_step=last_step )
                         with torch.no_grad(): sample_fn_reverse = self.transport_sampler.sample_sde_likelihood(num_steps=self.args.inference_steps, diffusion_form=self.args.diffusion_form, diffusion_norm=torch.tensor(self.args.diffusion_norm), reverse=True, score_model=partial(self.score_model.forward_inference, **prep['model_kwargs']), last_step=last_step )
@@ -705,46 +619,43 @@ class EquivariantMDGenWrapper(Wrapper):
                         with torch.no_grad(): sample_fn = self.transport_sampler.sample_sde_likelihood(num_steps=self.args.inference_steps, diffusion_form=self.args.diffusion_form, diffusion_norm=torch.tensor(self.args.diffusion_norm), score_model=partial(self.model.forward_inference, **prep['model_kwargs']), last_step=last_step )
                         with torch.no_grad(): sample_fn_reverse = self.transport_sampler.sample_sde_likelihood(num_steps=self.args.inference_steps, diffusion_form=self.args.diffusion_form, diffusion_norm=torch.tensor(self.args.diffusion_norm), reverse=True, score_model=partial(self.model.forward_inference, **prep['model_kwargs']), last_step=last_step )
                 case None:
-                    score_model = self.score_model if self.score_model is not None else self.model
-                    with torch.no_grad(): sample_fn = self.transport_sampler.sample_sde(num_steps=self.args.inference_steps, diffusion_form=self.args.diffusion_form, diffusion_norm=torch.tensor(self.args.diffusion_norm), score_model=partial(score_model.forward_inference, **prep['model_kwargs']), last_step=last_step )
+                    with torch.no_grad(): sample_fn = self.transport_sampler.sample_sde(num_steps=self.args.inference_steps, diffusion_form=self.args.diffusion_form, diffusion_norm=torch.tensor(self.args.diffusion_norm), score_model=partial(self.score_model.forward_inference, **prep['model_kwargs']) )
                 case _:
                     raise Exception("Wrong likelihood argument (not implemented for SDE): "+self.args.likelihood)
 
         assert not self.args.guided
 
 
-        match self.args.likelihood:
-            case "EJE":
-                K_hutchinson_probe = self.args.K_hutchinson_probe
-                K_hutchinson_probe_chunk = self.args.K_hutchinson_probe_chunk
-                assert K_hutchinson_probe % K_hutchinson_probe_chunk == 0
-                def extend_kwargs(kargs):
-                    _kargs = {}
-                    for k in kargs.keys():
-                        _v = kargs[k]
-                        if isinstance(_v, dict):
-                            _kargs[k] = {}
-                            for _k in _v.keys():
-                                _kargs[k][_k] = {}
-                                for _k_2 in _v[_k].keys():
-                                    _kargs[k][_k][_k_2] = (
-                                        _v[_k][_k_2].detach()
-                                         .unsqueeze(0)
-                                         .repeat((K_hutchinson_probe_chunk,) + (1,) * _v[_k][_k_2].dim())
-                                         .reshape(K_hutchinson_probe_chunk * B, *_v[_k][_k_2].shape[1:])
-                                         .requires_grad_(False)
-                                    )
-                        else:
-                            _kargs[k] = (
-                                _v.detach()
+        K_hutchinson_probe = self.args.K_hutchinson_probe
+        K_hutchinson_probe_chunk = self.args.K_hutchinson_probe_chunk
+        assert K_hutchinson_probe % K_hutchinson_probe_chunk == 0
+        def extend_kwargs(kargs):
+            _kargs = {}
+            for k in kargs.keys():
+                _v = kargs[k]
+                if isinstance(_v, dict):
+                    _kargs[k] = {}
+                    for _k in _v.keys():
+                        _kargs[k][_k] = {}
+                        for _k_2 in _v[_k].keys():
+                            _kargs[k][_k][_k_2] = (
+                                _v[_k][_k_2].detach()
                                  .unsqueeze(0)
-                                 .repeat((K_hutchinson_probe_chunk,) + (1,) * _v.dim())
-                                 .reshape(K_hutchinson_probe_chunk * B, *_v.shape[1:])
+                                 .repeat((K_hutchinson_probe_chunk,) + (1,) * _v[_k][_k_2].dim())
+                                 .reshape(K_hutchinson_probe_chunk * B, *_v[_k][_k_2].shape[1:])
                                  .requires_grad_(False)
                             )
-                    return _kargs
+                else:
+                    _kargs[k] = (
+                        _v.detach()
+                         .unsqueeze(0)
+                         .repeat((K_hutchinson_probe_chunk,) + (1,) * _v.dim())
+                         .reshape(K_hutchinson_probe_chunk * B, *_v.shape[1:])
+                         .requires_grad_(False)
+                    )
+            return _kargs
 
-        if self.transport.latt_path and not self.args.design:
+        if self.transport.latt_path:
             zs = zs.detach()
             cell0 = cell0.detach()
             
@@ -758,18 +669,8 @@ class EquivariantMDGenWrapper(Wrapper):
                     with torch.no_grad(): 
                         samples = sample_fn(
                             (zs, cell0),
-                            partial(self.model.forward_inference, **prep['model_kwargs']),
-                            **prep["model_kwargs"]
+                            partial(self.model.forward_inference, **prep['model_kwargs'])
                         )
-        elif self.args.design:
-            zs = zs.detach()
-            zs_discrete = zs_discrete.detach()
-            with torch.no_grad(): 
-                samples, a_samples = sample_fn(
-                    (zs_discrete, zs),
-                    partial(self.model.forward_inference, **prep['model_kwargs']),
-                    **prep["model_kwargs"]
-                )
         else:
             zs = zs.detach()
             match self.args.likelihood:
@@ -788,38 +689,53 @@ class EquivariantMDGenWrapper(Wrapper):
                     _samples_logp = _samples_logp.detach().cpu()
                     samples_logp = samples_logp.detach().cpu()
                 case None:
-                    if self.args.guidance:
-                        with torch.no_grad(): 
-                            samples = sample_fn(
-                                zs,
-                                partial(self.model.forward_inference, **prep['model_kwargs']),
-                                **prep["model_kwargs"]
-                            )
-                    else:
-                        with torch.no_grad():
-                            samples = sample_fn(
-                                zs,
-                                partial(self.model.forward_inference, **prep['model_kwargs']),
-                            )
+                    with torch.no_grad(): 
+                        samples = sample_fn(
+                            zs,
+                            partial(self.model.forward_inference, **prep['model_kwargs'])
+                        )
                 case _:
                     raise Exception(f"Wrong likelihood parameter: {self.args.likelihood}")
 
-
-        # print("WARNNING::")
-        # print("Applying the following mask to the output vector:")
-        if self.transport.latt_path:
-            samples[0] = torch.stack(samples[0])
-            samples[1] = torch.stack(samples[1])
-            samples[0] = samples[0] *prep["model_kwargs"]['v_mask'] + prep["latents"]*(1-prep["model_kwargs"]['v_mask'])
+        
+        if self.args.design:
+            # vector_out = samples[..., :-self.args.num_species]
+            vector_out = prep["model_kwargs"]["x_now"]
+            logits = samples[..., -self.args.num_species:]
         else:
-            if isinstance(samples, list):
-                samples = torch.stack(samples)
+            # print("WARNNING::")
+            # print("Applying the following mask to the output vector:")
+            # print(prep["model_kwargs"]['v_mask'])
+
+            if self.transport.latt_path:
+                samples[0] = samples[0] *prep["model_kwargs"]['v_mask'] + prep["latents"]*(1-prep["model_kwargs"]['v_mask'])
+            else:
                 samples = samples *prep["model_kwargs"]['v_mask'] + prep["latents"]*(1-prep["model_kwargs"]['v_mask'])
 
-        print("WARNNING::")
-        print("Not Applying Mask to output atom type samples:")
+            # if self.args.likelihood == "EJE":
+            match self.args.likelihood:
+                case "EJE":
+                    if self.transport.latt_path:
+                        reverse_samples_logp, samples_zs, reverse_samples_logp_var = sample_fn_reverse(
+                                (samples[0][-1], samples[1][-1]),
+                                partial(self.model.forward_inference, **prep['model_kwargs'])
+                            )
+                    else:
+                        reverse_samples_logp, samples_zs, reverse_samples_logp_var = sample_fn_reverse(
+                                samples[-1],
+                                partial(self.model.forward_inference, **_model_kwargs)
+                            )
+                # case "FND":
+                #     samples[-1] = samples[-1].detach()
+                #     with torch.no_grad(): 
+                #         reverse_samples_logp, _reverse_samples_logp, samples_zs = sample_fn_reverse(
+                #                 samples[-1],
+                #                 partial(self.model.forward_inference, **prep['model_kwargs'])
+                #             )
+
         if self.args.design:
-            return samples, torch.stack(a_samples)
+            aa_out = torch.argmax(logits, -1)
+            # aa_out = logits
         else:
             aa_out = torch.argmax(batch['species'], -1)
             # aa_out = batch['species']

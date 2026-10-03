@@ -608,7 +608,6 @@ def lattice_polar_decompose_torch(lattices: torch.Tensor):
 
 
 from .spring import NNSpring
-from .spring import ZBLRepulsiveWall
 class EquivariantTransformerDataset_FF(torch.utils.data.Dataset):
     def __init__(self, args, species, num_species, localmask=False, sim_condition=False, stage="train", save_dir=None, sel_idx=None, calculator=None):
         traj_dir = args.data_dir
@@ -695,24 +694,22 @@ class EquivariantTransformerDataset_FF(torch.utils.data.Dataset):
         dataset = [data]
         cell = torch.stack([data.cell for data in dataset])
 
+        x = torch.stack([data.frac_pos for data in dataset])
+        nn_spring = NNSpring(x, cell)
+        inv_cell = torch.linalg.inv(cell)
+        noise = torch.randn(x.shape) * 8.
+        x += noise @ inv_cell
+        # forces = nn_spring.build_force(x)
+        forces = -noise
+
+        T,L,_ = x.shape
+
         dataset_z = torch.stack([data.z for data in dataset])
         padded_z = torch.stack([ torch.zeros((*data.z.shape[:-1], self.num_species)) for data in dataset]) # T,L,num_species
         padded_z[:,:,:dataset_z.shape[-1]] = dataset_z
 
-        x = torch.stack([data.frac_pos for data in dataset])
-        T,L,_ = x.shape
-        labels = torch.argmax(padded_z, dim=2)  # T,L
-        atomic_numbers = torch.tensor([self.species[label] for label in labels.flatten()]).reshape(T,L)  # T,L
-
-        nn_spring = NNSpring(x, cell, atomic_numbers=atomic_numbers)
-        inv_cell = torch.linalg.inv(cell)
-        noise_scale = torch.rand(1)[0]*8
-        noise = torch.randn(x.shape) * noise_scale
-        x += noise @ inv_cell
-        forces = nn_spring.build_force(x)
-        energies = nn_spring.build_energy(x)
-        # forces = -noise
-
+        # labels = torch.argmax(padded_z, dim=2)  # T,L
+        # atomic_numbers = torch.tensor([self.species[label] for label in labels.flatten()]).reshape(T,L)  # T,L
         _mask = torch.ones([T,L]) # T,L
         _v_mask = _mask.unsqueeze(-1).expand(-1,-1,3) # T,L,3
         _h_mask = _mask.unsqueeze(-1).expand(-1,-1,self.num_species) # T,L,num_species
@@ -734,7 +731,6 @@ class EquivariantTransformerDataset_FF(torch.utils.data.Dataset):
             "mask": mask,
             "v_mask": v_mask,
             "h_mask": h_mask,
-            "E": energies
         }
 
 
@@ -743,7 +739,6 @@ class EquivariantTransformerDataset_MaterialProject(torch.utils.data.Dataset):
         self.uniform_prior = getattr(args, "uniform_prior", False)
         self.target_std = getattr(args, "target_std", 1)
         self.prior_std = getattr(args, "prior_std", 1)
-        self.latt_path = args.latt_path
         traj_dir = args.data_dir
         self.cutoff = args.cutoff
         self.num_species = num_species
@@ -775,64 +770,13 @@ class EquivariantTransformerDataset_MaterialProject(torch.utils.data.Dataset):
 
             import glob
             import json
-            from ase.formula import Formula
 
             # traj_filenames = sorted(glob.glob(os.path.join(traj_dir, "*.cif")))
             # if not traj_filenames:
             #     raise ValueError(f"No CIF files found in {traj_dir}")
-            if isinstance(traj_dir, list):
-                traj_filenames = []
-                for d in traj_dir:
-                    # traj_filenames += glob.glob(os.path.join(d, "gentraj_*.xyz"))
-                    traj_filenames += glob.glob(os.path.join(d, "*.cif"))
-                traj_filenames = sorted(traj_filenames)
-            else:
-                traj_filenames = sorted(glob.glob(os.path.join(traj_dir, "gentraj_*.xyz")))
+            traj_filenames = sorted(glob.glob(os.path.join(traj_dir, "gentraj_*.xyz")))
             if not traj_filenames:
                 raise ValueError(f"No XYZ files found in {traj_dir}")
-
-            max_num_atoms = int(getattr(args, "max_num_atoms", 1500))
-
-            def cif_formula_atom_count(filename):
-                """Read the unit-cell atom count without invoking ASE's CIF parser."""
-                if not filename.lower().endswith(".cif"):
-                    return None
-                try:
-                    with open(filename, "r", encoding="utf-8", errors="replace") as handle:
-                        for line in handle:
-                            if line.lstrip().startswith("_chemical_formula_sum"):
-                                fields = line.split(None, 1)
-                                if len(fields) != 2:
-                                    return None
-                                formula = fields[1].strip().strip("'\"")
-                                composition = Formula("".join(formula.split())).count()
-                                return int(sum(composition.values()))
-                except (OSError, ValueError):
-                    return None
-                return None
-
-            accepted_filenames = []
-            oversized_filenames = []
-            for filename in traj_filenames:
-                formula_num_atoms = cif_formula_atom_count(filename)
-                if (
-                    formula_num_atoms is not None
-                    and formula_num_atoms > max_num_atoms
-                ):
-                    oversized_filenames.append((filename, formula_num_atoms))
-                else:
-                    accepted_filenames.append(filename)
-            traj_filenames = accepted_filenames
-            for filename, formula_num_atoms in oversized_filenames:
-                print(
-                    f"Skipping {os.path.basename(filename)} before CIF parsing: "
-                    f"formula contains {formula_num_atoms} atoms "
-                    f"(limit: {max_num_atoms})"
-                )
-            if not traj_filenames:
-                raise ValueError(
-                    f"No input structures contain at most {max_num_atoms} atoms"
-                )
 
             os.makedirs(save_dir, exist_ok=True)
             split_seed = int(getattr(args, "split_seed", 0))
@@ -844,21 +788,7 @@ class EquivariantTransformerDataset_MaterialProject(torch.utils.data.Dataset):
             )
             manifest_path = os.path.join(save_dir, "split_manifest.json")
             source_names = [os.path.basename(filename) for filename in traj_filenames]
-            seen_names = set()
-            duplicate_names = set()
-            for source_name in source_names:
-                if source_name in seen_names:
-                    duplicate_names.add(source_name)
-                seen_names.add(source_name)
-            if duplicate_names:
-                raise ValueError(
-                    "Input directories contain duplicate basenames, which cannot be "
-                    "represented unambiguously in the split manifest: "
-                    f"{sorted(duplicate_names)}"
-                )
-            source_paths = dict(zip(source_names, traj_filenames))
 
-            manifest = None
             if os.path.isfile(manifest_path):
                 with open(manifest_path, "r", encoding="utf-8") as handle:
                     manifest = json.load(handle)
@@ -868,17 +798,10 @@ class EquivariantTransformerDataset_MaterialProject(torch.utils.data.Dataset):
                     for name in split_names
                 ]
                 if set(manifest_names) != set(source_names):
-                    existing_checkpoints = glob.glob(
-                        os.path.join(save_dir, "*", "*.pt")
+                    raise RuntimeError(
+                        "The CIF inputs differ from split_manifest.json; use a new "
+                        "save_dir or remove the old checkpoints before rebuilding."
                     )
-                    if existing_checkpoints:
-                        raise RuntimeError(
-                            "The CIF inputs differ from split_manifest.json; use a new "
-                            "save_dir or remove the old checkpoints before rebuilding."
-                        )
-                    manifest = None
-
-            if manifest is not None:
                 splits = manifest["splits"]
                 if manifest.get("checkpoint_format") == "batched-v1":
                     checkpoint_batch_size = int(manifest["checkpoint_batch_size"])
@@ -905,13 +828,9 @@ class EquivariantTransformerDataset_MaterialProject(torch.utils.data.Dataset):
                     # "val": shuffled_names[n_test:n_test + n_val],
                     # "train": shuffled_names[n_test + n_val:],
                 }
-                if isinstance(traj_dir, list):
-                    source_dir = " ".join([os.path.abspath(d) for d in traj_dir])
-                else:
-                    source_dir = os.path.abspath(traj_dir)
                 manifest = {
                     "version": 1,
-                    "source_dir": source_dir,
+                    "source_dir": os.path.abspath(traj_dir),
                     "split_seed": split_seed,
                     "splits": splits,
                 }
@@ -943,15 +862,15 @@ class EquivariantTransformerDataset_MaterialProject(torch.utils.data.Dataset):
                         chunk_start:chunk_start + checkpoint_batch_size
                     ]
                     checkpoint_path = os.path.join(split_dir, f"{chunk_idx:06d}.pt")
-                    # if os.path.isfile(checkpoint_path):
-                    #     num_existing += len(chunk_names)
-                    #     continue
+                    if os.path.isfile(checkpoint_path):
+                        num_existing += len(chunk_names)
+                        continue
 
                     checkpoint_batch = []
                     for source_name in chunk_names:
-                        atoms = ase.io.read(source_paths[source_name], index=-1)
+                        atoms = ase.io.read(os.path.join(traj_dir, source_name), index=-1)
                         num_atoms = len(atoms)
-                        if num_atoms > max_num_atoms:
+                        if num_atoms > 1500:
                             continue
                         atoms.calc = calculator
                         atoms.wrap()
@@ -1003,38 +922,10 @@ class EquivariantTransformerDataset_MaterialProject(torch.utils.data.Dataset):
 
             if torch.cuda.is_available():
                 torch.cuda.empty_cache()
-        elif stage == "test" and isinstance(traj_dir, list):
-            self.all_dataset = []
-            for f in traj_dir:
-                atom_encoder = OneHotEncoder(sparse_output=False)
-                atom_encoder.fit(np.array(species).reshape(-1, 1))
-                atoms = ase.io.read(f, index=-1, format='extxyz')
-                num_atoms = len(atoms)
-                inv_cell = np.linalg.pinv(np.array(atoms.cell))
-                z = atom_encoder.transform(atoms.numbers.reshape(-1, 1))
-                padded_z = np.zeros((num_atoms, num_species))
-                padded_z[:, :z.shape[1]] = z
-                x_frac = torch.tensor(
-                            atoms.positions @ inv_cell,
-                            dtype=torch.float32,
-                        )
-                data = Data(
-                        z=torch.tensor(padded_z, dtype=torch.float32),
-                        num_atoms=torch.tensor(num_atoms, dtype=torch.long),
-                        cell=torch.tensor(np.array(atoms.cell), dtype=torch.float32),
-                        frac_pos=x_frac,
-                        forces=torch.zeros_like(x_frac),
-                        E_formation=None,
-                        E_above_hull=None,
-                        E=None,
-                        source_filename=f,
-                    )
-                self.all_dataset.append(data)
         else:
             import glob
             import json
-            if stage != 'test':
-                traj_dir = traj_dir[0]
+
             checkpoint_dir = os.path.join(traj_dir, stage)
             manifest_path = os.path.join(traj_dir, "split_manifest.json")
             if os.path.isdir(checkpoint_dir) and os.path.isfile(manifest_path):
@@ -1099,34 +990,24 @@ class EquivariantTransformerDataset_MaterialProject(torch.utils.data.Dataset):
         else:
             data = self.all_dataset[idx]
         dataset = [data]
-
         cell = torch.stack([data.cell for data in dataset])
-    
+
+        x = torch.stack([data.frac_pos for data in dataset])
+        if self.uniform_prior:
+            nn_spring = NNSpring(x, cell)
+            inv_cell = torch.linalg.inv(cell)
+            noise = torch.randn(x.shape) * self.target_std
+            x += noise @ inv_cell
+            # forces = nn_spring.build_force(x)
+            forces = -noise
+        T,L,_ = x.shape
+
         dataset_z = torch.stack([data.z for data in dataset])
         padded_z = torch.stack([ torch.zeros((*data.z.shape[:-1], self.num_species)) for data in dataset]) # T,L,num_species
         padded_z[:,:,:dataset_z.shape[-1]] = dataset_z
 
-        x = torch.stack([data.frac_pos for data in dataset])
-        wall = ZBLRepulsiveWall()
-        labels = torch.argmax(padded_z, dim=2)  # T,L
-        atomic_numbers = torch.tensor([self.species[label] for label in labels.flatten()]).unsqueeze(0)  # T,L
-        inv_cell = torch.linalg.inv(cell)
-        if self.uniform_prior:
-            nn_spring = NNSpring(x, cell, atomic_numbers=atomic_numbers)
-            
-            noise = torch.randn(x.shape) * self.target_std
-            x += noise @ inv_cell
-            with torch.enable_grad():
-                forces = nn_spring.build_force(x) + wall.build_force(x, cell, atomic_numbers) @ cell.transpose(-1, -2)
-            forces = forces.detach()
-            # forces = -noise
-        else:
-            noise = torch.randn(x.shape) * self.target_std
-            x += noise @ inv_cell
-            with torch.enable_grad():
-                forces = torch.stack([data.forces for data in dataset]) + wall.build_force(x, cell, atomic_numbers) @ cell.transpose(-1, -2)
-        T,L,_ = x.shape
-
+        # labels = torch.argmax(padded_z, dim=2)  # T,L
+        # atomic_numbers = torch.tensor([self.species[label] for label in labels.flatten()]).reshape(T,L)  # T,L
         _mask = torch.ones([T,L]) # T,L
         _v_mask = _mask.unsqueeze(-1).expand(-1,-1,3) # T,L,3
         _h_mask = _mask.unsqueeze(-1).expand(-1,-1,self.num_species) # T,L,num_species
@@ -1156,7 +1037,7 @@ class EquivariantTransformerDataset_MaterialProject(torch.utils.data.Dataset):
                     "name": "Material Project",
                     "species": padded_z,
                     "x": x,
-                    "forces": forces,
+                    "forces": torch.stack([data.forces for data in dataset]),
                     "cell": cell,
                     "x0std": torch.zeros(T),
                     "num_atoms": torch.stack([data.num_atoms for data in dataset]),
@@ -1169,7 +1050,7 @@ class EquivariantTransformerDataset_MaterialProject(torch.utils.data.Dataset):
                     "name": "Material Project",
                     "species": padded_z,
                     "x": x,
-                    "forces": forces,
+                    "forces": torch.stack([data.forces for data in dataset]),
                     "cell": cell,
                     "x0std": torch.ones(T)* self.prior_std,
                     "num_atoms": torch.stack([data.num_atoms for data in dataset]),

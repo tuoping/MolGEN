@@ -131,17 +131,13 @@ class DirichletConditionalFlow:
         self.K = K
 
     def c_factor(self, bs, alpha):
-        # if the bs is close to the edge of the simplex in one of its entries, then we want the c factor to be 0 for high alphas.
-        # That is the rationale for why we return 0s in the case of an overflow.
-
-        beta = scipy.special.beta(alpha, self.K - 1) # betafunction(alpha, K-1)
-        beta_div = np.where(bs < 1, beta / ((1 - bs) ** (self.K - 1)), 0)
-        beta_div_full = np.where((bs ** (alpha - 1)) > 0, beta_div / (bs ** (alpha - 1)), 0)
-
+        out1 = scipy.special.beta(alpha, self.K - 1)
+        out2 = np.where(bs < 1, out1 / ((1 - bs) ** (self.K - 1)), 0)
+        # out = np.where(bs > 0, out2 / (bs ** (alpha - 1)), 0)
+        out = np.where(bs**(alpha - 1) > 1e-7, out2 / (bs ** (alpha - 1)), 0)
         I_func = self.beta_cdfs_derivative[np.argmin(np.abs(alpha - self.alphas))]
         interp = -np.interp(bs, self.bs, I_func)
-
-        final = interp * beta_div_full
+        final = interp * out
         return final
 
 

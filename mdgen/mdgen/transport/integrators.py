@@ -26,7 +26,6 @@ class sde:
         cell = th.eye(3).unsqueeze(0).unsqueeze(0),
         logit_flow = None,
         num_corrector_step = 0,
-        latt_path = False,
     ):
         # assert t0 < t1, "SDE sampler has to be in forward time"
 
@@ -41,7 +40,6 @@ class sde:
         self.num_corrector_step = num_corrector_step
         self.cell = cell
         self.logit_flow = logit_flow
-        self.latt_path = latt_path
 
     def __Euler_Maruyama_step(self, x, mean_x, t, model, score_model, **model_kwargs):
         w_cur = th.randn(x.size()).to(x)
@@ -56,22 +54,6 @@ class sde:
                 x, mean_x = self.__corrector_step(x, t, score_model, **model_kwargs)
         return x, mean_x
     
-    def __lattpath_Euler_Maruyama_step(self, input, mean_x, t, model, score_model, **model_kwargs):
-        x = input[0]
-        cell = input[1]
-        w_cur = th.randn(x.size()).to(x)
-        t = th.ones(x.size(0)).to(x) * t
-        dw = w_cur * th.sqrt(th.abs(self.dt)) @ th.linalg.inv(self.cell)
-        model_kwargs['cell'] = cell
-        drift, lattflow = self.drift(x, t, model, **model_kwargs)
-        diffusion = self.diffusion(x, t)
-        mean_x = x + drift * self.dt
-        x = mean_x + th.sqrt(2 * diffusion) * dw
-        if self.score is not None:
-            for i in range(self.num_corrector_step):
-                x, mean_x = self.__corrector_step(x, t, score_model, **model_kwargs)
-        cell = cell + self.dt * lattflow
-        return (x, cell), mean_x
 
     def __Euler_Maruyama_likelihood_step(self, x, mean_x, t, model, score_model, **model_kwargs):
         w_cur = th.randn(x.size()).to(x)
@@ -125,7 +107,7 @@ class sde:
     def __forward_fn(self):
         """TODO: generalize here by adding all private functions ending with steps to it"""
         sampler_dict = {
-            "euler": self.__lattpath_Euler_Maruyama_step if self.latt_path else self.__Euler_Maruyama_step,
+            "euler": self.__Euler_Maruyama_step,
             "euler_likelihood": self.__Euler_Maruyama_likelihood_step,
             "Heun": self.__Heun_step,
         }
@@ -142,16 +124,12 @@ class sde:
         x = init
         mean_x = init 
         
-        _samples = []
+        samples = []
         sampler = self.__forward_fn()
         with th.inference_mode():
             for ti in self.t[:-1]:
                 x, mean_x = sampler(x, mean_x, ti, model, score_model, **model_kwargs)
-                _samples.append(x)
-        if self.latt_path:
-            samples = [[x[0] for x in _samples], [x[1] for x in _samples]]
-        else:
-            samples = _samples
+                samples.append(x)
         return samples
 
 
@@ -161,10 +139,8 @@ class sde:
         model_kwargs['aatype'] = a
         mean_x = init[1]
         
-        # samples = []
-        # a_samples = []
-        samples = [init[1].clone()]
-        a_samples = [init[0].clone()]
+        samples = []
+        a_samples = []
         sampler = self.__forward_fn()
         with th.inference_mode():
             for ti in self.t[:-1]:
@@ -172,7 +148,7 @@ class sde:
                 samples.append(x)
                 a += self.logit_flow()*self.dt
                 model_kwargs['aatype'] = a
-                a_samples.append(a.clone())
+                a_samples.append(a)
                 print(ti, a[0,0,0].max(), th.argmax(a[0,0,0]), a[0,0,1].max(), th.argmax(a[0,0,1]))
         return samples, a_samples
 
@@ -226,7 +202,7 @@ class sde:
                 _logprob_samples += _logprob_x.sum(dim=-1).sum(dim=-1)
                 a += self.logit_flow()*self.dt
                 model_kwargs['aatype'] = a
-                a_samples.append(a.clone())
+                a_samples.append(a)
             # print(f"Step {ti:.3f} took {time.time() - t_start:.3f} seconds")
         return samples, logprob_samples, _logprob_samples, a_samples
 
@@ -249,8 +225,8 @@ class ode:
         assert t0 < t1, "ODE sampler has to be in forward time"
 
         self.drift = drift
-        self.t = th.linspace(t0, t1, num_steps)
-        # self.t = t0 + (t1 - t0) * (1 - (1 - th.linspace(0, 1, num_steps))**2)  # denser near t1
+        # self.t = th.linspace(t0, t1, num_steps)
+        self.t = t0 + (t1 - t0) * (1 - (1 - th.linspace(0, 1, num_steps))**2)  # denser near t1
         # self.t = t0 + (t1 - t0) * th.linspace(0, 1, num_steps)**2 # denser near t0
         self.atol = atol
         self.rtol = rtol
@@ -263,7 +239,6 @@ class ode:
         device = x[0].device if isinstance(x, tuple) else x.device
         def _fn(t, x):
             t = th.ones(x[0].size(0)).to(device) * t if isinstance(x, tuple) else th.ones(x.size(0)).to(device) * t
-            # model_output = self.drift(x, t, model, **model_kwargs)  
             model_output = self.drift(x, t, model, **model_kwargs)  
             return model_output
 

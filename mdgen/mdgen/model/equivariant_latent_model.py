@@ -592,8 +592,7 @@ class EquivariantTransformer_dpm(EquivariantTransformer):
             if v_mask is not None:
                 x = x*v_mask+x1*(1-v_mask)
             scaler_out = self.inference(x, t, cv, cell, num_atoms, dt, aatype=aatype, fragments_idx=fragments_idx)
-            if v_mask is not None:
-                assert (torch.where(v_mask.ravel() == 0)[0]).size(0) + (torch.where((1-v_mask).ravel() == 0)[0]).size(0) == (v_mask.ravel()).size(0)
+            assert (torch.where(v_mask.ravel() == 0)[0]).size(0) + (torch.where((1-v_mask).ravel() == 0)[0]).size(0) == (v_mask.ravel()).size(0)
             return scaler_out
         elif self.latt_path:
             if v_mask is not None: x = x*v_mask+x1*(1-v_mask)
