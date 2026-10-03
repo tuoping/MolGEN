@@ -141,7 +141,51 @@ if args.path_type in ["Schrodinger_Linear", "Schrodinger_Linear_onemodel"]:
         ),
         
         ModelSummary(max_depth=2),
+
+        ModelCheckpoint(
+            dirpath=os.environ["MODEL_DIR"], 
+            filename="{epoch:03d}-{step:07d}-{val_meanRMSD:.4f}",
+            monitor="val_meanRMSD",
+            save_top_k=1,
+            save_last=False
+        ),
+    
+        ModelSummary(max_depth=2),
+
+        ModelCheckpoint(
+            dirpath=os.environ["MODEL_DIR"], 
+            filename="{epoch:03d}-{step:07d}-{val_E_spring:.4f}",
+            monitor="val_E_spring",
+            save_top_k=1,
+            save_last=False
+        ),
+    
+        ModelSummary(max_depth=2),
     ]
+    if args.loss_graph:
+        callbacks_fn.append(
+            ModelCheckpoint(
+                dirpath=os.path.join(os.environ["MODEL_DIR"], "best_val_loss_path"),
+                filename="best-val_loss_graph-{epoch:03d}-{step:07d}-{val_loss_graph:.4f}",
+                monitor="val_loss_graph",
+                mode="min",
+                save_top_k=1,
+                save_last=False,
+            )
+        )
+        callbacks_fn.append(ModelSummary(max_depth=2))
+    if args.latt_path:
+        callbacks_fn.append(
+            ModelCheckpoint(
+                dirpath=os.path.join(os.environ["MODEL_DIR"], "best_val_loss_path"),
+                filename="best-val_loss_lattflow-{epoch:03d}-{step:07d}-{val_loss_lattflow:.4f}",
+                monitor="val_loss_lattflow",
+                mode="min",
+                save_top_k=1,
+                save_last=False,
+            )
+        )
+        callbacks_fn.append(ModelSummary(max_depth=2))
 else:
     callbacks_fn = [
         ModelCheckpoint(
@@ -153,7 +197,51 @@ else:
         ),
     
         ModelSummary(max_depth=2),
+
+        ModelCheckpoint(
+            dirpath=os.environ["MODEL_DIR"], 
+            filename="{epoch:03d}-{step:07d}-{val_meanRMSD:.4f}",
+            monitor="val_meanRMSD",
+            save_top_k=1,
+            save_last=False
+        ),
+    
+        ModelSummary(max_depth=2),
+
+        ModelCheckpoint(
+            dirpath=os.environ["MODEL_DIR"], 
+            filename="{epoch:03d}-{step:07d}-{val_E_spring:.4f}",
+            monitor="val_E_spring",
+            save_top_k=1,
+            save_last=False
+        ),
+    
+        ModelSummary(max_depth=2),
     ]
+    if args.loss_graph:
+        callbacks_fn.append(
+            ModelCheckpoint(
+                dirpath=os.path.join(os.environ["MODEL_DIR"], "best_val_loss_path"),
+                filename="best-val_loss_graph-{epoch:03d}-{step:07d}-{val_loss_graph:.4f}",
+                monitor="val_loss_graph",
+                mode="min",
+                save_top_k=1,
+                save_last=False,
+            )
+        )
+        callbacks_fn.append(ModelSummary(max_depth=2))
+    if args.latt_path:
+        callbacks_fn.append(
+            ModelCheckpoint(
+                dirpath=os.path.join(os.environ["MODEL_DIR"], "best_val_loss_path"),
+                filename="best-val_loss_lattflow-{epoch:03d}-{step:07d}-{val_loss_lattflow:.4f}",
+                monitor="val_loss_lattflow",
+                mode="min",
+                save_top_k=1,
+                save_last=False,
+            )
+        )
+        callbacks_fn.append(ModelSummary(max_depth=2))
 
 trainer = pl.Trainer(
     accelerator="gpu" if torch.cuda.is_available() else 'auto',
