@@ -1,1 +1,0 @@
-from .equivariant_transformer import EquivariantTransformerLayer
