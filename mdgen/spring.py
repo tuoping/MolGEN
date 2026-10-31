@@ -345,6 +345,65 @@ import torch.nn as nn
 from ase.data import covalent_radii
 
 
+def _zbl_pair_parameters(
+    zi,
+    zj,
+    *,
+    zbl_scale=1.0,
+    r_soft_scale=0.20,
+    r_on_scale=0.60,
+    r_off_scale=0.80,
+    exclusion_k=0.0,
+    exclusion_r_on=None,
+    exclusion_r_off=None,
+):
+    """Build one entry in the pair-parameter dictionary."""
+
+    radius_sum = float(covalent_radii[zi] + covalent_radii[zj])
+    return {
+        "zbl_scale": float(zbl_scale),
+        "r_soft_scale": float(r_soft_scale),
+        "r_on_scale": float(r_on_scale),
+        "r_off_scale": float(r_off_scale),
+        "r_soft": round(float(r_soft_scale * radius_sum), 6),
+        "r_on": round(float(r_on_scale * radius_sum), 6),
+        "r_off": round(float(r_off_scale * radius_sum), 6),
+        "exclusion_k": float(exclusion_k),
+        "exclusion_r_on": exclusion_r_on,
+        "exclusion_r_off": exclusion_r_off,
+    }
+
+
+# Unordered element-pair keys are canonicalized as (min(Zi, Zj), max(Zi, Zj)).
+# Elements found below experiments/MOF/lattpath_noTime/Stage2.1 are
+# H (1), C (6), N (7), Zn (30), and I (53).
+ZBL_PAIR_PARAMETERS = {
+    (1, 1): _zbl_pair_parameters(1, 1),
+    (1, 6): _zbl_pair_parameters(1, 6),
+    (1, 7): _zbl_pair_parameters(1, 7),
+    (1, 30): _zbl_pair_parameters(1, 30),
+    (1, 53): _zbl_pair_parameters(1, 53),
+    (6, 6): _zbl_pair_parameters(6, 6),
+    (6, 7): _zbl_pair_parameters(6, 7),
+    (6, 30): _zbl_pair_parameters(6, 30),
+    (6, 53): _zbl_pair_parameters(6, 53),
+    (7, 7): _zbl_pair_parameters(7, 7),
+    (7, 30): _zbl_pair_parameters(7, 30),
+    (7, 53): _zbl_pair_parameters(7, 53),
+    (30, 30): _zbl_pair_parameters(
+        30,
+        30,
+        exclusion_k=10.0,
+        exclusion_r_on=4.5,
+        exclusion_r_off=5.0,
+    ),
+    (30, 53): _zbl_pair_parameters(30, 53),
+    (53, 53): _zbl_pair_parameters(53, 53),
+}
+
+_DEFAULT_ZBL_PAIR_PARAMETERS = ZBL_PAIR_PARAMETERS[(1, 1)]
+
+
 class ZBLRepulsiveWall(nn.Module):
     """
     Short-range ZBL repulsive wall for stabilizing ML potentials.
@@ -363,11 +422,27 @@ class ZBLRepulsiveWall(nn.Module):
         r_off = r_off_scale * (Rcov_i + Rcov_j)
 
     Default:
+        r_soft_scale = 0.20
         r_on_scale  = 0.60
         r_off_scale = 0.80
 
-    Therefore the wall is exactly zero once atoms are at >=80%
-    of their approximate normal covalent-contact distance.
+    Below ``r_soft_scale * (Rcov_i + Rcov_j)`` the singular ZBL potential is
+    continued linearly.  This preserves the repulsive force at the soft-core
+    boundary while preventing a nearly coincident pair from producing an
+    unbounded force and destabilizing an integration step.
+
+    Zn-Zn pairs additionally receive a MOF-specific exclusion wall:
+
+        E_ZnZn = 1/2 k_ZnZn max(r_off_ZnZn - r, 0)^2 s(r)
+
+    where the pair dictionary defines ``zbl_scale``, the exclusion spring
+    constant ``exclusion_k``, and the switching distances.  This term prevents
+    collapsed Zn nodes while leaving the 6.17--6.73 Angstrom Zn-Zn separations
+    observed in the selected trajectories untouched.
+
+    The universal ZBL component is exactly zero once atoms are at >=80% of
+    their approximate normal covalent-contact distance.  The separate Zn-Zn
+    component is exactly zero at and beyond its configured exclusion cutoff.
 
     Coordinates
     -----------
@@ -401,22 +476,71 @@ class ZBLRepulsiveWall(nn.Module):
     def __init__(
         self,
         atomic_numbers=None,
-        r_on_scale=0.60,
-        r_off_scale=0.80,
-        strength=1.0,
+        pair_parameters=None,
         eps=1e-6,
     ):
         super().__init__()
 
-        if not (0.0 < r_on_scale < r_off_scale):
-            raise ValueError(
-                "Require 0 < r_on_scale < r_off_scale."
-            )
-
-        self.r_on_scale = r_on_scale
-        self.r_off_scale = r_off_scale
-        self.strength = strength
         self.eps = eps
+
+        if pair_parameters is None:
+            pair_parameters = ZBL_PAIR_PARAMETERS
+        self.pair_parameters = {}
+        required_parameters = set(_DEFAULT_ZBL_PAIR_PARAMETERS)
+        for pair, parameters in pair_parameters.items():
+            if len(pair) != 2:
+                raise ValueError(f"Invalid element-pair key: {pair}")
+            zi, zj = (int(pair[0]), int(pair[1]))
+            if zi <= 0 or zi > zj:
+                raise ValueError(
+                    "Pair keys must be canonical positive atomic-number "
+                    f"tuples, got {pair}."
+                )
+            parameters = dict(parameters)
+            missing = required_parameters - set(parameters)
+            if missing:
+                raise ValueError(
+                    f"Pair {(zi, zj)} is missing parameters: {sorted(missing)}"
+                )
+            if not (
+                0.0
+                < parameters["r_soft_scale"]
+                < parameters["r_on_scale"]
+                < parameters["r_off_scale"]
+            ):
+                raise ValueError(
+                    f"Invalid ZBL scales for pair {(zi, zj)}."
+                )
+            if not (
+                0.0
+                < parameters["r_soft"]
+                < parameters["r_on"]
+                < parameters["r_off"]
+            ):
+                raise ValueError(
+                    f"Invalid ZBL radii for pair {(zi, zj)}."
+                )
+            if parameters["zbl_scale"] < 0.0:
+                raise ValueError(
+                    f"ZBL scale must be non-negative for pair {(zi, zj)}."
+                )
+            exclusion_k = parameters["exclusion_k"]
+            if exclusion_k < 0.0:
+                raise ValueError(
+                    "Exclusion spring constant must be non-negative for pair "
+                    f"{(zi, zj)}."
+                )
+            if exclusion_k > 0.0 and not (
+                parameters["exclusion_r_on"] is not None
+                and parameters["exclusion_r_off"] is not None
+                and 0.0
+                < parameters["exclusion_r_on"]
+                < parameters["exclusion_r_off"]
+            ):
+                raise ValueError(
+                    f"Invalid exclusion radii for pair {(zi, zj)}."
+                )
+            self.pair_parameters[(zi, zj)] = parameters
 
         if atomic_numbers is not None:
             atomic_numbers = torch.as_tensor(
@@ -576,6 +700,7 @@ class ZBLRepulsiveWall(nn.Module):
         r,
         zi,
         zj,
+        r_soft,
     ):
         """
         Standard universal ZBL screened nuclear repulsion.
@@ -620,15 +745,47 @@ class ZBLRepulsiveWall(nn.Module):
             * torch.exp(-self.ZBL_D[3] * x)
         )
 
-        V = (
+        prefactor = (
             self.COULOMB
             * zi_f
             * zj_f
-            / r
-            * phi
+        )
+        V = prefactor / r * phi
+
+        # A linear continuation is C1 at r_soft and caps the pair-force
+        # magnitude.  The successful Stage2.1 trajectories used to calibrate
+        # this boundary remain above 0.20 * (Rcov_i + Rcov_j) during the
+        # guided, late-time portion of their paths, so their ZBL curve is
+        # unchanged.
+        x_soft = r_soft / a
+        exp_soft = tuple(
+            torch.exp(-coefficient * x_soft)
+            for coefficient in self.ZBL_D
+        )
+        phi_soft = sum(
+            coefficient * exponential
+            for coefficient, exponential in zip(self.ZBL_C, exp_soft)
+        )
+        minus_dphi_dx_soft = sum(
+            coefficient * decay * exponential
+            for coefficient, decay, exponential in zip(
+                self.ZBL_C,
+                self.ZBL_D,
+                exp_soft,
+            )
+        )
+        V_soft = prefactor / r_soft * phi_soft
+        force_soft = prefactor * (
+            phi_soft / r_soft.square()
+            + minus_dphi_dx_soft / (a * r_soft)
+        )
+        V = torch.where(
+            r < r_soft,
+            V_soft + force_soft * (r_soft - r),
+            V,
         )
 
-        return self.strength * V
+        return V
 
     # ============================================================
     # Energy
@@ -722,15 +879,48 @@ class ZBLRepulsiveWall(nn.Module):
             + rcov[zj]
         )
 
-        r_on = (
-            self.r_on_scale
-            * rij_cov
+        # Begin with universal fallback values for elements absent from the
+        # configured dictionary, then apply the matching unordered-pair entry.
+        zbl_scale = torch.full_like(
+            r, _DEFAULT_ZBL_PAIR_PARAMETERS["zbl_scale"]
         )
+        r_soft = _DEFAULT_ZBL_PAIR_PARAMETERS["r_soft_scale"] * rij_cov
+        r_on = _DEFAULT_ZBL_PAIR_PARAMETERS["r_on_scale"] * rij_cov
+        r_off = _DEFAULT_ZBL_PAIR_PARAMETERS["r_off_scale"] * rij_cov
 
-        r_off = (
-            self.r_off_scale
-            * rij_cov
-        )
+        for (pair_zi, pair_zj), parameters in self.pair_parameters.items():
+            pair_mask = (
+                ((zi == pair_zi) & (zj == pair_zj))
+                | ((zi == pair_zj) & (zj == pair_zi))
+            )
+            zbl_scale = torch.where(
+                pair_mask,
+                torch.as_tensor(
+                    parameters["zbl_scale"], dtype=r.dtype, device=r.device
+                ),
+                zbl_scale,
+            )
+            r_soft = torch.where(
+                pair_mask,
+                torch.as_tensor(
+                    parameters["r_soft"], dtype=r.dtype, device=r.device
+                ),
+                r_soft,
+            )
+            r_on = torch.where(
+                pair_mask,
+                torch.as_tensor(
+                    parameters["r_on"], dtype=r.dtype, device=r.device
+                ),
+                r_on,
+            )
+            r_off = torch.where(
+                pair_mask,
+                torch.as_tensor(
+                    parameters["r_off"], dtype=r.dtype, device=r.device
+                ),
+                r_off,
+            )
 
         # --------------------------------------------------------
         # ZBL repulsion
@@ -739,6 +929,7 @@ class ZBLRepulsiveWall(nn.Module):
             r,
             zi,
             zj,
+            r_soft,
         )
 
         # --------------------------------------------------------
@@ -753,7 +944,37 @@ class ZBLRepulsiveWall(nn.Module):
         E_pair = (
             V_zbl
             * switch
+            * zbl_scale
         )
+
+        # Pair-specific longer-range exclusion terms are intentionally
+        # separate from the universal short-range ZBL curve.
+        for (pair_zi, pair_zj), parameters in self.pair_parameters.items():
+            exclusion_k = parameters["exclusion_k"]
+            if exclusion_k == 0.0:
+                continue
+            pair_mask = (
+                ((zi == pair_zi) & (zj == pair_zj))
+                | ((zi == pair_zj) & (zj == pair_zi))
+            )
+            exclusion_r_on = parameters["exclusion_r_on"]
+            exclusion_r_off = parameters["exclusion_r_off"]
+            exclusion_switch = self._switch(
+                r,
+                torch.full_like(r, exclusion_r_on),
+                torch.full_like(r, exclusion_r_off),
+            )
+            penetration = torch.clamp(
+                exclusion_r_off - r,
+                min=0.0,
+            )
+            E_pair = E_pair + (
+                0.5
+                * exclusion_k
+                * penetration.square()
+                * exclusion_switch
+                * pair_mask.to(r.dtype)
+            )
 
         E = E_pair.sum(dim=-1)
 
@@ -932,6 +1153,7 @@ class NNSpring:
         k_pin=1.0,
         dtype=torch.float32,
         device=None,
+        reference_cell=None,
     ):
         if device is None:
             device = cell.device
@@ -942,6 +1164,13 @@ class NNSpring:
         self.ref_frac = ref_frac
         self.cell = torch.as_tensor(
             cell,
+            device=self.device,
+            dtype=dtype,
+        )
+        if reference_cell is None:
+            reference_cell = cell
+        self.reference_cell = torch.as_tensor(
+            reference_cell,
             device=self.device,
             dtype=dtype,
         )
@@ -1004,7 +1233,7 @@ class NNSpring:
         ref_dr = torch.einsum(
             "bpi,bij->bpj",
             ref_dfrac,
-            self.cell,
+            self.reference_cell,
         )
 
         ref_r = torch.linalg.norm(ref_dr, dim=-1)        # [B, P]

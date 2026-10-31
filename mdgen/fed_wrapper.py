@@ -627,33 +627,6 @@ class EquivariantFEDWrapper(Wrapper):
 
 
         K_hutchinson_probe = self.args.K_hutchinson_probe
-        K_hutchinson_probe_chunk = self.args.K_hutchinson_probe_chunk
-        assert K_hutchinson_probe % K_hutchinson_probe_chunk == 0
-        def extend_kwargs(kargs):
-            _kargs = {}
-            for k in kargs.keys():
-                _v = kargs[k]
-                if isinstance(_v, dict):
-                    _kargs[k] = {}
-                    for _k in _v.keys():
-                        _kargs[k][_k] = {}
-                        for _k_2 in _v[_k].keys():
-                            _kargs[k][_k][_k_2] = (
-                                _v[_k][_k_2].detach()
-                                 .unsqueeze(0)
-                                 .repeat((K_hutchinson_probe_chunk,) + (1,) * _v[_k][_k_2].dim())
-                                 .reshape(K_hutchinson_probe_chunk * B, *_v[_k][_k_2].shape[1:])
-                                 .requires_grad_(False)
-                            )
-                else:
-                    _kargs[k] = (
-                        _v.detach()
-                         .unsqueeze(0)
-                         .repeat((K_hutchinson_probe_chunk,) + (1,) * _v.dim())
-                         .reshape(K_hutchinson_probe_chunk * B, *_v.shape[1:])
-                         .requires_grad_(False)
-                    )
-            return _kargs
 
         if self.transport.latt_path:
             zs = zs.detach()
@@ -675,7 +648,7 @@ class EquivariantFEDWrapper(Wrapper):
             zs = zs.detach()
             match self.args.likelihood:
                 case "EJE":
-                    _model_kwargs = extend_kwargs(prep['model_kwargs'])
+                    _model_kwargs = prep['model_kwargs']
                     samples_logp, samples, samples_logp_var = sample_fn(
                         zs,
                         partial(self.model.forward_inference, **_model_kwargs)

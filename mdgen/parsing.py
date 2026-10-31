@@ -16,7 +16,7 @@ def parse_train_args():
     group.add_argument("--overfit", action='store_true')
     group.add_argument("--train_batches", type=int, default=None)
     group.add_argument("--val_batches", type=int, default=None)
-    group.add_argument("--val_repeat", type=int, default=25)
+    group.add_argument("--val_repeat", type=int, default=5)
     group.add_argument("--inference_batches", type=int, default=0)
     group.add_argument("--batch_size", type=int, default=1)
     group.add_argument("--val_freq", type=float, default=None)
@@ -87,7 +87,7 @@ def parse_train_args():
     group.add_argument('--cubic_priorcell', action='store_true')
     group.add_argument("--std_cell_diagonal", type=float, default=2)
     group.add_argument("--std_cell_offdiagonal", type=float, default=0.2)
-    group.add_argument('--target-std', type=float, default=1.)
+    group.add_argument('--target-std', type=float, default=0.)
     group.add_argument('--prior-std', type=float, default=1.)
     group.add_argument("--sampling_method", type=str, default="euler", choices=["dopri5", 'rk4', "euler", "Heun"])
     group.add_argument('--K_hutchinson_probe', type=float, default=4)
@@ -100,6 +100,78 @@ def parse_train_args():
     group.add_argument('--loss_consistency', action='store_true')
     group.add_argument('--loss_graph', action='store_true')
     group.add_argument("--pref_loss_graph", type=float, default=1)
+    group.add_argument(
+        "--loss_line_graph",
+        action="store_true",
+        help=(
+            "Also supervise bond angles formed by pairs of reference-graph "
+            "edges that share a central atom."
+        ),
+    )
+    group.add_argument(
+        "--pref_loss_line_graph",
+        type=float,
+        default=1.0,
+        help="Weight of the bond-angle line-graph loss.",
+    )
+    group.add_argument(
+        "--graph_loss_mode",
+        type=str,
+        default="legacy",
+        choices=["legacy", "euler"],
+        help=(
+            "legacy reproduces the original x0 + t*v graph objective; "
+            "euler compares deterministic one-step coordinate changes."
+        ),
+    )
+    group.add_argument(
+        "--graph_time_power",
+        type=float,
+        default=1.0,
+        help=(
+            "Euler graph-loss weight t**graph_time_power. Larger values "
+            "suppress early-time graph errors more strongly."
+        ),
+    )
+
+    group.add_argument('--loss_collision', action='store_true')
+    group.add_argument(
+        "--pref_loss_collision",
+        type=float,
+        default=1.0,
+        help="Weight of the late-time collision loss.",
+    )
+    group.add_argument(
+        "--collision_min_distance",
+        type=float,
+        default=0.8,
+        help="Fallback collision cutoff when atomic species are unavailable.",
+    )
+    group.add_argument(
+        "--collision_radius_scale",
+        type=float,
+        default=0.8,
+        help="Pair cutoff as a multiple of the summed covalent radii.",
+    )
+    group.add_argument("--collision_softness", type=float, default=0.05)
+    group.add_argument(
+        "--collision_start_time",
+        type=float,
+        default=0.75,
+        help=(
+            "Time at which the collision loss starts to turn on. It is zero "
+            "at and below this time."
+        ),
+    )
+    group.add_argument(
+        "--collision_full_time",
+        type=float,
+        default=0.95,
+        help=(
+            "Time at which the collision loss reaches full weight. A smooth "
+            "ramp is used after collision_start_time."
+        ),
+    )
     group.add_argument('--beta_sample_t', type=float, default=0.8)
     group.add_argument("--loss-weight", type=str, default=None, choices=["None", "velocity", "likelihood"])
     group.add_argument('--weight_loss_var_x0', type=float, default=0)
@@ -140,6 +212,20 @@ def parse_train_args():
     group.add_argument("--inference_steps", type=int, default=20)
 
     args = parser.parse_args()
+    if not (
+        0.0 <= args.collision_start_time
+        < args.collision_full_time
+        <= 1.0
+    ):
+        parser.error(
+            "collision times must satisfy 0 <= collision_start_time "
+            "< collision_full_time <= 1"
+        )
+
+    if args.val_repeat < 1:
+        parser.error("val_repeat must be a positive integer")
+    if args.loss_line_graph and not args.loss_graph:
+        parser.error("--loss_line_graph requires --loss_graph")
     os.environ["MODEL_DIR"] = os.path.join("workdir", args.run_name)
     if args.loss_weight == "None":
         args.loss_weight = None
@@ -151,5 +237,3 @@ def parse_train_args():
     with open(f"workdir/{args.run_name}/args.json", "w") as f:
         json.dump(vars(args), f, indent=4)
     return args
-
-

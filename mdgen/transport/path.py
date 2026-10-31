@@ -89,15 +89,20 @@ def compute_weighted(dx, std_t, f_x, k_max=3):
 
 class ICPlan:
     """Linear Coupling Plan"""
-    def __init__(self, sigma=0.0):
-        self.sigma = sigma
+    def __init__(self, sigma_max=1.0, sigma_min=0.0):
+        self.sigma_max = sigma_max
+        self.sigma_min = sigma_min
+        self.sigma_scale = self.sigma_min / self.sigma_max
+        self.diffusion = None
 
     def compute_alpha_t(self, t):
         """Compute the data coefficient along the path"""
+        # return t, 1
         return t, 1
     
     def compute_sigma_t(self, t):
         """Compute the noise coefficient along the path"""
+        # return 1 - t, -1
         return 1 - t, -1
     
     def compute_d_alpha_alpha_ratio_t(self, t):
@@ -137,9 +142,10 @@ class ICPlan:
         except KeyError:
             raise NotImplementedError(f"Diffusion form {form} not implemented")
         assert diffusion.dim() == 4, "Diffusion term must be a 4D tensor"
+        self.diffusion = diffusion
         return diffusion
 
-    def get_score_from_velocity(self, velocity_frac, x_frac, t, x0std, cell, diffusion=1.):
+    def get_score_from_velocity(self, velocity_frac, x_frac, t, x0std, cell):
         """
         Convert the learned IC control / velocity field b_t(x) to the
         log-density score ∇_x log p_t(x).
@@ -160,6 +166,7 @@ class ICPlan:
 
             score = (t * velocity - x) / (1 - t)
         """
+        diffusion = self.diffusion
         x = x_frac@cell
         velocity = velocity_frac@cell
         t = expand_t_like_x(t, x)
@@ -202,7 +209,7 @@ class ICPlan:
     #     return velocity
 
     def get_velocity_from_score(
-        self, score_frac, x_frac, t, x0std, cell, diffusion=1.
+        self, score_frac, x_frac, t, x0std, cell
     ):
         """
         Convert the log-density score ∇_x log p_t(x) back to the
@@ -230,7 +237,7 @@ class ICPlan:
             The inverse is singular at points where alpha_t / d_alpha_t = 0,
             e.g. t=0 for alpha_t=t.
         """
-
+        diffusion = self.diffusion
         # Fractional -> Cartesian
         x = x_frac @ cell
         score = score_frac @ cell
@@ -261,47 +268,6 @@ class ICPlan:
         # Cartesian -> fractional
         return velocity @ inv_cell
 
-    def get_velocity_guidance_from_score(
-        self, score_guidance_frac, x_frac, t, x0std, cell, diffusion=1.
-    ):
-        """
-        Convert an additive score perturbation delta_score into the
-        corresponding additive velocity perturbation delta_velocity.
-    
-            delta_velocity = D / r * delta_score
-    
-        This is NOT the same as converting a complete score field
-        into a complete velocity field.
-        """
-    
-        x = x_frac @ cell
-        score_guidance = score_guidance_frac @ cell
-    
-        t = expand_t_like_x(t, x)
-    
-        alpha_t, d_alpha_t = self.compute_alpha_t(t)
-        sigma_t, d_sigma_t = self.compute_sigma_t(t)
-    
-        reverse_alpha_ratio = alpha_t / d_alpha_t
-    
-        var = (
-            sigma_t**2
-            - reverse_alpha_ratio * d_sigma_t * sigma_t
-        )
-    
-        denom = (
-            var * (x0std**2)[:, None, None]
-            + diffusion * t
-        )
-    
-        velocity_guidance = (
-            score_guidance * denom / reverse_alpha_ratio
-        )
-    
-        inv_cell = th.linalg.inv(cell)
-    
-        return velocity_guidance @ inv_cell
-
     def compute_mu_t(self, t, x0, x1):
         """Compute the mean of time-dependent density p_t"""
         t = expand_t_like_x(t, x1)
@@ -330,7 +296,7 @@ class ICPlan:
         t = expand_t_like_x(t, x1)
         alpha_t, d_alpha_t = self.compute_alpha_t(t)
         sigma_t, d_sigma_t = self.compute_sigma_t(t)
-        xt = wrap_frac_pos(x0 + t*(wrap_frac_pos(x1 - x0 - 0.5) - 0.5))
+        xt = x0 + t*(wrap_frac_pos(x1 - x0 - 0.5) - 0.5)
         ut = wrap_frac_pos(x1 - x0 - 0.5) - 0.5
         return xt, ut 
 

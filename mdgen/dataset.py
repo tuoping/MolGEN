@@ -741,7 +741,7 @@ class EquivariantTransformerDataset_FF(torch.utils.data.Dataset):
 class EquivariantTransformerDataset_MaterialProject(torch.utils.data.Dataset):
     def __init__(self, args, species, num_species, localmask=False, sim_condition=False, stage="train", save_dir=None, sel_idx=None, calculator=None):
         self.uniform_prior = getattr(args, "uniform_prior", False)
-        self.target_std = getattr(args, "target_std", 1)
+        self.target_std = getattr(args, "target_std", 0)
         self.prior_std = getattr(args, "prior_std", 1)
         self.latt_path = args.latt_path
         traj_dir = args.data_dir
@@ -1003,12 +1003,14 @@ class EquivariantTransformerDataset_MaterialProject(torch.utils.data.Dataset):
 
             if torch.cuda.is_available():
                 torch.cuda.empty_cache()
-        elif stage == "test" and isinstance(traj_dir, list):
+        elif stage == "test" and getattr(args, "traj", None) is not None:
             self.all_dataset = []
-            for f in traj_dir:
-                atom_encoder = OneHotEncoder(sparse_output=False)
-                atom_encoder.fit(np.array(species).reshape(-1, 1))
-                atoms = ase.io.read(f, index=-1, format='extxyz')
+            atom_encoder = OneHotEncoder(sparse_output=False)
+            atom_encoder.fit(np.array(species).reshape(-1, 1))
+            traj = args.traj
+            for atoms in traj:
+                atoms.translate(0.5 * np.sum(atoms.cell.array, axis=0))
+                atoms.wrap()
                 num_atoms = len(atoms)
                 inv_cell = np.linalg.pinv(np.array(atoms.cell))
                 z = atom_encoder.transform(atoms.numbers.reshape(-1, 1))
@@ -1022,12 +1024,11 @@ class EquivariantTransformerDataset_MaterialProject(torch.utils.data.Dataset):
                         z=torch.tensor(padded_z, dtype=torch.float32),
                         num_atoms=torch.tensor(num_atoms, dtype=torch.long),
                         cell=torch.tensor(np.array(atoms.cell), dtype=torch.float32),
-                        frac_pos=x_frac,
+                        frac_pos=torch.tensor(x_frac - np.ones(3) * 0.5, dtype=torch.float32),
                         forces=torch.zeros_like(x_frac),
                         E_formation=None,
                         E_above_hull=None,
                         E=None,
-                        source_filename=f,
                     )
                 self.all_dataset.append(data)
         else:
@@ -1107,26 +1108,29 @@ class EquivariantTransformerDataset_MaterialProject(torch.utils.data.Dataset):
         padded_z[:,:,:dataset_z.shape[-1]] = dataset_z
 
         x = torch.stack([data.frac_pos for data in dataset])
-        wall = ZBLRepulsiveWall()
+        T, L, _ = x.shape
+        # wall = ZBLRepulsiveWall()
         labels = torch.argmax(padded_z, dim=2)  # T,L
-        atomic_numbers = torch.tensor([self.species[label] for label in labels.flatten()]).unsqueeze(0)  # T,L
-        inv_cell = torch.linalg.inv(cell)
-        if self.uniform_prior:
-            nn_spring = NNSpring(x, cell, atomic_numbers=atomic_numbers)
-            
-            noise = torch.randn(x.shape) * self.target_std
-            x += noise @ inv_cell
-            with torch.enable_grad():
-                forces = nn_spring.build_force(x) + wall.build_force(x, cell, atomic_numbers) @ cell.transpose(-1, -2)
-            forces = forces.detach()
-            # forces = -noise
-        else:
-            noise = torch.randn(x.shape) * self.target_std
-            x += noise @ inv_cell
-            with torch.enable_grad():
-                forces = torch.stack([data.forces for data in dataset]) + wall.build_force(x, cell, atomic_numbers) @ cell.transpose(-1, -2)
-        T,L,_ = x.shape
-
+        atomic_numbers = torch.tensor(
+            [self.species[label] for label in labels.flatten()],
+            dtype=torch.long,
+        ).reshape(T, L)
+        # inv_cell = torch.linalg.inv(cell)
+        # if self.uniform_prior:
+        # nn_spring = NNSpring(x, cell, atomic_numbers=atomic_numbers)
+        
+        # noise = torch.randn(x.shape) * self.target_std
+        # x = x + noise @ inv_cell
+        # with torch.enable_grad():
+        #     forces = nn_spring.build_force(x) + wall.build_force(x, cell, atomic_numbers)
+        # forces = forces.detach()
+        # forces = -noise
+        # else:
+        # noise = torch.randn(x.shape) * self.target_std
+        # x += noise @ inv_cell
+        x1std = torch.ones(T) * self.target_std
+        # with torch.enable_grad():
+        forces = torch.stack([data.forces for data in dataset])
         _mask = torch.ones([T,L]) # T,L
         _v_mask = _mask.unsqueeze(-1).expand(-1,-1,3) # T,L,3
         _h_mask = _mask.unsqueeze(-1).expand(-1,-1,self.num_species) # T,L,num_species
@@ -1138,45 +1142,47 @@ class EquivariantTransformerDataset_MaterialProject(torch.utils.data.Dataset):
             v_mask = _v_mask
             h_mask = _h_mask
         if self.uniform_prior:
-            return {
+            # if inference:
+            #     x0std = torch.zeros(T)
+            # else:
+            x0std = torch.ones(T) * torch.linalg.det(cell)**(1./3)
+            _item = {
                 "name": "Material Project",
                 "species": padded_z,
+                "atomic_numbers": atomic_numbers,
                 "x": x,
-                "forces": forces,
                 "cell": cell,
-                "x0std": torch.ones(T) * torch.linalg.det(cell)**(1./3),
+                "x0std": x0std,
+                "x1std": x1std,
                 "num_atoms": torch.stack([data.num_atoms for data in dataset]),
                 "mask": mask,
                 "v_mask": v_mask,
                 "h_mask": h_mask,
             }
+            if self.target_std < 0.02:
+                _item['forces'] = forces
+            return _item
         else:
             if inference:
-                return {
-                    "name": "Material Project",
-                    "species": padded_z,
-                    "x": x,
-                    "forces": forces,
-                    "cell": cell,
-                    "x0std": torch.zeros(T),
-                    "num_atoms": torch.stack([data.num_atoms for data in dataset]),
-                    "mask": mask,
-                    "v_mask": v_mask,
-                    "h_mask": h_mask,
-                }
+                x0std = torch.zeros(T)
             else:
-                return {
-                    "name": "Material Project",
-                    "species": padded_z,
-                    "x": x,
-                    "forces": forces,
-                    "cell": cell,
-                    "x0std": torch.ones(T)* self.prior_std,
-                    "num_atoms": torch.stack([data.num_atoms for data in dataset]),
-                    "mask": mask,
-                    "v_mask": v_mask,
-                    "h_mask": h_mask,
-                }
+                x0std = torch.ones(T) * self.prior_std
+            _item =  {
+                "name": "Material Project",
+                "species": padded_z,
+                "atomic_numbers": atomic_numbers,
+                "x": x,
+                "cell": cell,
+                "x0std": x0std,
+                "x1std": x1std,
+                "num_atoms": torch.stack([data.num_atoms for data in dataset]),
+                "mask": mask,
+                "v_mask": v_mask,
+                "h_mask": h_mask,
+            }
+            if self.target_std < 0.02:
+                _item['forces'] = forces
+            return _item
 
 
 try:
@@ -1185,232 +1191,6 @@ try:
 except ImportError:
     pass
 
-class EquivariantTransformerDataset_phasediagram(torch.utils.data.Dataset):
-    def __init__(self, args, species, num_species, localmask=False, sim_condition=False, stage="train", save_dir = None, sel_idx = None, T = None):
-        traj_dir = args.data_dir
-        cutoff = args.cutoff
-        kB = 8.617*10**-5  # K to eV
-        self.num_species = num_species
-        type_map = {}
-        type_map = {}
-        for idx_e, e in enumerate(species):
-            type_map[idx_e+1] = e 
-
-        self.cutoff = cutoff
-
-        self.num_frames = 1
-        self.stage = stage
-        self.localmask = localmask
-        self.sim_condition = sim_condition
-
-        if self.stage == "save":    
-            self.calculator = DP(model="data/SiO2/DP_R2SCAN.pb")
-        
-            traj_filename = os.path.join(traj_dir, "dump.equi")
-            atoms_list = ase.io.read(traj_filename, index=":", format="lammps-dump-text")[10:]
-            atom_encoder = OneHotEncoder(sparse_output=False)
-            atom_encoder.fit(np.array(species).reshape(-1,1))
-            
-            atoms_0 = ase.io.read(os.path.join(traj_dir, "final-config.vasp"))
-            inv_cell_0 = np.linalg.pinv(np.array(atoms_0.cell))
-            frac_pos_0 = atoms_0.positions @ inv_cell_0  - np.ones(3)*0.5
-
-            dataset = []
-            for i_atoms, atoms in enumerate(atoms_list):
-                atomic_species = [type_map[k] for k in atoms.get_atomic_numbers().astype(int)]
-                atoms.set_atomic_numbers(atomic_species)
-                atoms.calc = self.calculator
-                num_atoms = len(atoms)
-                atoms.wrap()   
-                inv_cell = np.linalg.pinv(np.array(atoms.cell))
-                z = atom_encoder.transform(atoms.numbers.reshape(-1, 1))
-                padded_z = np.zeros((num_atoms, num_species))
-                padded_z[:, :z.shape[1]] = z
-                num_atoms = len(atoms)
-                data = Data(
-                    z          = torch.tensor(padded_z,               dtype=torch.float32),
-                    num_atoms = torch.tensor(num_atoms, dtype=torch.long),
-
-                    # pos        = torch.tensor(atoms.positions - np.ones(3)*0.5 @ atoms.cell, dtype=torch.float32),
-                    cell       = torch.tensor(np.array(atoms.cell), dtype=torch.float32),
-                    frac_pos = torch.tensor(atoms.positions @ inv_cell - np.ones(3)*0.5, dtype=torch.float32),
-
-                    forces     = torch.tensor(atoms.get_forces(), dtype=torch.float32),
-                    E_formation = None,
-                    E_above_hull = None,
-                    E = torch.tensor(atoms.get_potential_energy(), dtype=torch.float32),
-
-                    cell_0 = torch.tensor(np.array(atoms_0.cell), dtype=torch.float32),
-                    frac_pos_0 = torch.tensor(frac_pos_0, dtype=torch.float32)
-                )
-                dataset.append(data.clone())
-
-            idx_data = np.arange(len(dataset))
-            np.random.shuffle(idx_data)
-            n_test = int(len(idx_data) // 10)
-            n_val = int(len(idx_data) // 10)
-            test_idx = idx_data[:n_test]
-            val_idx = idx_data[n_test:n_test+n_val]
-            train_idx = idx_data[n_test+n_val:]
-
-            torch.save([dataset[i] for i in test_idx], f'{save_dir}/test.pt')
-            torch.save([dataset[i] for i in val_idx], f'{save_dir}/val.pt')
-            torch.save([dataset[i] for i in train_idx], f'{save_dir}/train.pt')
-        else:
-            if stage in ["train", 'val']:
-                self.all_dataset = []
-                for P in [0,1]:
-                    for T in [1600, 800]:
-                        p = torch.tensor(P/100.)
-                        t = torch.tensor((T-0)/(5000.-0.))
-                    
-                        dirname = os.path.join(traj_dir, f"npt_{T}K_{P}GPa/npt_coesite_dense/npt")
-                        dataset_1 = torch.load(os.path.join(dirname, f"{stage}.pt"), weights_only=False)
-                        vol_0 = torch.linalg.det(dataset_1[0].cell_0)
-                        # vol = torch.stack([torch.linalg.det(data.cell) for data in dataset_1]).mean()
-                        for data in dataset_1:
-                            data.P = p
-                            data.T = t
-                            data.forces = data.forces/(kB*T)
-                            data.cell_0 = data.cell
-                            data.kBT = torch.tensor(kB*T)
-                        self.all_dataset += dataset_1
-
-                        dirname = os.path.join(traj_dir, f"npt_{T}K_{P}GPa/npt_quartz_dense/npt")
-                        dataset_1 = torch.load(os.path.join(dirname, f"{stage}.pt"), weights_only=False)
-                        vol_0 = torch.linalg.det(dataset_1[0].cell_0)
-                        # vol = torch.stack([torch.linalg.det(data.cell) for data in dataset_1]).mean()
-                        for data in dataset_1:
-                            data.P = p
-                            data.T = t
-                            data.cell_0 = data.cell
-                            data.forces = data.forces/(kB*T)
-                            data.kBT = torch.tensor(kB*T)
-                        self.all_dataset += dataset_1
-
-                dirname = os.path.join(traj_dir, "npt_1600K_1GPa/npt_coesite_dense/npt")
-                dataset_1 = torch.load(os.path.join(dirname, f"{stage}.pt"), weights_only=False)
-                dataset_3 = []
-                for i in range(len(dataset_1)//2):
-                    data = Data(
-                        z          = dataset_1[i].z,
-                        num_atoms  = dataset_1[i].num_atoms,
-                        cell       = dataset_1[i].cell_0,
-                        frac_pos   = dataset_1[i].frac_pos_0,
-                        forces     = torch.zeros_like(dataset_1[i].forces),
-                        cell_0     = dataset_1[i].cell_0,
-                        frac_pos_0 = dataset_1[i].frac_pos_0,
-                        kBT = torch.tensor(0.)
-                    )
-                    data.P = torch.tensor(0.)
-                    data.T = torch.tensor(0.)
-                    dataset_3.append(data)
-                self.all_dataset += dataset_3
-
-                dirname = os.path.join(traj_dir, "npt_1600K_1GPa/npt_quartz_dense/npt")
-                dataset_2 = torch.load(os.path.join(dirname, f"{stage}.pt"), weights_only=False)
-                dataset_4 = []
-                for i in range(len(dataset_2)//2):
-                    data = Data(
-                        z          = dataset_2[i].z,
-                        num_atoms  = dataset_2[i].num_atoms,
-                        cell       = dataset_2[i].cell_0,
-                        frac_pos   = dataset_2[i].frac_pos_0,
-                        forces     = torch.zeros_like(dataset_2[i].forces),
-                        cell_0     = dataset_2[i].cell_0,
-                        frac_pos_0 = dataset_2[i].frac_pos_0
-                    )
-                    data.P = torch.tensor(0.)
-                    data.T = torch.tensor(0.)
-                    data.kBT = torch.tensor(0.)
-                    dataset_4.append(data)
-
-                self.all_dataset += dataset_4
-                        
-            else:   
-                if "npt_0K_0GPa" in traj_dir:
-                    dataset_1 = torch.load(os.path.join(traj_dir.replace("npt_0K_0GPa", "npt_1600K_1GPa"), f"{stage}.pt"), weights_only=False)
-                    self.all_dataset = []
-                    for i in range(len(dataset_1)//2):
-                        data = Data(
-                            z          = dataset_1[i].z,
-                            num_atoms  = dataset_1[i].num_atoms,
-                            cell       = dataset_1[i].cell_0,
-                            frac_pos   = dataset_1[i].frac_pos_0,
-                            forces     = torch.zeros_like(dataset_1[i].forces),
-                            cell_0     = dataset_1[i].cell_0,
-                            frac_pos_0 = dataset_1[i].frac_pos_0
-                        )
-                        data.P = torch.tensor(0.)
-                        data.T = torch.tensor(0.)
-                        data.kBT = torch.tensor(0.)
-                        self.all_dataset.append(data)
-                else:
-                    assert T is not None
-                    t = torch.tensor((T-0)/(5000.-0.))
-                    self.all_dataset = torch.load(os.path.join(traj_dir, f"{stage}.pt"), weights_only=False)
-                    vol_0 = torch.linalg.det(self.all_dataset[0].cell_0)
-                    vol = torch.stack([torch.linalg.det(data.cell) for data in self.all_dataset]).mean()
-                    for data in self.all_dataset:
-                        data.cell_0 = data.cell_0 * (vol/vol_0)**(1./3.)
-                        data.T = torch.tensor(t)
-                        data.kBT = torch.tensor(kB*T)
-
-            self.gibbs_sampling = False
-            if self.gibbs_sampling:
-                self.mean_energy = torch.stack([data.E for data in self.all_dataset]).mean()
-                kB = 8.617333262E-5 
-                for data in self.all_dataset:
-                    data.reduced_E = (data.E - self.mean_energy)/1600/kB
-            
-
-    def __len__(self):
-        return len(self.all_dataset)
-    
-    def __getitem__(self, idx):
-        idx = idx % len(self.all_dataset)
-        dataset = [self.all_dataset[idx]]
-        x = torch.stack([data.frac_pos for data in dataset])
-        x0 = torch.stack([data.frac_pos_0 for data in dataset])
-        # assert torch.all(x>=0)
-        # assert torch.all(x<=1)
-        T,L,_ = x.shape
-        
-        if self.gibbs_sampling:
-            _mask = torch.stack([-data.reduced_E for data in dataset]).exp().unsqueeze(-1).expand(-1,L)
-        else:
-            _mask = torch.ones([T,L]) # T,L
-        _v_mask = _mask.unsqueeze(-1).expand(-1,-1,3) # T,L,3
-        _h_mask = _mask.unsqueeze(-1).expand(-1,-1,self.num_species) # T,L,num_species
-
-        dataset_z = torch.stack([data.z for data in dataset])
-        padded_z = torch.stack([ torch.zeros((*data.z.shape[:-1], self.num_species)) for data in dataset]) # T,L,num_species
-        padded_z[:,:,:dataset_z.shape[-1]] = dataset_z
-
-        if self.localmask:
-            raise Exception("Yet to implement localmask")
-        else:
-            mask = _mask
-            v_mask = _v_mask
-            h_mask = _h_mask
-        assert dataset[0].T <= 1
-        assert (dataset[0].kBT > 0.01 or dataset[0].kBT == 0.) and dataset[0].kBT < 1
-        return {
-            "name": "Material Project",
-            "species": padded_z,
-            "x": x,
-            "x0": x0,
-            "x0std": torch.stack([torch.sqrt(data.kBT) for data in dataset]),
-            "forces": torch.stack([data.forces for data in dataset]),
-            "cell": torch.stack([data.cell for data in dataset]),
-            "cell0": torch.stack([data.cell_0 for data in dataset]),
-            "num_atoms": torch.stack([data.num_atoms for data in dataset]),
-            "cv": torch.stack([data.T for data in dataset]),
-            "mask": mask,
-            "v_mask": v_mask,
-            "h_mask": h_mask,
-        }
-    
 
 class EquivariantTransformerDataset_Transition1x(torch.utils.data.Dataset):
     def __init__(self, data_dirname, num_species=5, sim_condition=False, tps_condition=True, stage="train"):
@@ -1486,12 +1266,23 @@ import math
 from collections import defaultdict
 
 class BucketBatchSampler(Sampler):
-    def __init__(self, dataset, num_atoms_list, batch_size, drop_last=False, shuffle=True):
+    def __init__(
+        self,
+        dataset,
+        num_atoms_list,
+        batch_size,
+        drop_last=False,
+        shuffle=True,
+        repeat=1,
+    ):
+        if not isinstance(repeat, int) or repeat < 1:
+            raise ValueError("repeat must be a positive integer")
         self.dataset = dataset
         self.num_atoms_list = num_atoms_list
         self.batch_size = batch_size
         self.drop_last = drop_last
         self.shuffle = shuffle
+        self.repeat = repeat
         self.batched_indices = self._create_batches()
 
     def _create_batches(self):
@@ -1521,10 +1312,10 @@ class BucketBatchSampler(Sampler):
     def __iter__(self):
         if self.shuffle:
             self.batched_indices = self._create_batches()
-        return iter(self.batched_indices)
+        return iter(self.batched_indices * self.repeat)
 
     def __len__(self):
-        return len(self.batched_indices)
+        return len(self.batched_indices) * self.repeat
 
 
 

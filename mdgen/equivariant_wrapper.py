@@ -12,6 +12,7 @@ from functools import partial
 
 from .model.equivariant_latent_model import EquivariantTransformer_dpm, Encoder_dpm, Processor, Decoder
 from .wrapper import Wrapper, gather_log, get_log_mean
+from .transport.utils import collision_loss
 
 
 from pymatgen.core import Molecule
@@ -169,6 +170,7 @@ def lattice_polar_decompose_torch(lattices: torch.Tensor):
 
 from .spring import NNSpring
 from .spring import ZBLRepulsiveWall
+from .transport.utils import collision_loss, graph_loss
 class EquivariantMDGenWrapper(Wrapper):
     def __init__(self, args):
         super().__init__(args)
@@ -290,12 +292,34 @@ class EquivariantMDGenWrapper(Wrapper):
         log = gather_log(log, self.trainer.world_size)
         mean_log = get_log_mean(log)
         self.log("val_loss", mean_log['val_loss'])
-        if self.args.loss_graph:
-            self.log("val_loss_graph", mean_log['val_loss_graph'])
+        if self.args.KL == 'symm':
+            self.log("val_loss_symmkl", mean_log['val_loss_symmkl'])
+        self.log("val_rollout_graph_err", mean_log['val_rollout_graph_err'])
+        if self.args.loss_collision:
+            self.log("val_loss_collision", mean_log['val_loss_collision'])
+            self.log("val_collision_count", mean_log['val_collision_count'])
+            self.log("val_collision_rate", mean_log['val_collision_rate'])
+            self.log(
+                "val_collision_min_distance",
+                mean_log['val_collision_min_distance'],
+            )
+        self.log(
+            "val_rollout_collision_count",
+            mean_log['val_rollout_collision_count'],
+        )
+        self.log(
+            "val_rollout_collisions_per_structure",
+            mean_log['val_rollout_collisions_per_structure'],
+        )
+        self.log(
+            "val_rollout_collision_min_distance",
+            mean_log['val_rollout_collision_min_distance'],
+        )
         if self.transport.latt_path:
             self.log('val_loss_lattflow', mean_log['val_loss_lattflow'])
         if not self.args.potential_model:
-            self.log("val_meanRMSD", mean_log['val_meanRMSD'])
+            if not self.args.latt_path:
+                self.log("val_meanRMSD", mean_log['val_meanRMSD'])
             self.log("val_E_spring", mean_log['val_E_spring'])
         if self.args.path_type in ["Schrodinger_Linear", "Schrodinger_Linear_onemodel"]:
             self.log("val_loss_path", mean_log['val_loss_path'])
@@ -348,6 +372,7 @@ class EquivariantMDGenWrapper(Wrapper):
     def prep_batch_x(self, batch):
         species = batch["species"]
         latents = batch["x"]
+
         B, T, L, num_elem = species.shape
 
         v_loss_mask = batch["v_mask"]
@@ -356,8 +381,8 @@ class EquivariantMDGenWrapper(Wrapper):
         if not self.args.potential_model:
             self.transport.x0std = batch['x0std']
 
+        _cell = batch['cell']
         if self.args.latt_path and self.args.cubic_priorcell:
-            _cell = batch['cell']
             _volume = torch.linalg.det(_cell).abs().unsqueeze(-1).unsqueeze(-1)
             self.transport.prior_cell = (torch.eye(3).unsqueeze(0).unsqueeze(0).to(_cell.device) * _volume**(1./3)).to(_TORCH_FLOAT_PRECISION)
         else:
@@ -373,6 +398,13 @@ class EquivariantMDGenWrapper(Wrapper):
         if "inpainting_mask" not in batch.keys():
             batch['inpainting_mask'] = torch.ones(B,T,L, dtype=int, device=species.device)
             batch['inpainting_v_mask'] = torch.ones(B,T,L,3, dtype=int, device=species.device)
+
+        atomic_numbers = batch['atomic_numbers']
+        nn_spring = NNSpring(latents.view(B*T,L,3), batch['cell'].view(B*T,3,3), atomic_numbers=atomic_numbers.view(B*T, L))
+        if "x1std" in batch:
+            inv_cell = torch.linalg.inv(_cell)
+            noise = torch.randn_like(latents) * batch['x1std'][...,None,None]
+            latents = latents + noise @ inv_cell
 
         conditional_batch = None
         data = {
@@ -392,8 +424,14 @@ class EquivariantMDGenWrapper(Wrapper):
                     'conditional_batch': conditional_batch
                 }
         
-        if "forces" in batch:
-            data["forces"] = batch['forces'].to(_TORCH_FLOAT_PRECISION)
+
+        wall = ZBLRepulsiveWall()
+        
+        with torch.enable_grad():
+            if "forces" in batch:
+                data["forces"] = batch['forces'].to(_TORCH_FLOAT_PRECISION) + wall.build_force(latents.view(B*T,L,3), batch['cell'].view(B*T,3,3), atomic_numbers.view(B*T,L)).to(_TORCH_FLOAT_PRECISION).view(B,T,L,3)
+            else:
+                data["forces"] = -noise / batch['x1std'][...,None,None]**2 + wall.build_force(latents.view(B*T,L,3), batch['cell'].view(B*T,3,3), atomic_numbers.view(B*T,L)).to(_TORCH_FLOAT_PRECISION).view(B,T,L,3)
         if not self.args.potential_model:
             data['x0std'] = batch['x0std'].to(_TORCH_FLOAT_PRECISION)
         return data
@@ -498,6 +536,7 @@ class EquivariantMDGenWrapper(Wrapper):
                 model=self.model,
                 x1=prep['latents'],
                 aatype1=batch['species'],
+                atomic_numbers=batch.get('atomic_numbers'),
                 mask=prep['loss_mask'],
                 model_kwargs=prep['model_kwargs'],
                 forces = forces,
@@ -530,6 +569,28 @@ class EquivariantMDGenWrapper(Wrapper):
                 self.prefix_log('loss_consistency', out_dict['loss_consistency'].detach().cpu())
             if self.args.loss_graph:
                 self.prefix_log('loss_graph', out_dict['loss_graph'].detach().cpu())
+                if getattr(self.args, "loss_line_graph", False):
+                    self.prefix_log(
+                        'loss_line_graph',
+                        out_dict['loss_line_graph'].detach().cpu(),
+                    )
+            if self.args.loss_collision:
+                self.prefix_log(
+                    'loss_collision',
+                    out_dict['loss_collision'].detach().cpu(),
+                )
+                self.prefix_log(
+                    'collision_count',
+                    out_dict['collision_count'].detach().cpu(),
+                )
+                self.prefix_log(
+                    'collision_rate',
+                    out_dict['collision_rate'].detach().cpu(),
+                )
+                self.prefix_log(
+                    'collision_min_distance',
+                    out_dict['collision_min_distance'].detach().cpu(),
+                )
 
             if self.args.design:
                 self.prefix_log('loss_logit', out_dict['loss_logit'].detach().cpu())
@@ -570,32 +631,110 @@ class EquivariantMDGenWrapper(Wrapper):
                 pred_pos, _ = self.inference(batch, stage=stage)
                 cell = prep['model_kwargs']['cell']
             ref_pos = prep['latents']
-
+            ref_cell = batch['cell']
             with torch.no_grad():
-                ## (\Delta d per atom) # B,T,L
-                # x, x_ref: (..., N, 3), fractional coordinates
-                # RMSD = sqrt(mean_i |dx_i|^2)
-                dx = pred_pos[-1] - ref_pos
-                dx = dx - torch.round(dx)       # minimum image in fractional coords
-                dx_cart = dx @ cell             # cell: (..., 3, 3) or (3, 3)
-                err = torch.sqrt((dx_cart**2).sum(dim=-1).mean(dim=-1))
-                ## mean RMSD per sample # B
-                err = err.mean(dim=-1)
-                self.prefix_log('meanRMSD', err)  # An extra factor of 3 was divided when taking the mean over the T dimension
-
-                labels_B = torch.argmax(batch['species'], dim=-1)  # B,L
-                # energies_B = torch.zeros(B)
-                # for i in range(B):
-                atomic_numbers = torch.tensor([[species[label] for label in labels.flatten()] for labels in labels_B]).to(pred_pos.device)  # T,L
-                nn_spring = NNSpring(pred_pos[-1].squeeze(1), cell.squeeze(1), atomic_numbers=atomic_numbers)
+                graph_err, graph_info = graph_loss(
+                    pred_pos[-1].view(B * T, L, 3),
+                    ref_pos.view(B * T, L, 3),
+                    cell.view(B * T, 3, 3),
+                    self.args.cutoff,
+                    reference_cell=ref_cell,
+                    use_reference_image=False,
+                    compute_line_graph=False,
+                )
+                self.prefix_log('rollout_graph_err', graph_err)
+                if not self.args.latt_path:
+                    ## (\Delta d per atom) # B,T,L
+                    # x, x_ref: (..., N, 3), fractional coordinates
+                    # RMSD = sqrt(mean_i |dx_i|^2)
+                    dx = pred_pos[-1] - ref_pos
+                    dx = dx - torch.round(dx)       # minimum image in fractional coords
+                    dx_cart = dx @ cell             # cell: (..., 3, 3) or (3, 3)
+                    err = torch.sqrt((dx_cart**2).sum(dim=-1).mean(dim=-1))
+                    ## mean RMSD per sample # B
+                    err = err.mean(dim=-1)
+                    self.prefix_log('meanRMSD', err)  # An extra factor of 3 was divided when taking the mean over the T dimension
+                if 'atomic_numbers' in batch:
+                    atomic_numbers = batch['atomic_numbers'].to(
+                        device=pred_pos.device,
+                        dtype=torch.long,
+                    ).reshape(B * T, L)
+                else:
+                    labels_B = torch.argmax(batch['species'], dim=-1)
+                    atomic_numbers = torch.tensor(
+                        [
+                            [species[label] for label in labels.flatten()]
+                            for labels in labels_B
+                        ],
+                        device=pred_pos.device,
+                        dtype=torch.long,
+                    ).reshape(B * T, L)
+                generated_frac = pred_pos[-1].reshape(B * T, L, 3)
+                reference_frac = ref_pos.reshape(B * T, L, 3)
+                generated_cell = cell.reshape(B * T, 3, 3)
+                reference_cell = ref_cell.reshape(
+                    B * T, 3, 3
+                )
+                # nn_spring = NNSpring(
+                #     reference_frac,
+                #     generated_cell,
+                #     atomic_numbers=atomic_numbers,
+                #     reference_cell=reference_cell,
+                # )
                 wall = ZBLRepulsiveWall()
-                energies_B = nn_spring.build_energy(pred_pos[-1].squeeze(1)) + wall.build_energy(pred_pos[-1].squeeze(1), cell.squeeze(1), atomic_numbers)
+                energies_B = (
+                    wall.build_energy(
+                        generated_frac,
+                        generated_cell,
+                        atomic_numbers,
+                    )
+                )
                 # energies_B[i] = e.sum()
                 self.prefix_log("E_spring", energies_B)
+                _, collision_info = collision_loss(
+                    pred_pos[-1],
+                    cell,
+                    atomic_numbers=atomic_numbers,
+                    min_distance=getattr(
+                        self.args, "collision_min_distance", 0.8
+                    ),
+                    radius_scale=getattr(
+                        self.args, "collision_radius_scale", 0.8
+                    ),
+                    softness=getattr(
+                        self.args, "collision_softness", 0.05
+                    ),
+                    atom_mask=batch['species'].sum(dim=-1) > 0,
+                )
+                rollout_collision_count = torch.as_tensor(
+                    collision_info['num_collisions'],
+                    dtype=pred_pos.dtype,
+                    device=pred_pos.device,
+                )
+                self.prefix_log(
+                    'rollout_collision_count', rollout_collision_count
+                )
+                self.prefix_log(
+                    'rollout_collisions_per_structure',
+                    rollout_collision_count / max(B * T, 1),
+                )
+                self.prefix_log(
+                    'rollout_collision_min_distance',
+                    collision_info['min_distance'],
+                )
         except:
-                print("WARNNING:: Inference failed !!!")
-                self.prefix_log('meanRMSD', torch.nan)
-                self.prefix_log("E_spring", torch.nan)
+            print("WARNNING:: Inference failed !!!")
+            self.prefix_log('meanRMSD', torch.nan)
+            self.prefix_log("E_spring", torch.nan)
+            if self.args.loss_graph:
+                self.prefix_log('rollout_graph_err', torch.nan)
+                self.prefix_log('rollout_collision_count', torch.nan)
+                self.prefix_log(
+                    'rollout_collisions_per_structure', torch.nan
+                )
+                self.prefix_log(
+                    'rollout_collision_min_distance', torch.nan
+                )
 
 
     def _val_saddle_point_object_aware(self, batch, prep, stage="val"):
@@ -663,7 +802,8 @@ class EquivariantMDGenWrapper(Wrapper):
         s_time= time.time()
         self.stage = stage
         prep = self.prep_batch(batch)
-
+        # if self.args.uniform_prior and not self.args.cubic_priorcell:
+        #     self.transport.prior_mean = batch['x']
         latents = prep['latents']
         B, T, N, D = latents.shape
         x0std = self.args.x0std
@@ -688,8 +828,7 @@ class EquivariantMDGenWrapper(Wrapper):
             # if self.args.likelihood == "EJE":
             match self.args.likelihood:
                 case "EJE":
-                    sample_fn = self.transport_sampler.sample_ode_likelihood(sampling_method=self.args.sampling_method, num_steps=self.args.inference_steps)
-                    sample_fn_reverse = self.transport_sampler.sample_ode_likelihood(sampling_method=self.args.sampling_method, num_steps=self.args.inference_steps, reverse=True)
+                    raise Exception("Not running likelihood")
                 case None:
                     with torch.no_grad(): sample_fn = self.transport_sampler.sample_ode(sampling_method=self.args.sampling_method, num_steps=self.args.inference_steps)  # default to ode
                 case _:
@@ -698,15 +837,10 @@ class EquivariantMDGenWrapper(Wrapper):
             last_step = getattr(self.args, "last_step", None)
             match self.args.likelihood:
                 case "FND":
-                    if self.score_model is not None:
-                        with torch.no_grad(): sample_fn = self.transport_sampler.sample_sde_likelihood(num_steps=self.args.inference_steps, diffusion_form=self.args.diffusion_form, diffusion_norm=torch.tensor(self.args.diffusion_norm), score_model=partial(self.score_model.forward_inference, **prep['model_kwargs']), last_step=last_step )
-                        with torch.no_grad(): sample_fn_reverse = self.transport_sampler.sample_sde_likelihood(num_steps=self.args.inference_steps, diffusion_form=self.args.diffusion_form, diffusion_norm=torch.tensor(self.args.diffusion_norm), reverse=True, score_model=partial(self.score_model.forward_inference, **prep['model_kwargs']), last_step=last_step )
-                    else:
-                        with torch.no_grad(): sample_fn = self.transport_sampler.sample_sde_likelihood(num_steps=self.args.inference_steps, diffusion_form=self.args.diffusion_form, diffusion_norm=torch.tensor(self.args.diffusion_norm), score_model=partial(self.model.forward_inference, **prep['model_kwargs']), last_step=last_step )
-                        with torch.no_grad(): sample_fn_reverse = self.transport_sampler.sample_sde_likelihood(num_steps=self.args.inference_steps, diffusion_form=self.args.diffusion_form, diffusion_norm=torch.tensor(self.args.diffusion_norm), reverse=True, score_model=partial(self.model.forward_inference, **prep['model_kwargs']), last_step=last_step )
+                    raise Exception("Not running likelihood")
                 case None:
                     score_model = self.score_model if self.score_model is not None else self.model
-                    with torch.no_grad(): sample_fn = self.transport_sampler.sample_sde(num_steps=self.args.inference_steps, diffusion_form=self.args.diffusion_form, diffusion_norm=torch.tensor(self.args.diffusion_norm), score_model=partial(score_model.forward_inference, **prep['model_kwargs']), last_step=last_step )
+                    with torch.no_grad(): sample_fn = self.transport_sampler.sample_sde(num_steps=self.args.inference_steps, diffusion_form=self.args.diffusion_form, diffusion_norm=torch.tensor(self.args.diffusion_norm), score_model=partial(score_model.forward_inference, **prep['model_kwargs']), last_step=last_step, last_step_size=0.04 if last_step is not None else 0.0)
                 case _:
                     raise Exception("Wrong likelihood argument (not implemented for SDE): "+self.args.likelihood)
 

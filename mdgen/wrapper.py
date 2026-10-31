@@ -47,6 +47,33 @@ class Wrapper(pl.LightningModule):
         self._log = defaultdict(list)
         self.last_log_time = time.time()
         self.iter_step = 0
+        # EMA objects are constructed by subclasses before train.py loads an
+        # optional warm-start checkpoint.  Do not consider that initial copy
+        # ready yet: it may still contain the randomly initialized weights.
+        self._ema_initialized = False
+
+    def _initialize_ema_from_current_weights(self):
+        """Initialize EMA after all non-Lightning warm-start weights are loaded."""
+        if not getattr(self.args, "ema", False) or self._ema_initialized:
+            return
+
+        logger.info("Initializing EMA from current model weights")
+        self.ema = ExponentialMovingAverage(
+            model=self.model,
+            decay=self.args.ema_decay,
+        )
+        self.cached_weights = None
+        self._ema_initialized = True
+
+    def on_train_start(self):
+        # Covers fits with validation/sanity checking disabled.
+        self._initialize_ema_from_current_weights()
+
+    def on_validation_start(self):
+        # This runs before the fit sanity check, so validation never swaps in
+        # an EMA copy made before train.py loaded its warm-start checkpoint.
+        # It also covers standalone trainer.validate(...) calls.
+        self._initialize_ema_from_current_weights()
 
     def prefix_log(self, key, data):
         if isinstance(data, torch.Tensor):
@@ -122,6 +149,8 @@ class Wrapper(pl.LightningModule):
         if self.args.ema and "ema" in checkpoint:
             logger.info('Loading EMA state dict')
             self.ema.load_state_dict(checkpoint["ema"])
+            # Preserve a genuine EMA when resuming a Lightning checkpoint.
+            self._ema_initialized = True
 
     def on_save_checkpoint(self, checkpoint):
         if self.args.ema:

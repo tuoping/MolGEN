@@ -27,6 +27,7 @@ class sde:
         logit_flow = None,
         num_corrector_step = 0,
         latt_path = False,
+        guidance_fn = None
     ):
         # assert t0 < t1, "SDE sampler has to be in forward time"
 
@@ -43,12 +44,13 @@ class sde:
         self.logit_flow = logit_flow
         self.latt_path = latt_path
 
+
     def __Euler_Maruyama_step(self, x, mean_x, t, model, score_model, **model_kwargs):
         w_cur = th.randn(x.size()).to(x)
         t = th.ones(x.size(0)).to(x) * t
         dw = w_cur * th.sqrt(th.abs(self.dt)) @ th.linalg.inv(self.cell)
-        drift = self.drift(x, t, model, **model_kwargs)
         diffusion = self.diffusion(x, t)
+        drift = self.drift(x, t, model, **model_kwargs)
         mean_x = x + drift * self.dt
         x = mean_x + th.sqrt(2 * diffusion) * dw
         if self.score is not None:
@@ -63,8 +65,8 @@ class sde:
         t = th.ones(x.size(0)).to(x) * t
         dw = w_cur * th.sqrt(th.abs(self.dt)) @ th.linalg.inv(self.cell)
         model_kwargs['cell'] = cell
-        drift, lattflow = self.drift(x, t, model, **model_kwargs)
         diffusion = self.diffusion(x, t)
+        drift, lattflow = self.drift(x, t, model, **model_kwargs)
         mean_x = x + drift * self.dt
         x = mean_x + th.sqrt(2 * diffusion) * dw
         if self.score is not None:
@@ -78,8 +80,9 @@ class sde:
         t = th.ones(x.size(0)).to(x) * t
         inv_cell = th.linalg.inv(self.cell)
         dw = w_cur * th.sqrt(th.abs(self.dt)) @ inv_cell
-        drift = self.drift(x, t, model, **model_kwargs)
         diffusion = self.diffusion(x, t)
+        drift = self.drift(x, t, model, **model_kwargs)
+        
         metric = inv_cell.transpose(-1, -2) @ inv_cell
 
         ### forward
@@ -142,7 +145,7 @@ class sde:
         x = init
         mean_x = init 
         
-        _samples = []
+        _samples = [init]
         sampler = self.__forward_fn()
         with th.inference_mode():
             for ti in self.t[:-1]:

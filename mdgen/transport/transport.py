@@ -18,7 +18,7 @@ def mean_flat(x, mask):
 
 
 from .integrators import ode, sde
-from .utils import graph_loss
+from .utils import collision_loss, graph_loss
 
 class ModelType(enum.Enum):
     """
@@ -197,7 +197,7 @@ def lattice_polar_decompose_th(lattices: th.Tensor):
 from .path import wrap_frac_pos
 import math
 
-def compute_jsd_loss(mu_t_x1, standard_bandwidth_factor, mu_theta, k_max=1):
+def compute_jsd_loss(mu_t_x1, bw_x1, mu_theta, bw_mu, k_max=1):
     """
     Monte Carlo estimate of the full JSD:
     JSD(p || q) = 0.5 * E_p[log(p/m)] + 0.5 * E_q[log(q/m)]
@@ -210,10 +210,6 @@ def compute_jsd_loss(mu_t_x1, standard_bandwidth_factor, mu_theta, k_max=1):
         k_max: int - number of periodic images per dimension
     """
     x = 0.0
-    # if isinstance(standard_bandwidth_factor, th.Tensor):
-    #     bandwidth_factor = standard_bandwidth_factor ** 2  # scalar or (B,)
-    # else:
-    #     bandwidth_factor = standard_bandwidth_factor ** 2
 
     ks = th.arange(-k_max, k_max + 1, device=mu_t_x1.device)
     kx, ky, kz = th.meshgrid(ks, ks, ks, indexing='ij')
@@ -223,14 +219,14 @@ def compute_jsd_loss(mu_t_x1, standard_bandwidth_factor, mu_theta, k_max=1):
     # diff: (B, N, K, 3)
     diff = th.einsum(
         "bnki,bij->bnkj",
-        x - mu_t_x1[:, :, None, :] + k_vecs[None, None, :, :], standard_bandwidth_factor)   # @cell[:, None, :, :]
+        x - mu_t_x1[:, :, None, :] + k_vecs[None, None, :, :], bw_x1)   # @cell[:, None, :, :]
     sq_norms = th.sum(diff ** 2, dim=-1)  # (B, N, K)
     # logZ_P = th.logsumexp(-sq_norms / (2), dim=-1) # (B, N)
     logP_ = (-sq_norms / (2)) # - logZ_P[:,:,None]  # (B, N, K)
 
     pred_diff = th.einsum(
         "bnki,bij->bnkj",
-        x - mu_theta[:, :, None, :] + k_vecs[None, None, :, :], standard_bandwidth_factor)   # @cell  # (B, None, N, 3)
+        x - mu_theta[:, :, None, :] + k_vecs[None, None, :, :], bw_mu)   # @cell  # (B, None, N, 3)
     pred_sq_norms = th.sum(pred_diff ** 2, dim=-1) # (B, N, K)
     # logZ_Q = th.logsumexp(-pred_sq_norms / (2), dim=-1) # (B, N)
     logQ_ = (-pred_sq_norms) / (2) # - logZ_Q[:,:,None]  # (B, N, K)
@@ -269,7 +265,7 @@ class Transport:
         self.args = args
         self.loss_type = loss_type
         self.model_type = model_type
-        self.path_sampler = path_options[path_type]()
+        self.path_sampler = path_options[path_type](sigma_max=args.prior_std, sigma_min=args.target_std)
         self.train_eps = train_eps
         self.sample_eps = sample_eps
         self.score_model = score_model
@@ -554,6 +550,7 @@ class Transport:
             model,
             x1,           # target tokens
             aatype1=None, # target aatype
+            atomic_numbers=None,
             mask=None,
             model_kwargs=None,
             forces = None,
@@ -615,9 +612,15 @@ class Transport:
         assert t.shape == (B,)
         if self.latt_path:
             if self.args.design:
-                logits, model_output, lattflow_output = model(xt, t, **model_kwargs)
+                if self.args.cubic_priorcell:
+                    logits, model_output, lattflow_output = model(xt, t, **model_kwargs)
+                else:
+                    logits, model_output, lattflow_output = model(xt, th.zeros_like(t), **model_kwargs)
             else:
-                model_output, lattflow_output = model(xt, t, **model_kwargs)
+                if self.args.cubic_priorcell:
+                    model_output, lattflow_output = model(xt, t, **model_kwargs)
+                else:
+                    model_output, lattflow_output = model(xt, th.zeros_like(t), **model_kwargs)
         else:
             if self.args.design:
                 logits, model_output, _ = model(xt, th.zeros_like(t), **model_kwargs)
@@ -640,7 +643,18 @@ class Transport:
         terms['pred'] = model_output
         terms['x0'] = x0
         if self.model_type == ModelType.VELOCITY:
-            # if self.args.KL == 'symm':
+            if self.latt_path:          
+                generator_pred = th.linalg.solve(
+                    model_kwargs["cell"], # L_t
+                    lattflow_output,
+                )                                               # V̂ = L_t^{-1} û_t
+                predicted_cell_t = latt0 @ th.linalg.matrix_exp(
+                    t[:, None, None, None] * generator_pred
+                )
+                target_cell_t = model_kwargs['cell']
+            else:
+                predicted_cell_t = model_kwargs['cell']
+                target_cell_t = model_kwargs['cell']
             match self.args.KL:
                 case "symm":
                     # if self.args.path_type in ["Schrodinger_Linear", "Schrodinger_Linear_onemodel"]:
@@ -648,7 +662,7 @@ class Transport:
                     cell = model_kwargs['cell'].view(B*T,3,3)
                     terms['loss_l1'] = mean_flat((model_output.view(B*T,N,3)@cell - ut.view(B*T,N,3)@cell).norm(dim=-1), mask.view(B*T,N,3)[:,:,0])
                     
-                    jsd = compute_jsd_loss(xt.view(B*T,N,3), cell, (x0[0]+model_output*t[:,None,None,None]).view(B*T,N,3), 1)   # (B,N)
+                    jsd = compute_jsd_loss(xt.view(B*T,N,3), predicted_cell_t.view(B*T,3,3), (x0[0]+model_output*t[:,None,None,None]).view(B*T,N,3), target_cell_t.view(B*T,3,3), 1)   # (B,N)
                     terms['loss_symmkl'] = mean_flat(jsd, mask.view(B*T,N,3)[:,:,0])
                     terms['loss_flow'] = terms['loss_symmkl'] * self.args.pref_symmkl + terms['loss_l1'] 
                 case "L1":
@@ -690,14 +704,210 @@ class Transport:
             else:
                 terms['loss'] = terms['loss_flow']
 
-            if self.args.loss_graph:
-                terms['loss_graph'], _ = graph_loss(
-                    (x0[0]+model_output*t[:,None,None,None]).view(B*T,N,3),
-                    xt.view(B*T,N,3),
-                    cell,
-                    self.args.cutoff,
+            if self.args.loss_graph or self.args.loss_collision:
+                graph_loss_mode = getattr(
+                    self.args, "graph_loss_mode", "legacy"
                 )
-                terms['loss'] += terms['loss_graph'] * self.args.pref_loss_graph
+                compute_line_graph = getattr(
+                    self.args, "loss_line_graph", False
+                )
+
+                # Build the deterministic Euler mean used by inference. It is
+                # also used by the collision loss in legacy graph mode.
+                if self.args.path_type in [
+                    "Schrodinger_Linear",
+                    "Schrodinger_Linear_onemodel",
+                ]:
+                    mean_drift = (
+                        model_output + diffusion * score_model_output
+                    )
+                    target_score_cart = -eps / gamma_cart.clamp_min(1e-12)
+                    target_score_frac = (
+                        target_score_cart
+                        @ th.linalg.inv(model_kwargs['cell'])
+                    )
+                    target_mean_drift = (
+                        ut + diffusion * target_score_frac
+                    )
+                else:
+                    # The non-Schrodinger sampler follows the learned
+                    # probability-flow velocity directly.
+                    mean_drift = model_output
+                    target_mean_drift = ut
+
+                num_intervals = max(
+                    int(getattr(self.args, "inference_steps", 100)) - 1,
+                    1,
+                )
+                base_dt = 1.0 / num_intervals
+                euler_dt = th.minimum(
+                    th.full_like(t, base_dt),
+                    (1.0 - t).clamp_min(0.0),
+                )
+                predicted_next_frac = (
+                    xt + mean_drift * euler_dt[:, None, None, None]
+                )
+                target_next_frac = (
+                    xt
+                    + target_mean_drift
+                    * euler_dt[:, None, None, None]
+                )
+
+                predicted_next_cell = model_kwargs['cell']
+                target_next_cell = model_kwargs['cell']
+                if self.latt_path:
+                    predicted_next_cell = (
+                        predicted_next_cell
+                        + lattflow_output
+                        * euler_dt[:, None, None, None]
+                    )
+                    target_next_cell = (
+                        target_next_cell
+                        + ulatt * euler_dt[:, None, None, None]
+                    )
+            
+            if self.args.loss_graph:
+                if graph_loss_mode == "legacy":
+                    legacy_graph_frac = (
+                        x0[0]
+                        + model_output * t[:, None, None, None]
+                    )
+                    terms['loss_graph'], graph_info = graph_loss(
+                        legacy_graph_frac.view(B * T, N, 3),
+                        xt.view(B * T, N, 3),
+                        target_cell_t.view(B * T, 3, 3),
+                        self.args.cutoff,
+                        use_reference_image=False,
+                        compute_line_graph=compute_line_graph,
+                    )
+                elif graph_loss_mode == "euler":
+                    # graph_cell = target_next_cell.detach().view(
+                    #     B * T, 3, 3
+                    # )
+                    graph_time_power = getattr(
+                        self.args, "graph_time_power", 1.0
+                    )
+                    graph_time_weight = (
+                        t.clamp_min(0.0).pow(graph_time_power)[:, None]
+                        .expand(B, T)
+                        .reshape(B * T)
+                    )
+                    terms['loss_graph'], graph_info = graph_loss(
+                        predicted_next_frac.view(B * T, N, 3),
+                        target_next_frac.view(B * T, N, 3),
+                        predicted_next_cell,
+                        self.args.cutoff,
+                        reference_cell=target_next_cell,
+                        distance_scale=(
+                            th.full_like(t, base_dt)[:, None]
+                            .expand(B, T)
+                            .reshape(B * T)
+                        ),
+                        structure_weight=graph_time_weight,
+                        compute_line_graph=compute_line_graph,
+                    )
+                else:
+                    raise ValueError(
+                        f"Unknown graph_loss_mode: {graph_loss_mode}"
+                    )
+
+                terms['loss'] += (
+                    terms['loss_graph'] * self.args.pref_loss_graph
+                )
+                if compute_line_graph:
+                    terms['loss_line_graph'] = graph_info[
+                        'loss_line_graph'
+                    ]
+                    terms['loss'] += (
+                        terms['loss_line_graph']
+                        * getattr(
+                            self.args, "pref_loss_line_graph", 1.0
+                        )
+                    )
+
+            if self.args.loss_collision:
+                # Intermediate transport states need not be physical: a
+                # successful flow may temporarily move atoms through one
+                # another before resolving their contacts at the endpoint.
+                # Apply collision supervision only late in the path, with a
+                # smoothstep ramp so that the auxiliary force does not create
+                # a discontinuity in the learned velocity field.
+                collision_start_time = getattr(
+                    self.args, "collision_start_time", 0.75
+                )
+                collision_full_time = getattr(
+                    self.args, "collision_full_time", 0.95
+                )
+                collision_ramp = (
+                    (t - collision_start_time)
+                    / (collision_full_time - collision_start_time)
+                ).clamp(0.0, 1.0)
+                collision_weight = collision_ramp.square() * (
+                    3.0 - 2.0 * collision_ramp
+                )
+                collision_structure_weight = (
+                    collision_weight[:, None]
+                    .expand(B, T)
+                    .reshape(B * T)
+                )
+
+                # Use the predicted next cell for the geometry, but do not
+                # let the coordinate collision term teach the lattice head to
+                # avoid contacts merely by expanding the unit cell.
+                terms['loss_collision'], collision_info = collision_loss(
+                    predicted_next_frac.view(B * T, N, 3),
+                    predicted_next_cell.detach().view(B * T, 3, 3),
+                    atomic_numbers=(
+                        atomic_numbers.reshape(B * T, N)
+                        if atomic_numbers is not None else None
+                    ),
+                    min_distance=getattr(
+                        self.args, "collision_min_distance", 0.8
+                    ),
+                    radius_scale=getattr(
+                        self.args, "collision_radius_scale", 0.8
+                    ),
+                    softness=getattr(
+                        self.args, "collision_softness", 0.05
+                    ),
+                    atom_mask=mask[..., 0].reshape(B * T, N),
+                    structure_weight=collision_structure_weight,
+                )
+                # collision_loss returns a weighted mean over the active
+                # structures. Multiplying by the mean schedule weight turns
+                # it into sum(w_i * loss_i) / M, so the ramp controls the
+                # absolute contribution as well as the relative weighting.
+                terms['loss_collision'] = (
+                    terms['loss_collision']
+                    * collision_structure_weight.mean()
+                )
+                # x_next = x_t + dt * drift introduces a factor of dt into
+                # the collision gradient with respect to the predicted drift.
+                # Normalize the loss by the nominal Euler step to cancel it.
+                terms['loss_collision'] = (
+                    terms['loss_collision'] / base_dt
+                )
+                terms['loss'] += (
+                    terms['loss_collision']
+                    * getattr(self.args, "pref_loss_collision", 1.0)
+                )
+                terms['collision_count'] = th.as_tensor(
+                    collision_info['num_collisions'],
+                    dtype=x1.dtype,
+                    device=x1.device,
+                )
+                terms['collision_pair_count'] = th.as_tensor(
+                    collision_info['num_pairs'],
+                    dtype=x1.dtype,
+                    device=x1.device,
+                )
+                terms['collision_rate'] = (
+                    terms['collision_count']
+                    / terms['collision_pair_count'].clamp_min(1.0)
+                )
+                terms['collision_min_distance'] = collision_info[
+                    'min_distance'
+                ]
 
                 
             if self.latt_path:
@@ -827,20 +1037,6 @@ class Transport:
                 velocity = model_output[1]
             else:
                 velocity = model_output
-            if self.args.guidance and th.any(t>0.5):
-                _g_score = self.guidance(x, t, **model_kwargs)
-                _scale = (t*2-1)
-                # score = (1-_scale)*score + _scale*_g_score
-                prior_mean = self.prior_mean
-                centered_x = x if prior_mean is None else x - prior_mean
-                _g_drift = self.path_sampler.get_velocity_guidance_from_score(
-                    _g_score,
-                    centered_x,
-                    t,
-                    self.x0std,
-                    self.prior_cell,
-                )
-                velocity = (1-_scale)*velocity + _scale*_g_drift
             
             return velocity
 
@@ -1009,27 +1205,15 @@ class Sampler:
         inv_cell = th.linalg.inv(self.transport.prior_cell)
 
         def _lattpath_sde_drift(x, t, model, **kwargs):
+            # if self.transport.args.cubic_priorcell:
+            #     model_output, lattflow_output = model(x, t, **kwargs)
+            # else:
             model_output, lattflow_output = model(x, th.zeros_like(t), **kwargs)
 
             drift = self.drift_from_output(x, t, model_output)
             score = self.score_from_output(x, t, model_output)
-            if self.transport.args.guidance and th.any(t>0.5):
-                _g_score = self.transport.guidance(x, t, **kwargs)
-                _scale = (t*2-1)**2
-                # score = (1-_scale)*score + _scale*_g_score
-                score = score + _scale*_g_score
-                prior_mean = self.transport.prior_mean
-                centered_x = x if prior_mean is None else x - prior_mean
-                _g_drift = self.transport.path_sampler.get_velocity_guidance_from_score(
-                    _g_score,
-                    centered_x,
-                    t,
-                    self.transport.x0std,
-                    self.transport.prior_cell,
-                )
-                # drift = (1-_scale)*drift + _scale*_g_drift
-                drift = drift + _scale*_g_drift
-
+            if self.transport.args.guidance:
+                drift = drift + self.transport.guidance(x, t, **kwargs) * diffusion_fn(x, t) * 2
             if self.transport.args.design:
                 self._current_logit_flow = self.logitflow_from_output(kwargs['aatype'], t, model_output)
 
@@ -1037,26 +1221,12 @@ class Sampler:
 
         def _sde_drift(x, t, model, **kwargs):
             model_output = model(x, th.zeros_like(t), **kwargs)
+            # model_output = model(x, t, **kwargs)
 
             drift = self.drift_from_output(x, t, model_output)
             score = self.score_from_output(x, t, model_output)
-            if self.transport.args.guidance and th.any(t>0.5):
-                _g_score = self.transport.guidance(x, t, **kwargs)
-                _scale = (t*2-1)**2
-                # score = (1-_scale)*score + _scale*_g_score
-                score = score + _scale*_g_score
-                prior_mean = self.transport.prior_mean
-                centered_x = x if prior_mean is None else x - prior_mean
-                _g_drift = self.transport.path_sampler.get_velocity_guidance_from_score(
-                    _g_score,
-                    centered_x,
-                    t,
-                    self.transport.x0std,
-                    self.transport.prior_cell,
-                )
-                # drift = (1-_scale)*drift + _scale*_g_drift
-                drift = drift + _scale*_g_drift
-
+            if self.transport.args.guidance:
+                drift = drift + self.transport.guidance(x, t, **kwargs) * diffusion_fn(x, t) * 2
             if self.transport.args.design:
                 self._current_logit_flow = self.logitflow_from_output(kwargs['aatype'], t, model_output)
 
@@ -1156,14 +1326,14 @@ class Sampler:
             cell = input[1]
             model_kwargs['cell'] = cell
             drift, lattflow = self.drift(x, t, model, **model_kwargs)
-            return x + drift * last_step_size, cell + lattflow * last_step
+            return x + drift * last_step_size, cell + lattflow * last_step_size
 
         def _last_step_mean(input, t, model, **model_kwargs):
             x = input[0]
             cell = input[1]
             model_kwargs['cell'] = cell
             drift, lattflow = sde_drift(x, t, model, **model_kwargs)
-            return x + drift * last_step_size, cell + lattflow * last_step
+            return x + drift * last_step_size, cell + lattflow * last_step_size
 
         if last_step is None:
             last_step_fn = \
@@ -1233,7 +1403,7 @@ class Sampler:
             sampler_type=sampling_method,
             cell=self.transport.prior_cell,
             logit_flow = logitflow_fn,
-            latt_path=self.transport.args.latt_path
+            latt_path=self.transport.args.latt_path,
         )
 
         last_step_fn = self.__get_last_step(sde_drift, last_step=last_step, last_step_size=last_step_size)
@@ -1247,17 +1417,19 @@ class Sampler:
                 x, cell = last_step_fn((xs[0][-1], xs[1][-1]), ts, model, score_model, **model_kwargs)
                 xs[0].append(x)
                 xs[1].append(cell)
-                assert len(xs[0]) == num_steps, "Samples does not match the number of steps"
+                assert len(xs[0]) == num_steps + 1, "Samples does not match the number of steps"
             else:
                 x = last_step_fn(xs[-1], ts, model, score_model, **model_kwargs)
                 xs.append(x)
-                assert len(xs) == num_steps, "Samples does not match the number of steps"
+                assert len(xs) == num_steps + 1, "Samples does not match the number of steps"
             return xs
             # xs = last_step_fn(xs, ts, model, score_model, **model_kwargs)
             # return xs.unsqueeze(0)
 
         def _sample_with_logits(init, model, **model_kwargs):
             xs, a_samples = _sde.sample_with_logits(init, model, score_model, **model_kwargs)
+            xs = [init[1]]+xs
+            a_samples = [init[0]]+a_samples
             ts = th.ones(init[1].size(0), device=init[1].device) * t1
             x = last_step_fn(xs[-1], ts, model, score_model, **model_kwargs)
             xs.append(x)
