@@ -45,7 +45,6 @@ trainsampler = BucketBatchSampler(train_dataset, num_atoms_list, batch_size=args
 
 if args.overfit:
     val_dataset = train_dataset
-    valsampler = trainsampler
 else:
     val_dataset = EquivariantTransformerDataset_MaterialProject(args, species=[1, 3, 5, 6, 7, 8, 9, 11, 12, 13, 14, 15, 16, 17, 19, 20, 21,
                                                                     22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 37, 39, 40,
@@ -53,8 +52,17 @@ else:
                                                                     64, 65, 66, 67, 68, 69, 70, 71, 72, 74, 77, 78, 79, 80, 82, 83, 90,
                                                                     92, 93, 94], 
                                                                     num_species=args.num_species, sim_condition=False, stage="val")
-    num_atoms_list = [int(max(val_dataset[i]["num_atoms"])) for i in range(len(val_dataset))]
-    valsampler = BucketBatchSampler(val_dataset, num_atoms_list, batch_size=args.batch_size)
+
+val_num_atoms_list = [
+    int(max(val_dataset[i]["num_atoms"]))
+    for i in range(len(val_dataset))
+]
+valsampler = BucketBatchSampler(
+    val_dataset,
+    val_num_atoms_list,
+    batch_size=args.batch_size,
+    repeat=args.val_repeat,
+)
 
 train_loader = torch.utils.data.DataLoader(
     train_dataset,
@@ -144,16 +152,6 @@ if args.path_type in ["Schrodinger_Linear", "Schrodinger_Linear_onemodel"]:
 
         ModelCheckpoint(
             dirpath=os.environ["MODEL_DIR"], 
-            filename="{epoch:03d}-{step:07d}-{val_meanRMSD:.4f}",
-            monitor="val_meanRMSD",
-            save_top_k=1,
-            save_last=False
-        ),
-    
-        ModelSummary(max_depth=2),
-
-        ModelCheckpoint(
-            dirpath=os.environ["MODEL_DIR"], 
             filename="{epoch:03d}-{step:07d}-{val_E_spring:.4f}",
             monitor="val_E_spring",
             save_top_k=1,
@@ -162,12 +160,44 @@ if args.path_type in ["Schrodinger_Linear", "Schrodinger_Linear_onemodel"]:
     
         ModelSummary(max_depth=2),
     ]
-    if args.loss_graph:
+    callbacks_fn.append(
+        ModelCheckpoint(
+            dirpath=os.path.join(os.environ["MODEL_DIR"], "best_val_loss_path"),
+            filename="best-val_rollout_graph_err-{epoch:03d}-{step:07d}-{val_rollout_graph_err:.4f}",
+            monitor="val_rollout_graph_err",
+            mode="min",
+            save_top_k=1,
+            save_last=False,
+        )
+    )
+    callbacks_fn.append(ModelSummary(max_depth=2))
+    callbacks_fn.append(
+        ModelCheckpoint(
+            dirpath=os.path.join(
+                os.environ["MODEL_DIR"], "best_val_loss_path"
+            ),
+            filename=(
+                "best-val_rollout_collision-{epoch:03d}-{step:07d}-"
+                "{val_rollout_collisions_per_structure:.4f}"
+            ),
+            monitor="val_rollout_collisions_per_structure",
+            mode="min",
+            save_top_k=1,
+            save_last=False,
+        )
+    )
+    callbacks_fn.append(ModelSummary(max_depth=2))
+    if args.KL == 'symm':
         callbacks_fn.append(
             ModelCheckpoint(
-                dirpath=os.path.join(os.environ["MODEL_DIR"], "best_val_loss_path"),
-                filename="best-val_loss_graph-{epoch:03d}-{step:07d}-{val_loss_graph:.4f}",
-                monitor="val_loss_graph",
+                dirpath=os.path.join(
+                    os.environ["MODEL_DIR"], "best_val_loss_path"
+                ),
+                filename=(
+                    "best-val_loss_symmkl-{epoch:03d}-{step:07d}-"
+                    "{val_loss_symmkl:.8f}"
+                ),
+                monitor="val_loss_symmkl",
                 mode="min",
                 save_top_k=1,
                 save_last=False,
@@ -200,16 +230,6 @@ else:
 
         ModelCheckpoint(
             dirpath=os.environ["MODEL_DIR"], 
-            filename="{epoch:03d}-{step:07d}-{val_meanRMSD:.4f}",
-            monitor="val_meanRMSD",
-            save_top_k=1,
-            save_last=False
-        ),
-    
-        ModelSummary(max_depth=2),
-
-        ModelCheckpoint(
-            dirpath=os.environ["MODEL_DIR"], 
             filename="{epoch:03d}-{step:07d}-{val_E_spring:.4f}",
             monitor="val_E_spring",
             save_top_k=1,
@@ -218,12 +238,44 @@ else:
     
         ModelSummary(max_depth=2),
     ]
-    if args.loss_graph:
+    callbacks_fn.append(
+        ModelCheckpoint(
+            dirpath=os.path.join(os.environ["MODEL_DIR"], "best_val_loss_path"),
+            filename="best-val_rollout_graph_err-{epoch:03d}-{step:07d}-{val_rollout_graph_err:.4f}",
+            monitor="val_rollout_graph_err",
+            mode="min",
+            save_top_k=1,
+            save_last=False,
+        )
+    )
+    callbacks_fn.append(ModelSummary(max_depth=2))
+    callbacks_fn.append(
+        ModelCheckpoint(
+            dirpath=os.path.join(
+                os.environ["MODEL_DIR"], "best_val_loss_path"
+            ),
+            filename=(
+                "best-val_rollout_collision-{epoch:03d}-{step:07d}-"
+                "{val_rollout_collisions_per_structure:.4f}"
+            ),
+            monitor="val_rollout_collisions_per_structure",
+            mode="min",
+            save_top_k=1,
+            save_last=False,
+        )
+    )
+    callbacks_fn.append(ModelSummary(max_depth=2))
+    if args.KL == 'symm':
         callbacks_fn.append(
             ModelCheckpoint(
-                dirpath=os.path.join(os.environ["MODEL_DIR"], "best_val_loss_path"),
-                filename="best-val_loss_graph-{epoch:03d}-{step:07d}-{val_loss_graph:.4f}",
-                monitor="val_loss_graph",
+                dirpath=os.path.join(
+                    os.environ["MODEL_DIR"], "best_val_loss_path"
+                ),
+                filename=(
+                    "best-val_loss_symmkl-{epoch:03d}-{step:07d}-"
+                    "{val_loss_symmkl:.8f}"
+                ),
+                monitor="val_loss_symmkl",
                 mode="min",
                 save_top_k=1,
                 save_last=False,
